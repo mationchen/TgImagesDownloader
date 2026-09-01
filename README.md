@@ -1,2 +1,3 @@
 # TgImagesDownloader
 Tg图片下载工具
+为LSP开发的Tg链接的一大堆图片的下载工具
