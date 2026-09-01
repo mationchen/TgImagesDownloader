@@ -1,0 +1,190 @@
+package com.acstd.tgimagesdownloader.notifier
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+
+/**
+ * Foreground service that keeps the app's process alive while a batch download
+ * runs in JS (spec §20). Because the RN JS thread keeps executing as long as
+ * the process is alive, starting this service when a batch begins lets the
+ * download continue after the user backgrounds the app.
+ *
+ * The notification is driven from JS through [DownloadNotifierModule]:
+ *   - start(...)      -> startForegroundService + running notification
+ *   - update(...)     -> refresh progress in the running notification
+ *   - finish(...)     -> replace with a completion notification
+ *   - stop()          -> stopSelf() and clear the notification
+ *
+ * Android 13+ needs POST_NOTIFICATIONS (requested from JS); Android 14+ needs
+ * the FOREGROUND_SERVICE_DATA_SYNC permission declared in the manifest.
+ */
+class DownloadForegroundService : Service() {
+
+  companion object {
+    const val CHANNEL_ID = "downloads"
+    const val NOTIFICATION_ID = 1001
+
+    /** Live instance so [DownloadNotifierModule] can update notifications. */
+    @Volatile
+    var active: DownloadForegroundService? = null
+      private set
+
+    @Volatile
+    private var startedTitle: String = ""
+    @Volatile
+    private var startedTotal: Int = 0
+
+    fun start(context: Context, title: String, total: Int) {
+      startedTitle = title
+      startedTotal = total
+      val intent = Intent(context, DownloadForegroundService::class.java)
+      intent.action = ACTION_START
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        context.startForegroundService(intent)
+      } else {
+        context.startService(intent)
+      }
+    }
+
+    fun stop(context: Context) {
+      val intent = Intent(context, DownloadForegroundService::class.java)
+      intent.action = ACTION_STOP
+      context.startService(intent)
+    }
+
+    const val ACTION_START = "com.acstd.tgimagesdownloader.notifier.START"
+    const val ACTION_STOP = "com.acstd.tgimagesdownloader.notifier.STOP"
+  }
+
+  override fun onBind(intent: Intent?): IBinder? = null
+
+  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    when (intent?.action) {
+      ACTION_START -> {
+        active = this
+        ensureChannel()
+        val notification = buildProgressNotification(
+            startedTitle,
+            0,
+            startedTotal,
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+          // Android 14+: specify the foreground service type.
+          startForeground(
+              NOTIFICATION_ID,
+              notification,
+              ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+          )
+        } else {
+          startForeground(NOTIFICATION_ID, notification)
+        }
+      }
+      ACTION_STOP -> {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        active = null
+        stopSelf()
+      }
+    }
+    return START_NOT_STICKY
+  }
+
+  override fun onDestroy() {
+    if (active === this) {
+      active = null
+    }
+    super.onDestroy()
+  }
+
+  private fun ensureChannel() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      val nm = getSystemService(NotificationManager::class.java)
+      val channel = NotificationChannel(
+          CHANNEL_ID,
+          "Downloads",
+          NotificationManager.IMPORTANCE_LOW,
+      )
+      channel.description = "Telegraph download progress"
+      nm.createNotificationChannel(channel)
+    }
+  }
+
+  private fun buildProgressNotification(
+      title: String,
+      done: Int,
+      total: Int,
+  ): Notification {
+    val openIntent = packageManager.getLaunchIntentForPackage(packageName)
+    val contentIntent = openIntent?.let {
+      PendingIntent.getActivity(
+          this,
+          0,
+          it,
+          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+      )
+    }
+
+    val progress = if (total > 0) done * 100 / total else 0
+
+    return NotificationCompat.Builder(this, CHANNEL_ID)
+        .setContentTitle(title.ifBlank { "Telegraph Downloader" })
+        .setContentText("$done / $total")
+        .setSmallIcon(android.R.drawable.stat_sys_download)
+        .setProgress(total, done, total <= 0)
+        .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .setContentIntent(contentIntent)
+        .build()
+  }
+
+  private fun buildCompletionNotification(
+      success: Int,
+      failed: Int,
+      skipped: Int,
+  ): Notification {
+    val text =
+        when {
+          failed > 0 -> "$success done, $failed failed, $skipped skipped"
+          else -> "$success image(s) saved"
+        }
+    val openIntent = packageManager.getLaunchIntentForPackage(packageName)
+    val contentIntent = openIntent?.let {
+      PendingIntent.getActivity(
+          this,
+          0,
+          it,
+          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+      )
+    }
+    return NotificationCompat.Builder(this, CHANNEL_ID)
+        .setContentTitle("Telegraph Downloader")
+        .setContentText(text)
+        .setSmallIcon(android.R.drawable.stat_sys_download_done)
+        .setAutoCancel(true)
+        .setContentIntent(contentIntent)
+        .build()
+  }
+
+  /** Called by [DownloadNotifierModule] to refresh the running progress. */
+  fun updateProgress(done: Int, total: Int) {
+    val nm = getSystemService(NotificationManager::class.java)
+    nm.notify(
+        NOTIFICATION_ID,
+        buildProgressNotification(startedTitle, done, total),
+    )
+  }
+
+  /** Called by [DownloadNotifierModule] to show the completion summary. */
+  fun showCompletion(success: Int, failed: Int, skipped: Int) {
+    val nm = getSystemService(NotificationManager::class.java)
+    nm.notify(NOTIFICATION_ID, buildCompletionNotification(success, failed, skipped))
+  }
+}

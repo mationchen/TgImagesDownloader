@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monochrome (themed-icon) variant: same glyphs, solid white for tinting. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Photo frame outline. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M37,34 L71,34 Q74,34 74,37 L74,64 Q74,67 71,67 L37,67 Q34,67 34,64 L34,37 Q34,34 37,34 Z M40,37 Q38,37 38,39 L38,62 Q38,64 40,64 L68,64 Q70,64 70,62 L70,39 Q70,37 68,37 Z" />
+
+    <!-- Mountain glyph. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M44,57 L50,47 L56,57 Z" />
+
+    <!-- Download arrow. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,72 L54,80 M49,78 L54,84 L59,78 Z M46,85 L62,85" />
+</vector>

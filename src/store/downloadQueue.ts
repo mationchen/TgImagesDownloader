@@ -1,0 +1,399 @@
+import {delayMs} from '../utils/retry';
+import {computeSummary} from './downloadReducer';
+import type {
+  DownloadAction,
+  DownloadState,
+} from './downloadReducer';
+import type {TelegraphImage} from '../types/telegraph';
+
+/**
+ * Reason a single task invocation ended. The queue uses this to decide
+ * whether the slot should be requeued, marked as retried-within-the-same-task,
+ * or finalized.
+ */
+export type TaskOutcome =
+  | {kind: 'success'; localPath: string; bytes: number}
+  | {kind: 'skipped'; reason: string}
+  | {kind: 'failed'; code: string; message: string}
+  | {kind: 'cancelled'};
+
+/**
+ * A pluggable function that performs the actual work for one task.
+ * Implementations are expected to:
+ *   - Resolve with a TaskOutcome when the work is done.
+ *   - Honour `signal`: when `signal.aborted` flips to true mid-work, they
+ *     should stop work promptly and resolve with `{kind: 'cancelled'}`.
+ *   - Call `onProgress(bytes, total)` periodically so the UI can render a bar.
+ */
+export type TaskRunner = (
+  image: TelegraphImage,
+  subfolder: string,
+  ctx: TaskRunnerContext,
+) => Promise<TaskOutcome>;
+
+export interface TaskRunnerContext {
+  /** If true, the task must stop as soon as practical and resolve cancelled. */
+  signal: AbortSignal;
+  /** 1-based attempt counter for this task (1 = first try). */
+  attempt: number;
+  /** Reports download progress; implementations may call 0+ times. */
+  onProgress: (downloadedBytes: number, totalBytes: number) => void;
+}
+
+export interface CreateQueueOptions {
+  /** Read fresh state to know what's pending / paused / running. */
+  getState: () => DownloadState;
+  /** Push state changes; the reducer is the source of truth for tasks. */
+  dispatch: (action: DownloadAction) => void;
+  /** Per-image runner; typically wraps the native downloader. */
+  runTask: TaskRunner;
+  /** Effective concurrency (read each tick so settings can change live). */
+  getConcurrency: () => number;
+  /** Per-task max retry attempts (default 2). */
+  maxRetries?: number;
+  /** Base delay for exponential backoff between retries (default 500ms). */
+  retryBaseMs?: number;
+  /** Cap for exponential backoff (default 15s). */
+  retryCapMs?: number;
+  /** Optional external signal — when fired, the whole queue cancels. */
+  externalSignal?: AbortSignal;
+}
+
+export interface QueueController {
+  start: () => void;
+  pause: () => void;
+  resume: () => void;
+  cancel: () => void;
+  /** True iff a `start()` was called and the loop hasn't drained yet. */
+  isActive: () => boolean;
+}
+
+/**
+ * Concurrency-limited, pause-aware download queue.
+ *
+ * Design notes:
+ *   - One timer/awaiter loop per queue; it pulls pending tasks from
+ *     state.taskOrder and only starts up to `concurrency` in parallel.
+ *   - State (per-task status, retry counts, progress) lives in the reducer,
+ *     NOT in this module — so React can subscribe and re-render naturally.
+ *   - Cancellation: each in-flight task gets its own AbortController; the
+ *     queue's own controller cascades when `cancel()` is called or when the
+ *     external signal fires.
+ *   - Retry: handled INSIDE runTask via ctx.attempt — the queue simply
+ *     re-invokes runTask with an incremented attempt on transient errors.
+ */
+export function createQueue(opts: CreateQueueOptions): QueueController {
+  const {
+    getState,
+    dispatch,
+    runTask,
+    getConcurrency,
+    maxRetries = 2,
+    retryBaseMs = 500,
+    retryCapMs = 15_000,
+    externalSignal,
+  } = opts;
+
+  // Controllers for in-flight tasks, keyed by image id. Used to abort them
+  // when the queue is cancelled.
+  const inFlight = new Map<string, AbortController>();
+
+  let active = false;
+  let drainPromise: Promise<void> | null = null;
+
+  function start(): void {
+    if (active) return;
+    active = true;
+    dispatch({type: 'queue/resumed'});
+    drainPromise = drain();
+  }
+
+  function pause(): void {
+    if (!active) return;
+    dispatch({type: 'queue/paused'});
+  }
+
+  function resume(): void {
+    if (!active) return;
+    dispatch({type: 'queue/resumed'});
+    if (!drainPromise) {
+      drainPromise = drain();
+    }
+  }
+
+  function cancel(): void {
+    if (!active) return;
+    // Abort all in-flight tasks; pending ones won't be picked up because
+    // active flips off and the drain loop exits.
+    for (const [, ctrl] of inFlight) {
+      ctrl.abort();
+    }
+    inFlight.clear();
+    active = false;
+    dispatch({type: 'queue/stopped'});
+    // Mark any remaining pending as cancelled.
+    const s = getState();
+    for (const id of s.taskOrder) {
+      const t = s.tasks[id];
+      if (t && (t.status === 'pending' || t.status === 'downloading')) {
+        dispatch({type: 'task/cancelled', id});
+      }
+    }
+  }
+
+  function isActive(): boolean {
+    return active;
+  }
+
+  async function drain(): Promise<void> {
+    try {
+      while (active) {
+        const state = getState();
+        if (state.isPaused) {
+          // Wait for the resume action to bump state.rev.
+          await waitForRev(state.rev, getState);
+          continue;
+        }
+        const cap = getConcurrency();
+        const live = countActive(state);
+        if (live >= cap) {
+          // Wait for any task to finish (rev bump) before pulling more.
+          await waitForRev(state.rev, getState);
+          continue;
+        }
+        const next = pickNextPending(state, inFlight.keys());
+        if (!next) {
+          // No more work; check if anything is still in flight.
+          if (live === 0) {
+            active = false;
+            dispatch({type: 'queue/stopped'});
+            return;
+          }
+          await waitForRev(state.rev, getState);
+          continue;
+        }
+        // Dispatch started and kick off runTask. We do NOT await here — we
+        // want up-to-concurrency tasks in flight at once.
+        const ctrl = new AbortController();
+        if (externalSignal) {
+          if (externalSignal.aborted) {
+            ctrl.abort();
+          } else {
+            externalSignal.addEventListener('abort', () => ctrl.abort(), {
+              once: true,
+            });
+          }
+        }
+        inFlight.set(next.imageId, ctrl);
+        dispatch({type: 'task/started', id: next.imageId, startedAt: Date.now()});
+        runOne(next.imageId, ctrl).finally(() => {
+          inFlight.delete(next.imageId);
+        });
+        // Yield to the event loop so React can flush the dispatch.
+        await microtask();
+      }
+    } finally {
+      drainPromise = null;
+    }
+  }
+
+  async function runOne(id: string, ctrl: AbortController): Promise<void> {
+    let attempt = 1;
+    while (true) {
+      if (ctrl.signal.aborted) {
+        // Task was cancelled between scheduling and execution.
+        return;
+      }
+      const state = getState();
+      const subfolder = state.subfolder;
+      const image = state.article.images.find(i => i.id === id);
+      if (!image) {
+        dispatch({
+          type: 'task/failed',
+          id,
+          errorCode: 'ERR_NO_TASK',
+          errorMessage: 'image disappeared from article',
+        });
+        return;
+      }
+      const ctx: TaskRunnerContext = {
+        signal: ctrl.signal,
+        attempt,
+        onProgress: (downloaded, total) =>
+          dispatch({
+            type: 'task/progress',
+            id,
+            downloadedBytes: downloaded,
+            totalBytes: total,
+          }),
+      };
+      let outcome: TaskOutcome;
+      try {
+        outcome = await runTask(image, subfolder, ctx);
+      } catch (err) {
+        // Defensive: runTask should never throw, but if it does, treat as
+        // a hard failure so the slot can move on.
+        outcome = {
+          kind: 'failed',
+          code: 'ERR_UNEXPECTED',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+
+      if (outcome.kind === 'cancelled') {
+        dispatch({type: 'task/cancelled', id});
+        return;
+      }
+      if (outcome.kind === 'success') {
+        dispatch({type: 'task/success', id, localPath: outcome.localPath});
+        return;
+      }
+      if (outcome.kind === 'skipped') {
+        dispatch({type: 'task/skipped', id, reason: outcome.reason});
+        return;
+      }
+      // failed — maybe retry
+      const isRetryable = isRetryableCode(outcome.code);
+      if (!isRetryable || attempt > maxRetries) {
+        dispatch({
+          type: 'task/failed',
+          id,
+          errorCode: outcome.code,
+          errorMessage: outcome.message,
+        });
+        return;
+      }
+      attempt += 1;
+      const wait = delayMs(attempt - 1, retryBaseMs, retryCapMs);
+      dispatch({
+        type: 'task/retrying',
+        id,
+        attempt,
+        nextDelayMs: wait,
+      });
+      // Sleep with abort awareness so cancel() is responsive.
+      try {
+        await abortableSleep(wait, ctrl.signal);
+      } catch {
+        // aborted during sleep -> cancelled.
+        const s = getState();
+        const t = s.tasks[id];
+        if (t && t.status !== 'cancelled') {
+          dispatch({type: 'task/cancelled', id});
+        }
+        return;
+      }
+    }
+  }
+
+  return {start, pause, resume, cancel, isActive};
+}
+
+/* ------------------------------------------------------------------ */
+/* helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+function countActive(state: DownloadState): number {
+  let n = 0;
+  for (const id of state.taskOrder) {
+    if (state.tasks[id]?.status === 'downloading') n += 1;
+  }
+  return n;
+}
+
+function pickNextPending(
+  state: DownloadState,
+  inFlightKeys: Iterable<string>,
+): {imageId: string} | null {
+  let inFlight: Set<string> | null = null;
+  for (const id of state.taskOrder) {
+    const t = state.tasks[id];
+    if (!t || t.status !== 'pending') continue;
+    // Skip tasks currently owned by an in-flight runOne (e.g. sitting in
+    // their retry-backoff sleep). Without this guard, a task that just
+    // dispatched `task/retrying` would look pending again and the drain loop
+    // would pick it up a second time, double-firing the runner.
+    if (!inFlight) {
+      inFlight = inFlightKeys instanceof Set ? inFlightKeys : new Set(inFlightKeys);
+    }
+    if (inFlight.has(id)) continue;
+    return {imageId: id};
+  }
+  return null;
+}
+
+/**
+ * Resolve once `getState().rev` differs from `current`. Used by the drain
+ * loop to park while paused / while at concurrency cap.
+ */
+function waitForRev(
+  current: number,
+  getState: () => DownloadState,
+): Promise<void> {
+  return new Promise(resolve => {
+    const tick = () => {
+      const s = getState();
+      if (s.rev !== current) {
+        resolve();
+        return;
+      }
+      // Poll lightly; the rev bumps on every reducer dispatch so the gap is
+      // usually < 16ms in practice.
+      setTimeout(tick, 16);
+    };
+    tick();
+  });
+}
+
+function microtask(): Promise<void> {
+  return new Promise(resolve => {
+    const q = (globalThis as {queueMicrotask?: (cb: () => void) => void})
+      .queueMicrotask;
+    if (typeof q === 'function') {
+      q(resolve);
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('aborted'));
+      return;
+    }
+    const t = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(new Error('aborted'));
+    };
+    signal.addEventListener('abort', onAbort, {once: true});
+  });
+}
+
+/**
+ * Decide whether a failed task is worth retrying based on the error code we
+ * surface from imageDownloader. Spec §28: 429 / 5xx retry, 404 no / 1 retry,
+ * 403 don't retry. We mirror the same logic at the queue layer so it works
+ * regardless of who produced the outcome.
+ */
+function isRetryableCode(code: string): boolean {
+  if (/^HTTP_(5\d\d|429|408)$/.test(code)) return true;
+  if (/^HTTP_404$/.test(code)) return false;
+  if (/^HTTP_403$/.test(code)) return false;
+  // Anti-hotlink protection is deterministic — retrying won't help.
+  if (/^ERR_HOTLINK_BLOCKED$/.test(code)) return false;
+  if (/^ERR_DOWNLOAD$/.test(code)) return true;
+  if (/^ERR_IO$/.test(code)) return true;
+  if (/^ERR_NATIVE$/.test(code)) return false;
+  if (/^ERR_EMPTY$/.test(code)) return false;
+  if (/^ERR_UNSAFE_URL$/.test(code)) return false;
+  if (/^ERR_INVALID/.test(code)) return false;
+  return false;
+}
+
+export {computeSummary};

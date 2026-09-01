@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App launcher foreground: a photo frame + download arrow (spec §38).
+  Drawn inside the adaptive-icon safe zone (central ~66/108 of the 108 viewport).
+  - White rounded rectangle = image/photo frame
+  - A small mountain inside = image glyph
+  - Blue download arrow at the bottom = download action
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Photo frame (rounded rect). -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M37,34 L71,34 Q74,34 74,37 L74,64 Q74,67 71,67 L37,67 Q34,67 34,64 L34,37 Q34,34 37,34 Z" />
+
+    <!-- Mountain glyph inside the frame. -->
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M44,57 L50,47 L56,57 Z" />
+
+    <!-- Download arrow shaft. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,70 L54,78" />
+
+    <!-- Download arrow head. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M49,76 L54,82 L59,76 Z" />
+
+    <!-- Arrow baseline bar. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M46,83 L62,83" />
+</vector>

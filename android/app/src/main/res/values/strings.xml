@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App display name (spec §37). -->
+    <string name="app_name">Telegraph 图片下载器</string>
+</resources>

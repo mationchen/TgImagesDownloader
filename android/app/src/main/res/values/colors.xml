@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand / accent color used by splash + theme. -->
+    <color name="brand_blue">#1565C0</color>
+    <!-- Splash background. -->
+    <color name="splash_background">#FFFFFF</color>
+</resources>
