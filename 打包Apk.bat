@@ -1,4 +1,4 @@
-explorer .\android\app\build\outputs\apk\release
+Invoke-Item .\android\app\build\outputs\apk\release
 
 cd Android
 

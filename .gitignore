@@ -78,8 +78,8 @@ metro.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
-���AAB.bat
-���Apk.bat
+打包Apk.bat
+打包AAB.bat
 
 # Project uses npm; yarn.lock is not needed
 yarn.lock
