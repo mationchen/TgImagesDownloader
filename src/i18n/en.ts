@@ -1,11 +1,57 @@
-import type {ZhKeys} from './zh-CN';
+import type { ZhKeys } from './zh-CN';
 
 export const en: Record<ZhKeys, string> = {
-  'home.title': 'Telegraph Image Downloader',
-  'home.subtitle':
-    'Paste Telegraph links to batch-save images to your device',
+  'home.title': 'Web Image Batch Downloader',
+  'home.subtitle': 'Paste web page links to batch-save images to your device',
   'home.inputPlaceholder':
-    'Paste Telegraph link(s), one per line. Multiple links supported.',
+    'Paste web page link(s), one per line. Multiple links supported.',
+  // Tabs
+  'tab.batch': 'Batch',
+  'tab.history': 'History',
+  'tab.settings': 'Settings',
+  // Settings
+  'settings.title': 'Settings',
+  'settings.placeholder': 'Settings coming soon',
+  'settings.saving': 'Saving…',
+  'settings.saved': 'Saved',
+  'settings.subfolder.title': 'Download subfolder',
+  'settings.subfolder.titleLabel': 'Use article title',
+  'settings.subfolder.titleHint': 'Default: one subfolder per article',
+  'settings.subfolder.domainLabel': 'Use source domain',
+  'settings.subfolder.domainHint': 'e.g. telegra.ph / everia.club / i.ibb.co',
+  'settings.subfolder.customLabel': 'Custom',
+  'settings.subfolder.customHint': 'All downloads go into one fixed folder',
+  'settings.subfolder.customPlaceholder': 'e.g. MyDownloads',
+  'settings.subfolder.preview': 'Current subfolder: {value}',
+  'settings.naming.title': 'Image naming rule',
+  'settings.naming.dateIndexLabel': 'Date + 6-digit index',
+  'settings.naming.dateIndexHint':
+    'Default: e.g. 20260902_000001.webp with a per-batch counter',
+  'settings.naming.titleLabel': 'Title + 6-digit index',
+  'settings.naming.titleHint': 'e.g. 000001_coco.jpg',
+  'settings.naming.originalLabel': 'Keep original filename',
+  'settings.naming.originalHint':
+    'Use the original filename from the image URL',
+  'settings.storage.title': 'Save location',
+  'settings.storage.current': 'Current save path: {path}',
+  'settings.storage.picturesLabel': 'Gallery (Pictures)',
+  'settings.storage.picturesHint':
+    'Default: under Pictures in the system gallery',
+  'settings.storage.downloadsLabel': 'Downloads (Download)',
+  'settings.storage.downloadsHint': 'Save under the system Download folder',
+  'settings.storage.customLabel': 'Custom folder',
+  'settings.storage.customHint':
+    'Pick any folder on the device via Android SAF',
+  'settings.storage.pickFolder': 'Pick folder',
+  'settings.storage.changeFolder': 'Change folder',
+  'settings.storage.clearFolder': 'Clear selected folder',
+  'settings.unsupported.title': 'Not supported',
+  'settings.unsupported.body':
+    'This action is not supported on the current device.',
+  'settings.input.title': 'Input behaviour',
+  'settings.input.autoFillLabel': 'Auto-fill clipboard link',
+  'settings.input.autoFillHint':
+    'When opening the app, automatically fill any detected http(s) URL from the clipboard',
   'home.parse': 'Parse images',
   'home.parseShort': 'Parse',
   'home.clear': 'Clear',
@@ -28,6 +74,7 @@ export const en: Record<ZhKeys, string> = {
     'Image host blocks direct access (anti-hotlink). Please view in Telegram.',
   'preview.imageProbeHttp': 'Image host returned an error (HTTP {status}).',
   'preview.imageProbeNetwork': 'Network failed while reaching the image host.',
+  'preview.blockedShort': 'Host blocked',
   'preview.backToHome': 'Back to home',
 
   'download.preparing': 'Preparing…',
@@ -78,30 +125,77 @@ export const en: Record<ZhKeys, string> = {
     'This removes the history entry but does NOT delete the downloaded image files.',
   'history.deleteConfirmOk': 'Delete',
   'history.timeFormat': '{time}',
+  'history.detail.notFound': 'Record not found',
+  'history.detail.title': 'Download history detail',
+  'history.detail.noDetail': 'No image details for this record',
+  'history.detail.noDetailHint':
+    'This record predates the per-image detail feature.',
+  'history.detail.time': 'Time: {time}',
+  'history.detail.imageCount': '{count} images',
+  'history.detail.success': '{count} succeeded',
+  'history.detail.failed': '{count} failed',
+  'history.loadingMore': 'Loading more…',
+  'history.endOfList': 'No more records in this page',
+  'history.backToTop': 'Back to top',
+  'history.backToTopA11y': 'Scroll to the top of this page',
+  'history.prevPage': 'Previous page',
+  'history.nextPage': 'Next page',
+  'history.pageIndicator': '{from}–{to} of {total}',
+  'history.loadFailed': 'Failed to load — pull to retry',
+  'history.searchPlaceholder': 'Search your title',
+  'history.searchClearA11y': 'Clear search',
+  'history.filterByDate': 'Filter by date',
+  'history.filterDateSelected': 'On: {date}',
+  'history.clearFilter': 'Clear filter',
+  'history.noMatch': 'No matching records',
+  'history.dateDone': 'Done',
+  'history.dateCancel': 'Cancel',
+  'history.calWeekdays': 'MTWTFSS',
+  'history.calMonthFormat': '{month}/{year}',
+  'history.calPrevMonth': 'Previous month',
+  'history.calNextMonth': 'Next month',
+  'history.calGoToday': 'Go to today',
+  'history.calDayCount': '{count} items',
+  'history.calSelectDay': 'Select this day',
+  'history.calA11yDay': '{date}, {count} records',
 
   'privacy.title': 'Privacy Policy',
   'privacy.link': 'Privacy policy',
+  'privacy.effectiveDate': 'Effective date: September 2, 2026',
   'privacy.intro':
-    'All parsing, downloading and history in this app happens on your own device.',
-  'privacy.noAccount': 'This app does not require you to create an account.',
-  'privacy.noUpload':
-    'This app does not upload images you download, and does not send your Telegraph links to any server (except contacting telegra.ph directly to fetch article content).',
-  'privacy.noCollect':
-    'This app does not collect personal identity information, contacts, location, or Telegram account data.',
-  'privacy.localHistory':
-    'Download history is stored only in the on-device database and is not uploaded.',
-  'privacy.permissions':
-    'This app requests notification permission (to show download progress) and clipboard access (only to recognize links you paste).',
-  'privacy.contact':
-    'If you have questions about this privacy policy, please contact us through the app store or developer channels.',
+    'This app ("Web Image Batch Downloader") is developed by Alexandia Chen Studio (website: acstd.com). This privacy policy explains how we handle your information when you use the app. We respect and protect your privacy — all parsing, downloading and history happen on your own device.',
+  'privacy.section1Title': '1. Information we collect',
+  'privacy.section1Body':
+    'We do not proactively collect personal identity information, contacts, location, or Telegram account data.',
+  'privacy.section2Title': '2. How we handle information',
+  'privacy.section2Body':
+    'We do not upload images you download, and we do not send your links to any server. The app only directly contacts the target site you paste to fetch the page content and save images to your device gallery.',
+  'privacy.section3Title': '3. Local storage',
+  'privacy.section3Body':
+    'Download history (article URL, title, image count, content URIs of saved images) is stored only in the on-device SQLite database and is not uploaded. You can delete individual entries or all history at any time inside the app.',
+  'privacy.section4Title': '4. Permissions we request',
+  'privacy.section4Body':
+    'We request notification permission (for download progress), foreground service permission (to continue downloads in the background), MediaStore/storage permission (to save images to your gallery), and clipboard read permission (only to detect links you paste). Each permission can be revoked at any time in system settings; the related feature will stop working but other features remain available.',
+  'privacy.section5Title': '5. Share intents from other apps',
+  'privacy.section5Body':
+    'When you share text to this app from another app (browser, Telegram, etc.) via the Android Share Intent, only the shared text is delivered to us. We only extract any URL inside it to start a download. The shared text is not uploaded to any server and is not retained beyond the current session.',
+  'privacy.section6Title': '6. Children’s privacy',
+  'privacy.section6Body':
+    'The app targets general users and does not knowingly collect any information from children under 14.',
+  'privacy.section7Title': '7. Changes to this policy',
+  'privacy.section7Body':
+    'If this policy is updated, we will display it again inside the app and refresh the effective date above. Material changes will be communicated via the app store release notes.',
+  'privacy.section8Title': '8. Contact us',
+  'privacy.section8Body':
+    'For questions, comments or complaints about this privacy policy, please contact us via the developer website acstd.com.',
 
-  'error.invalidUrl': 'Please enter a valid Telegraph link',
+  'error.invalidUrl': 'Please enter a valid web page link',
   'error.empty': 'Please enter a link',
   'error.network': 'Network failed. Please check your connection and retry.',
   'error.timeout': 'Network timed out. Please check your connection and retry.',
-  'error.httpNotFound': 'Telegraph page not found or inaccessible.',
-  'error.httpForbidden': 'Telegraph page access denied.',
-  'error.httpServerError': 'Telegraph server error. Please retry later.',
+  'error.httpNotFound': 'Page not found or inaccessible.',
+  'error.httpForbidden': 'Page access denied.',
+  'error.httpServerError': 'Server error. Please retry later.',
   'error.parseError': 'Failed to parse the page.',
   'error.noImages': 'No downloadable images found on this page.',
   'error.responseTooLarge': 'Page is too large to process.',
@@ -110,4 +204,5 @@ export const en: Record<ZhKeys, string> = {
   'common.cancel': 'Cancel',
   'common.retry': 'Retry',
   'common.loading': 'Loading…',
+  'common.back': 'Back',
 };

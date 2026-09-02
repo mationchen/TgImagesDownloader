@@ -10,8 +10,8 @@ type Props = {
 };
 
 export const DownloadItem: React.FC<Props> = React.memo(({task, image}) => {
-  const isHotlink = /ERR_HOTLINK_BLOCKED/.test(task.error ?? '');
-  const {label, icon, color} = describe(task.status, task.progress, isHotlink);
+  const isBlocked = /ERR_HOTLINK_BLOCKED|ERR_BLOCKED_HOST/.test(task.error ?? '');
+  const {label, icon, color} = describe(task.status, task.progress, isBlocked);
   return (
     <View style={styles.row}>
       <Text style={styles.filename} numberOfLines={1}>
@@ -34,13 +34,13 @@ DownloadItem.displayName = 'DownloadItem';
 function describe(
   status: DownloadStatus,
   progress: number,
-  isHotlink: boolean,
+  isBlocked: boolean,
 ): {label: string; icon: string; color: string} {
   switch (status) {
     case 'success':
       return {label: t('download.itemSuccess'), icon: '✓', color: '#1b7a3a'};
     case 'failed':
-      if (isHotlink) {
+      if (isBlocked) {
         return {label: t('download.itemHotlink'), icon: '✕', color: '#b8860b'};
       }
       return {label: t('download.itemFailed'), icon: '✕', color: '#a32'};

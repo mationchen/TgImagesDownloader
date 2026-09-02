@@ -3,6 +3,29 @@ const TELEGRAPH_PROTOCOL_ALLOWED = ['https:', 'http:'] as const;
 const URL_REGEX =
   /https?:\/\/(?:www\.)?telegra\.ph\/[^\s<>"'`]+/gi;
 
+/**
+ * A generic http(s) URL anywhere on the web (used for non-Telegraph pages).
+ * Kept intentionally broad; SSRF safety is enforced by isSafeFetchUrl.
+ */
+const WEB_URL_REGEX = /https?:\/\/[^\s<>"'`]+/gi;
+
+export function extractWebUrls(input: string): string[] {
+  if (!input) return [];
+  const matches = input.match(WEB_URL_REGEX);
+  if (!matches) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of matches) {
+    const cleaned = stripTrailingPunctuation(raw);
+    const normalized = normalizeWebUrl(cleaned);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      result.push(normalized);
+    }
+  }
+  return result;
+}
+
 export function extractTelegraphUrls(input: string): string[] {
   if (!input) return [];
   const matches = input.match(URL_REGEX);
@@ -86,6 +109,88 @@ function stripTrailingPunctuation(raw: string): string {
     }
   }
   return s;
+}
+
+export type WebUrlValidationError =
+  | 'EMPTY'
+  | 'INVALID_PROTOCOL'
+  | 'SSRF_BLOCKED'
+  | 'INVALID_FORMAT';
+
+/**
+ * Validate an arbitrary http(s) web URL for parsing (spec §25 SSRF defense).
+ * Unlike the Telegraph-only validator, any host is allowed — but we reject
+ * obvious internal / private / loopback addresses so the app can't be used
+ * as an SSRF proxy.
+ */
+export function validateWebUrl(input: string): WebUrlValidationError | null {
+  if (!input || !input.trim()) return 'EMPTY';
+  let url: URL;
+  try {
+    url = new URL(input.trim());
+  } catch {
+    return 'INVALID_FORMAT';
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return 'INVALID_PROTOCOL';
+  }
+  if (!isSafeFetchHost(url.hostname)) {
+    return 'SSRF_BLOCKED';
+  }
+  if (!url.pathname || url.pathname === '/' || url.pathname.length < 2) {
+    // Bare domain is allowed for web pages (unlike Telegraph).
+    return null;
+  }
+  return null;
+}
+
+/** Normalize an arbitrary web URL: trim punctuation, drop hash. */
+export function normalizeWebUrl(input: string): string | null {
+  if (!input) return null;
+  const cleaned = stripTrailingPunctuation(input.trim());
+  const valid = validateWebUrl(cleaned);
+  if (valid !== null) return null;
+  try {
+    const url = new URL(cleaned);
+    // Rebuild without the fragment (URL.hash is read-only in lib.dom).
+    const hashIndex = url.toString().indexOf('#');
+    return hashIndex >= 0 ? url.toString().slice(0, hashIndex) : url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a URL is safe for the app to fetch as a page (SSRF guard).
+ * Rejects non-http(s), localhost, loopback, link-local, private IPv4, and
+ * clearly-internal hostnames. Applies to the *page* URL, not just images.
+ */
+export function isSafeFetchUrl(input: string): boolean {
+  if (!input) return false;
+  try {
+    const url = new URL(input);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    return isSafeFetchHost(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isSafeFetchHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '0.0.0.0' ||
+    host === '::1' ||
+    host === '[::1]' ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    isPrivateOrLoopbackIp(host)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**

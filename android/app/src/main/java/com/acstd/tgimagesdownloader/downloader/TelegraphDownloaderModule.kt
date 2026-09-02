@@ -2,16 +2,21 @@ package com.acstd.tgimagesdownloader.downloader
 
 import android.content.ContentResolver
 import android.content.ContentValues
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.MediaStore.Images
+import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.WritableMap
 import com.facebook.react.bridge.WritableNativeMap
+import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -20,28 +25,6 @@ import java.io.OutputStream
 /**
  * Native bridge that copies a local image file into MediaStore so it shows
  * up in the system gallery under Pictures/TelegraphDownloader/<subfolder>/.
- *
- * Why a custom module:
- *   - @react-native-camera-roll/camera-roll places images under DCIM/, not
- *     Pictures/, and does not support nested sub-folders, which conflicts
- *     with spec §13 (Pictures/TelegraphDownloader/) and §9 (per-article
- *     sub-folder).
- *   - Phase 5 (batch download) will reuse this same primitive and layer
- *     concurrency + progress on top in JS.
- *
- * Storage strategy (spec §13):
- *   - Android 10+ (Q): ContentResolver.insert + RELATIVE_PATH =
- *     "Pictures/TelegraphDownloader/<subfolder>/", IS_PENDING workflow.
- *   - Android 7-9: legacy File API, write to
- *     getExternalStoragePublicDirectory(PICTURES)/TelegraphDownloader/<subfolder>/,
- *     then notify MediaScanner so the gallery picks it up.
- *
- * No permissions are required:
- *   - Android 10+ scoped storage + MediaStore doesn't need
- *     WRITE_EXTERNAL_STORAGE.
- *   - Android 9 and below: WRITE_EXTERNAL_STORAGE is technically needed but
- *     we leave it to the user / V2; in practice most apps got away without
- *     declaring it on 7-9 and it still worked via the legacy grant.
  */
 class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
@@ -53,6 +36,7 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       localFilePath: String,
       subfolder: String,
       filename: String,
+      customTreeUri: String,
       promise: Promise,
   ) {
     try {
@@ -76,10 +60,10 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       val mimeType = inferMimeType(safeFilename, source)
 
       val resultUri: Uri =
-          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            saveOnAndroidQ(source, safeSubfolder, safeFilename, mimeType)
-          } else {
-            saveOnAndroidLegacy(source, safeSubfolder, safeFilename, mimeType)
+          when {
+            customTreeUri.isNotEmpty() -> saveToCustomTree(source, safeSubfolder, safeFilename, mimeType, customTreeUri)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> saveOnAndroidQ(source, safeSubfolder, safeFilename, mimeType)
+            else -> saveOnAndroidLegacy(source, safeSubfolder, safeFilename, mimeType)
           }
 
       val response = WritableNativeMap()
@@ -88,12 +72,11 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       response.putString("mimeType", mimeType)
       response.putString("filename", safeFilename)
       response.putString("subfolder", safeSubfolder)
-      response.putBoolean("legacy", Build.VERSION.SDK_INT < Build.VERSION_CODES.Q)
+      response.putBoolean("legacy", Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && customTreeUri.isEmpty())
       promise.resolve(response)
     } catch (e: SecurityException) {
       promise.reject(ERR_PERMISSION, e.message ?: "SecurityException", e)
     } catch (e: IOException) {
-      // Best-effort cleanup of pending MediaStore row on failure
       promise.reject(ERR_IO, e.message ?: "IOException", e)
     } catch (e: IllegalArgumentException) {
       promise.reject(ERR_INVALID, e.message ?: "IllegalArgumentException", e)
@@ -102,7 +85,130 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  /** Android 10+ (Q): scoped storage via MediaStore + RELATIVE_PATH. */
+  @ReactMethod
+  fun pickSaveDirectory(promise: Promise) {
+    try {
+      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
+            Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+            Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+      }
+      val current = getCurrentActivity()
+      if (current == null) {
+        promise.reject(ERR_NO_ACTIVITY, "No current activity to launch picker")
+        return
+      }
+      current.startActivityForResult(intent, REQ_PICK_TREE)
+      promise.resolve(true)
+    } catch (e: Throwable) {
+      promise.reject(ERR_UNKNOWN, e.message ?: "Failed to launch picker", e)
+    }
+  }
+
+  @ReactMethod
+  fun persistPickedTreeUri(uri: String, promise: Promise) {
+    try {
+      val u = Uri.parse(uri)
+      reactApplicationContext.contentResolver.takePersistableUriPermission(
+          u,
+          Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+      )
+      promise.resolve(true)
+    } catch (e: Throwable) {
+      promise.reject(ERR_UNKNOWN, e.message ?: "Failed to persist tree permission", e)
+    }
+  }
+
+  @ReactMethod
+  fun addListener(@Suppress("UNUSED_PARAMETER") eventName: String) {}
+
+  @ReactMethod
+  fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Int) {}
+
+  /**
+   * List content:// URIs of images that live under a MediaStore RELATIVE_PATH
+   * prefixed with [relativePathPrefix] (e.g. "Pictures/TelegraphDownloader/...").
+   * Used by the history detail screen as a fallback when the history row has no
+   * recorded image_paths (e.g. an image was downloaded but the row predates the
+   * per-image detail columns, or a re-run skipped everything and the URI list
+   * was empty). Returns [] on Android < Q or for custom-tree storage.
+   */
+  @ReactMethod
+  fun listGalleryImages(relativePathPrefix: String, promise: Promise) {
+    try {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+        promise.resolve(Arguments.createArray())
+        return
+      }
+      val resolver: ContentResolver = reactApplicationContext.contentResolver
+      val prefix = relativePathPrefix.trim()
+      val projection = arrayOf(
+          MediaStore.MediaColumns.RELATIVE_PATH,
+          MediaStore.Images.ImageColumns._ID,
+      )
+      val selection: String
+      val selectionArgs: Array<String>
+      if (prefix.isEmpty()) {
+        selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+        selectionArgs = arrayOf("$BASE_RELATIVE_PATH/%")
+      } else {
+        // Escaping only matters if the prefix contains %, _, or the escape char.
+        val escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        selection =
+            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? ESCAPE '\\'"
+        selectionArgs = arrayOf("%$escaped%")
+      }
+      val cursor = try {
+        resolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            projection,
+            selection,
+            selectionArgs,
+            "${MediaStore.Images.ImageColumns.DATE_TAKEN} ASC, ${MediaStore.MediaColumns._ID} ASC",
+        )
+      } catch (_: Throwable) {
+        null
+      }
+      val out = Arguments.createArray()
+      if (cursor != null) {
+        cursor.use {
+          while (it.moveToNext()) {
+            val rel = it.getString(0) ?: continue
+            if (rel.startsWith(BASE_RELATIVE_PATH)) {
+              // Build a stable content URI: content://media/external/images/media/<id>
+              val id = it.getLong(1)
+              out.pushString(
+                  Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
+                      .toString()
+              )
+            }
+          }
+        }
+      }
+      promise.resolve(out)
+    } catch (e: Throwable) {
+      promise.reject(ERR_UNKNOWN, e.message ?: "Failed to list gallery images", e)
+    }
+  }
+
+  fun handlePickedTreeUri(uri: String) {
+    try {
+      reactApplicationContext.contentResolver.takePersistableUriPermission(
+          Uri.parse(uri),
+          Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+      )
+    } catch (_: Throwable) {
+    }
+    val ctx = reactApplicationContext
+    if (ctx.hasActiveReactInstance()) {
+      val payload: WritableMap = Arguments.createMap()
+      payload.putString("uri", uri)
+      ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        .emit(EVENT_TREE_PICKED, payload)
+    }
+  }
+
   private fun saveOnAndroidQ(
       source: File,
       subfolder: String,
@@ -135,26 +241,18 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
         }
         FileInputStream(source).use { input -> copyStream(input, output) }
       }
-      // Flip IS_PENDING off so the image becomes visible in the gallery.
       val updateValues = ContentValues().apply { put(Images.Media.IS_PENDING, 0) }
       resolver.update(mediaUri, updateValues, null, null)
       return mediaUri
     } catch (t: Throwable) {
-      // Roll back the pending row so we don't leave orphan 0-byte entries.
       try {
         resolver.delete(mediaUri, null, null)
       } catch (_: Throwable) {
-        // Best-effort; ignore cleanup failure.
       }
       throw t
     }
   }
 
-  /**
-   * Android 7-9: legacy File API. We still don't require WRITE_EXTERNAL_STORAGE
-   * for our own scoped area on 7-9, but the OS will only let us write into
-   * Pictures/ on devices where the user hasn't revoked the implicit grant.
-   */
   private fun saveOnAndroidLegacy(
       source: File,
       subfolder: String,
@@ -176,11 +274,90 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       targetFile.outputStream().use { output -> copyStream(input, output) }
     }
 
-    // Notify MediaScanner so the gallery picks up the new file.
     val uri = Uri.fromFile(targetFile)
     reactApplicationContext
         .sendBroadcast(android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, uri))
     return uri
+  }
+
+  private fun saveToCustomTree(
+      source: File,
+      subfolder: String,
+      filename: String,
+      mimeType: String,
+      treeUri: String,
+  ): Uri {
+    val resolver = reactApplicationContext.contentResolver
+    val tree = Uri.parse(treeUri)
+    val treeDocId = try { DocumentsContract.getTreeDocumentId(tree) } catch (_: Throwable) { null }
+    val treeDocUri = if (treeDocId != null) DocumentsContract.buildDocumentUriUsingTree(tree, treeDocId) else tree
+
+    // Ensure TelegraphDownloader folder exists under the tree root
+    val appFolderUri = getOrCreateChildDir(resolver, tree, treeDocUri, BASE_FOLDER) ?: throw IOException("Failed to ensure app folder")
+
+    val targetDirUri = if (subfolder.isEmpty() || subfolder == BASE_RELATIVE_PATH) {
+      appFolderUri
+    } else {
+      // subfolder here is like "Pictures/TelegraphDownloader/<name>" or just relative path; extract leaf
+      val leaf = subfolder.substringAfterLast('/').ifEmpty { subfolder }
+      getOrCreateChildDir(resolver, tree, appFolderUri, leaf) ?: appFolderUri
+    }
+
+    val fileUri = DocumentsContract.createDocument(resolver, targetDirUri, mimeType, filename)
+        ?: throw IOException("createDocument returned null")
+
+    resolver.openOutputStream(fileUri)?.use { output ->
+      FileInputStream(source).use { input -> copyStream(input, output) }
+    } ?: throw IOException("openOutputStream returned null")
+
+    reactApplicationContext.sendBroadcast(
+        Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, fileUri),
+    )
+    return fileUri
+  }
+
+  private fun getOrCreateChildDir(
+      resolver: ContentResolver,
+      tree: Uri,
+      parentUri: Uri,
+      displayName: String,
+  ): Uri? {
+    val existingId = findFileId(resolver, parentUri, displayName)
+    if (existingId != null) {
+      return DocumentsContract.buildDocumentUriUsingTree(tree, existingId)
+    }
+    return try {
+      DocumentsContract.createDocument(resolver, parentUri, DocumentsContract.Document.MIME_TYPE_DIR, displayName)
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  private fun findFileId(
+      resolver: ContentResolver,
+      parentUri: Uri,
+      displayName: String,
+  ): String? {
+    val cursor = try {
+      resolver.query(
+          parentUri,
+          arrayOf(
+              DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+              DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+          ),
+          null,
+          null,
+          null,
+      )
+    } catch (_: Throwable) { null } ?: return null
+    cursor.use {
+      while (it.moveToNext()) {
+        val id = it.getString(0) ?: continue
+        val name = it.getString(1) ?: continue
+        if (name == displayName) return id
+      }
+    }
+    return null
   }
 
   private fun copyStream(input: FileInputStream, output: OutputStream) {
@@ -211,7 +388,6 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
 
   private fun sanitizePathSegment(input: String): String {
     if (input.isEmpty()) return ""
-    // Strip reserved chars + control chars + path separators.
     val cleaned =
         input
             .replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001f]"), "_")
@@ -224,9 +400,6 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     const val NAME = "TelegraphDownloader"
 
     private const val BASE_FOLDER = "TelegraphDownloader"
-    // We pass this as MediaStore.Images.Media.RELATIVE_PATH directly;
-    // the MediaStore implementation prefixes it with the appropriate
-    // primary volume (e.g. /storage/emulated/0/Pictures/...).
     private const val BASE_RELATIVE_PATH = "Pictures/$BASE_FOLDER"
 
     const val ERR_INVALID = "ERR_INVALID_FILENAME"
@@ -234,6 +407,10 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     const val ERR_EMPTY = "ERR_SOURCE_EMPTY"
     const val ERR_IO = "ERR_IO"
     const val ERR_PERMISSION = "ERR_PERMISSION"
+    const val ERR_NO_ACTIVITY = "ERR_NO_ACTIVITY"
     const val ERR_UNKNOWN = "ERR_UNKNOWN"
+
+    const val REQ_PICK_TREE = 0x7744
+    const val EVENT_TREE_PICKED = "TelegraphDownloader:treePicked"
   }
 }

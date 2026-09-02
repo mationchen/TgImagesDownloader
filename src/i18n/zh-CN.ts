@@ -1,8 +1,55 @@
 export const zhCN = {
   // Home
-  'home.title': 'Telegraph 图片下载器',
-  'home.subtitle': '粘贴 Telegraph 链接，批量保存图片到本地',
-  'home.inputPlaceholder': '粘贴 Telegraph 链接（一行一个，支持多链接）',
+  'home.title': '网页图片批量下载器',
+  'home.subtitle': '粘贴网页链接，批量保存图片到本地',
+  'home.inputPlaceholder': '粘贴网页链接（一行一个，支持多链接）',
+  // Tabs
+  'tab.batch': '批量下载',
+  'tab.history': '下载记录',
+  'tab.settings': '设置',
+  // Settings
+  'settings.title': '设置',
+  'settings.placeholder': '设置项即将推出',
+  'settings.saving': '保存中…',
+  'settings.saved': '已保存',
+  // Subfolder template
+  'settings.subfolder.title': '下载子目录',
+  'settings.subfolder.titleLabel': '使用文章标题',
+  'settings.subfolder.titleHint': '默认行为：每篇文章存到一个同名子目录',
+  'settings.subfolder.domainLabel': '使用来源域名',
+  'settings.subfolder.domainHint': '比如 telegra.ph / everia.club / i.ibb.co',
+  'settings.subfolder.customLabel': '自定义',
+  'settings.subfolder.customHint': '所有下载放到这个固定的子目录',
+  'settings.subfolder.customPlaceholder': '例如 MyDownloads',
+  'settings.subfolder.preview': '当前子目录：{value}',
+  // Naming rule
+  'settings.naming.title': '图片命名规则',
+  'settings.naming.dateIndexLabel': '日期 + 六位序号',
+  'settings.naming.dateIndexHint':
+    '默认：20260902_000001.webp 等同次下载内的递增序号',
+  'settings.naming.titleLabel': '标题 + 六位序号',
+  'settings.naming.titleHint': '比如 000001_coco.jpg',
+  'settings.naming.originalLabel': '保留源文件名',
+  'settings.naming.originalHint': '使用图片源 URL 的原始文件名',
+  // Storage location
+  'settings.storage.title': '保存目录',
+  'settings.storage.current': '当前保存路径：{path}',
+  'settings.storage.picturesLabel': '相册 (Pictures)',
+  'settings.storage.picturesHint': '默认：在系统相册的 Pictures 目录下',
+  'settings.storage.downloadsLabel': '下载 (Download)',
+  'settings.storage.downloadsHint': '放在系统 Download 目录下',
+  'settings.storage.customLabel': '自定义文件夹',
+  'settings.storage.customHint': '在 Android 上选择任意文件夹（SAF）',
+  'settings.storage.pickFolder': '选择文件夹',
+  'settings.storage.changeFolder': '更换文件夹',
+  'settings.storage.clearFolder': '清除已选文件夹',
+  'settings.unsupported.title': '暂不支持',
+  'settings.unsupported.body': '当前设备不支持此操作。',
+  // Input behaviour
+  'settings.input.title': '输入设置',
+  'settings.input.autoFillLabel': '自动填充剪贴板链接',
+  'settings.input.autoFillHint':
+    '打开 App 时自动将剪贴板中的链接填入输入框（仅识别 http(s) URL）',
   'home.parse': '解析图片',
   'home.parseShort': '解析',
   'home.clear': '清空',
@@ -22,9 +69,11 @@ export const zhCN = {
   'preview.imageLoadFailed': '图片加载失败',
   'preview.imageProbe': '检测原因',
   'preview.imageProbeOk': '图片源可正常访问，请重试',
-  'preview.imageProbeHotlink': '图片源站禁止外部访问（防盗链），请从 Telegram 查看',
+  'preview.imageProbeHotlink':
+    '图片源站禁止外部访问（防盗链），请从 Telegram 查看',
   'preview.imageProbeHttp': '图片源返回错误（HTTP {status}）',
   'preview.imageProbeNetwork': '网络连接失败，无法访问图片源',
+  'preview.blockedShort': '源站保护',
   'preview.backToHome': '返回首页',
 
   // Download (Phase 4: single image inline; Phase 5: full screen)
@@ -74,34 +123,82 @@ export const zhCN = {
   'history.cancel': '取消',
   'history.reparseHint': '重新解析该文章',
   'history.deleteConfirmTitle': '删除记录',
-  'history.deleteConfirmMsg': '将删除这条历史记录，但不会删除已下载的图片文件。',
+  'history.deleteConfirmMsg':
+    '将删除这条历史记录，但不会删除已下载的图片文件。',
   'history.deleteConfirmOk': '删除',
   'history.timeFormat': '{time}',
+  'history.detail.notFound': '记录不存在',
+  'history.detail.title': '下载记录详情',
+  'history.detail.noDetail': '此记录没有图片详情',
+  'history.detail.noDetailHint': '该记录较早下载，尚未保存每张图的路径。',
+  'history.detail.time': '时间：{time}',
+  'history.detail.imageCount': '图片 {count} 张',
+  'history.detail.success': '成功 {count}',
+  'history.detail.failed': '失败 {count}',
+  'history.loadingMore': '加载更多…',
+  'history.endOfList': '已加载当前页全部记录',
+  'history.backToTop': '回到顶部',
+  'history.backToTopA11y': '回到当前页顶部',
+  'history.prevPage': '上一页',
+  'history.nextPage': '下一页',
+  'history.pageIndicator': '第 {from}-{to} 条 / 共 {total} 条',
+  'history.loadFailed': '加载失败，下拉重试',
+  'history.searchPlaceholder': '搜索标题',
+  'history.searchClearA11y': '清空搜索',
+  'history.filterByDate': '按日期筛选',
+  'history.filterDateSelected': '日期：{date}',
+  'history.clearFilter': '清除筛选',
+  'history.noMatch': '没有找到匹配的记录',
+  'history.dateDone': '确定',
+  'history.dateCancel': '取消',
+  'history.calWeekdays': '一二三四五六日',
+  'history.calMonthFormat': '{year}年{month}月',
+  'history.calPrevMonth': '上一月',
+  'history.calNextMonth': '下一月',
+  'history.calGoToday': '回到今天',
+  'history.calDayCount': '{count} 条',
+  'history.calSelectDay': '选择这一天',
+  'history.calA11yDay': '{date}，{count} 条记录',
 
   // Privacy (MVP §30 / §39)
   'privacy.title': '隐私政策',
   'privacy.link': '隐私政策',
+  'privacy.effectiveDate': '生效日期：2026 年 9 月 2 日',
   'privacy.intro':
-    '本应用的所有解析、下载与历史记录均在你自己的设备上完成。',
-  'privacy.noAccount': '本应用不要求用户注册账号。',
-  'privacy.noUpload':
-    '本应用不会上传你下载的图片，也不会将你的 Telegraph 链接发送到任何服务器（除直接访问 telegra.ph 获取文章内容外）。',
-  'privacy.noCollect':
+    '本应用（以下简称“网页图片批量下载工具”）由 Alexandia Chen Studio（网站：acstd.com）开发。本隐私政策说明我们在你使用本应用时如何处理你的信息。我们尊重并保护你的隐私，所有解析、下载与历史记录均在你自己的设备上完成。',
+  'privacy.section1Title': '一、我们收集的信息',
+  'privacy.section1Body':
     '本应用不主动收集个人身份信息、通讯录、定位或 Telegram 账号信息。',
-  'privacy.localHistory': '下载历史仅保存在设备本地数据库中，不上传云端。',
-  'privacy.permissions':
-    '本应用会请求通知权限（仅用于显示下载进度）和访问剪贴板（仅用于识别你粘贴的链接）。',
-  'privacy.contact':
-    '如对本隐私政策有疑问，请通过应用商店或开发者渠道联系我们。',
+  'privacy.section2Title': '二、我们如何处理信息',
+  'privacy.section2Body':
+    '本应用不会上传你下载的图片，也不会将你的链接发送到任何服务器，仅在你的授权下直接访问你输入的目标网站以获取页面内容并下载图片到你的设备相册。',
+  'privacy.section3Title': '三、本地存储',
+  'privacy.section3Body':
+    '下载历史（含文章链接、标题、图片数量、已下载图片的内容 URI）仅保存在你设备的本地 SQLite 数据库中，不上传云端。你可以在 App 内随时删除单条或全部历史记录。',
+  'privacy.section4Title': '四、申请的系统权限',
+  'privacy.section4Body':
+    '本应用会申请通知权限（仅用于显示下载进度通知）、前台服务权限（用于在后台继续下载）、存储/MediaStore 权限（用于保存图片到相册）以及剪贴板读取权限（仅用于识别你粘贴的链接）。上述权限可随时在系统设置中关闭，关闭后对应功能不可用，但不会影响其他功能。',
+  'privacy.section5Title': '五、第三方分享与系统分享意图',
+  'privacy.section5Body':
+    '当你从其他 App（浏览器、Telegram 等）选择“分享到本应用”时，系统会通过 Android Share Intent 把文本传给我们。我们仅解析其中的 URL 用于下载，不会上传该文本到任何服务端，也不会保留超过本次会话所需的时长。',
+  'privacy.section6Title': '六、儿童隐私',
+  'privacy.section6Body':
+    '本应用面向一般用户，不针对 14 岁以下儿童收集任何信息。',
+  'privacy.section7Title': '七、隐私政策的变更',
+  'privacy.section7Body':
+    '如本政策发生更新，我们会在 App 内重新展示并更新顶部生效日期。重大变更会通过应用商店更新说明告知。',
+  'privacy.section8Title': '八、联系我们',
+  'privacy.section8Body':
+    '如对本隐私政策有任何疑问、意见或投诉，请通过开发者网站 acstd.com 上的渠道联系我们。',
 
   // Errors
-  'error.invalidUrl': '请输入有效的 Telegraph 链接',
+  'error.invalidUrl': '请输入有效的网页链接',
   'error.empty': '请输入链接',
   'error.network': '网络连接失败，请检查网络后重试',
   'error.timeout': '网络连接超时，请检查网络后重试',
-  'error.httpNotFound': 'Telegraph 页面不存在或无法访问',
-  'error.httpForbidden': 'Telegraph 页面访问被拒绝',
-  'error.httpServerError': 'Telegraph 服务器错误，请稍后重试',
+  'error.httpNotFound': '页面不存在或无法访问',
+  'error.httpForbidden': '页面访问被拒绝',
+  'error.httpServerError': '服务器错误，请稍后重试',
   'error.parseError': '页面解析失败',
   'error.noImages': '这个页面没有找到可下载的图片',
   'error.responseTooLarge': '页面过大，暂不支持',
@@ -111,6 +208,7 @@ export const zhCN = {
   'common.cancel': '取消',
   'common.retry': '重试',
   'common.loading': '加载中…',
+  'common.back': '返回',
 } as const;
 
 export type ZhKeys = keyof typeof zhCN;

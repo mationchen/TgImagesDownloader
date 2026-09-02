@@ -3,6 +3,10 @@ export interface TelegraphArticle {
   title: string;
   images: TelegraphImage[];
   parsedAt: number;
+  /** Page type: telegra.ph or a generic web page. */
+  source?: 'telegraph' | 'web';
+  /** How many pages were merged when the article spans multiple pages. */
+  pageCount?: number;
 }
 
 export interface TelegraphImage {

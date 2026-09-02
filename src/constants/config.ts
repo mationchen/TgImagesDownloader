@@ -1,6 +1,6 @@
 export const APP_CONFIG = {
-  appName: 'Telegraph Downloader',
-  appNameZh: 'Telegraph 图片下载器',
+  appName: 'Web Image Batch Downloader',
+  appNameZh: '网页图片批量下载器',
 
   // Telegraph page fetch limits
   telegraph: {
@@ -16,10 +16,19 @@ export const APP_CONFIG = {
 
   // Future phases
   download: {
-    defaultConcurrency: 3,
+    // Downloads to this class of image CDN are latency-bound (long time to
+    // first byte, near-instant body). A higher default concurrency keeps more
+    // connections in flight so a few slow-TTFB responses don't serialise the
+    // whole batch. The queue gates actual parallelism via getConcurrency().
+    defaultConcurrency: 8,
     concurrencyOptions: [1, 2, 3, 5, 8] as const,
     defaultMaxRetries: 3,
     defaultSaveDir: 'Pictures/TelegraphDownloader',
+    // Hard upper bound for a single image download (TTFB + body). Kept above
+    // the page read timeout because image CDNs can stall on first byte for
+    // tens of seconds yet still succeed — aborting too early (e.g. at 30s)
+    // made slow-but-valid images fail and then burn retries re-downloading.
+    fetchTimeoutMs: 90_000,
   },
 
   i18n: {

@@ -11,6 +11,7 @@ import {
   computeSummary,
   downloadReducer,
   type DownloadState,
+  initDownloadState,
 } from './downloadReducer';
 import {
   createQueue,
@@ -29,7 +30,8 @@ import {
   notifyDownloadStop,
 } from '../services/downloadNotifier';
 import {APP_CONFIG} from '../constants/config';
-import {sanitizeFilename} from '../utils/filename';
+import {computeRelativePath, getSettingsSync} from '../services/settingsService';
+import {PermissionsAndroid, Platform} from 'react-native';
 
 interface DownloadContextValue {
   state: DownloadState;
@@ -77,14 +79,44 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   stateRef.current = state;
 
   const buildRunner = useCallback((): TaskRunner => {
-    return async (image, subfolder, ctx) => {
+    return async (image, subfolder, ctx, meta) => {
+      console.log(
+        `[DL] runTask start id=${image.id} index=${image.index} subfolder=${subfolder} articleTitle=${meta?.articleTitle ?? ''}`,
+      );
       // Translate DownloadOutcome -> TaskOutcome so the queue doesn't have
       // to know about MediaStore / blob-util specifics.
-      const r = await downloadImageToMediaStore(image, subfolder, {
-        signal: ctx.signal,
-        onProgress: ctx.onProgress,
-      });
+      const settings = getSettingsSync();
+      const r = await downloadImageToMediaStore(
+        image,
+        subfolder,
+        {
+          signal: ctx.signal,
+          onProgress: (downloaded, total) => {
+            console.log(
+              `[DL] progress id=${image.id} ${downloaded}/${total}`,
+            );
+            ctx.onProgress(downloaded, total);
+          },
+        },
+        meta
+          ? {
+              articleTitle: meta.articleTitle,
+              indexCounter: meta.indexCounter,
+              customTreeUri:
+                settings.storageType === 'custom'
+                  ? settings.customTreeUri
+                  : undefined,
+            }
+          : {
+              customTreeUri:
+                settings.storageType === 'custom'
+                  ? settings.customTreeUri
+                  : undefined,
+            },
+      );
+      console.log(`[DL] runTask done id=${image.id} kind=${r.kind} code=${(r as {code?: string}).code ?? ''}`);
       if (ctx.signal.aborted) {
+        console.log(`[DL] cancelled mid-task id=${image.id}`);
         return {kind: 'cancelled'} satisfies TaskOutcome;
       }
       if (r.kind === 'success') {
@@ -107,8 +139,28 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
 
   const start = useCallback(
     (article: TelegraphArticle, images: TelegraphImage[]) => {
-      const subfolder = sanitizeFilename(article.title, 80) || 'untitled';
-      dispatch({type: 'init', article, images, subfolder});
+      const settings = getSettingsSync();
+      const relativePath = computeRelativePath(article, settings);
+      console.log(
+        `[DL] start title="${article.title}" images=${images.length} relativePath=${relativePath} storageType=${settings.storageType}`,
+      );
+      // Legacy Android (< Q) needs WRITE_EXTERNAL_STORAGE for File API path;
+      // Q+ uses MediaStore and needs no runtime permission.
+      if (Platform.OS === 'android' && Platform.Version < 29) {
+        PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE).then(granted => {
+          if (!granted) {
+            PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE).then(result => {
+              console.log(`[DL] WRITE_EXTERNAL_STORAGE request result=${result}`);
+            });
+          } else {
+            console.log('[DL] WRITE_EXTERNAL_STORAGE already granted');
+          }
+        });
+      } else {
+        console.log(`[DL] storage permission not needed (Q+ MediaStore) SDK=${Platform.Version}`);
+      }
+      const initState = initDownloadState(article, images, relativePath);
+      dispatch({type: 'init', article, images, subfolder: relativePath});
 
       // Kick off a foreground service + progress notification (spec §20/§21).
       if (isNotifierSupported() && images.length > 0) {
@@ -121,19 +173,33 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
         });
       }
 
-      // Build the queue against the *next* state; we let the queue read
-      // from stateRef so we don't have to wait for the reducer to apply.
+      // Use a synchronous queueState so drain's live/cap check sees the
+      // effect of `task/started` immediately, without waiting for React to
+      // flush. This fixes the "0/48 → all 48 started at once → 17 parallel
+      // → all interrupted" storm seen in the logs.
       queueRef.current?.cancel();
+      let queueState: DownloadState = initState;
       const q = createQueue({
-        getState: () => stateRef.current,
-        dispatch: a => dispatch(a),
+        getState: () => queueState,
+        dispatch: a => {
+          queueState = downloadReducer(queueState, a);
+          console.log(`[DL] dispatch ${a.type} id=${(a as {id?: string}).id ?? ''} rev=${queueState.rev} live=${Object.values(queueState.tasks).filter(t => t.status === 'downloading').length}`);
+          dispatch(a);
+        },
         runTask: buildRunner(),
         getConcurrency: () => concurrencyRef.current,
       });
       queueRef.current = q;
-      // The `init` dispatch above hasn't flushed yet; defer start a tick so
-      // getState() in the queue picks up the new task list.
-      Promise.resolve().then(() => q.start());
+      console.log(`[DL] queue created total=${initState.taskOrder.length} concurrency=${concurrencyRef.current}`);
+      // Keep stateRef in sync for consumers that read React state (Home badge etc.)
+      // The queue's own state is synchronous; React state will catch up via dispatch.
+      setTimeout(() => {
+        console.log(
+          `[DL] queue start queueStateLen=${queueState.taskOrder.length} stateRefLen=${stateRef.current.taskOrder.length}`,
+        );
+        q.start();
+        console.log(`[DL] queue start called isActive=${q.isActive()}`);
+      }, 16);
     },
     [buildRunner],
   );
@@ -176,10 +242,14 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   //   - finished -> completion summary, then auto-stop after a delay
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
+    console.log(
+      `[DL] notification effect finished=${summary.finished} success=${summary.success} failed=${summary.failed} skipped=${summary.skipped} downloading=${summary.downloading}`,
+    );
     if (!isNotifierSupported()) return;
     if (!notifyStartedForRef.current) return;
 
     if (summary.finished) {
+      console.log(`[DL] download FINISHED success=${summary.success} failed=${summary.failed} skipped=${summary.skipped} total=${summary.total}`);
       notifyDownloadFinished(
         summary.success,
         summary.failed,

@@ -1,40 +1,45 @@
-import React, {useCallback, useEffect} from 'react';
-import {
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
-import {DownloadProgress} from '../components/DownloadProgress';
-import {DownloadItem} from '../components/DownloadItem';
-import {useDownload} from '../store/DownloadContext';
-import type {DownloadState} from '../store/downloadReducer';
-import {upsertHistory, type HistoryStatus} from '../services/historyService';
-import {sanitizeFilename} from '../utils/filename';
-import type {RootStackScreenProps} from '../navigation/types';
-import {t} from '../i18n';
+import React, { useCallback, useEffect } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { DownloadProgress } from '../components/DownloadProgress';
+import { DownloadItem } from '../components/DownloadItem';
+import { useDownload } from '../store/DownloadContext';
+import type { DownloadState } from '../store/downloadReducer';
+import { upsertHistory, type HistoryStatus } from '../services/historyService';
+
+import type { RootStackScreenProps } from '../navigation/types';
+import { t } from '../i18n';
 
 type Props = RootStackScreenProps<'Download'>;
 
-export const DownloadScreen: React.FC<Props> = ({route, navigation}) => {
-  const {article, images} = route.params;
-  const {
-    state,
-    summary,
-    start,
-    pause,
-    resume,
-    cancel,
-    retryFailed,
-  } = useDownload();
+export const DownloadScreen: React.FC<Props> = ({ route, navigation }) => {
+  const params = route.params as
+    | {
+        article: import('../types/telegraph').TelegraphArticle;
+        images: import('../types/telegraph').TelegraphImage[];
+      }
+    | undefined;
+  const article = params?.article;
+  const images = params?.images;
+  const { state, summary, start, pause, resume, cancel, retryFailed } =
+    useDownload();
 
-  // Auto-start on mount so the user lands on a screen that's already
-  // doing work. If they navigated back here via a retry, `start` is called
-  // again with the new (failed) image set.
+  // Auto-start on mount when launched from Preview with article/images.
+  // When opened from Home's download icon (no params), just show existing queue.
   useEffect(() => {
-    start(article, images);
+    console.log(
+      `[DL] DownloadScreen mount article=${article?.title ?? 'none'} images=${
+        images?.length ?? 0
+      } stateTotal=${state.taskOrder.length}`,
+    );
+    if (article && images && images.length > 0) {
+      console.log(`[DL] DownloadScreen start called`);
+      start(article, images);
+    } else {
+      console.log(
+        `[DL] DownloadScreen no params, showing existing queue total=${state.taskOrder.length}`,
+      );
+    }
     // We intentionally only run this once per (article,images) identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -44,28 +49,73 @@ export const DownloadScreen: React.FC<Props> = ({route, navigation}) => {
   const wroteHistory = React.useRef(false);
   useEffect(() => {
     if (!summary.finished || wroteHistory.current) return;
+    // When opened via Home icon without params, article is undefined — use state.article
+    const histArticle = article ?? state.article;
+    const histImages = images ?? state.article.images;
+    if (!histArticle?.url) return;
     wroteHistory.current = true;
-    const saveDir = `Pictures/TelegraphDownloader/${
-      sanitizeFilename(article.title, 80) || 'untitled'
-    }`;
+    const saveDir = state.subfolder || `Pictures/TelegraphDownloader/untitled`;
+
+    // Build per-image arrays in *download order* (which is the order images
+    // were passed in — i.e. reversed from the article's source order, so the
+    // gallery's time-sorted view matches the article's reading order).
+    const imageUrls: string[] = [];
+    const imagePaths: string[] = [];
+    const savePaths: string[] = [];
+    const order = state.taskOrder ?? [];
+    for (let i = 0; i < histImages.length; i += 1) {
+      const image = histImages[i];
+      if (!image) continue;
+      const taskId = order[i] ?? image.id;
+      const task = state.tasks[taskId];
+      imageUrls.push(image.url);
+      if (task?.localPath) {
+        imagePaths.push(task.localPath);
+        savePaths.push(`${saveDir}/${image.filename}`);
+      }
+    }
+
     upsertHistory({
-      url: article.url,
-      title: article.title,
+      url: histArticle.url,
+      title: histArticle.title,
       imageCount: summary.total,
       successCount: summary.success,
       failedCount: summary.failed,
       skippedCount: summary.skipped,
       saveDir,
       status: deriveStatus(summary.failed, summary.total),
+      imageUrls,
+      imagePaths,
+      savePaths,
     }).catch(() => {
       // History persistence is best-effort; never block the UI on it.
     });
-  }, [summary, article]);
+  }, [
+    summary,
+    article,
+    images,
+    state.article,
+    state.taskOrder,
+    state.tasks,
+    state.subfolder,
+  ]);
 
   // Reset the "already wrote" guard whenever a new batch starts.
   useEffect(() => {
     wroteHistory.current = false;
   }, [route.params]);
+
+  useEffect(() => {
+    console.log(
+      `[DL] summary total=${summary.total} success=${summary.success} failed=${
+        summary.failed
+      } downloading=${summary.downloading} pending=${
+        summary.pending
+      } finished=${summary.finished} progress=${summary.progressPercent.toFixed(
+        1,
+      )}%`,
+    );
+  }, [summary]);
 
   function deriveStatus(failed: number, total: number): HistoryStatus {
     if (failed === 0) return 'done';
@@ -73,23 +123,36 @@ export const DownloadScreen: React.FC<Props> = ({route, navigation}) => {
     return 'partial';
   }
 
-  const handleBack = useCallback(() => {
+  const handleClose = useCallback(() => {
     if (!summary.finished) {
       cancel();
     }
-    navigation.navigate('Home');
+    navigation.navigate('Tabs', { screen: 'Batch' });
   }, [summary.finished, cancel, navigation]);
+
+  const handleBack = useCallback(() => {
+    // Return to Home without cancelling — download continues in background
+    navigation.navigate('Tabs', { screen: 'Batch' });
+  }, [navigation]);
 
   useEffect(() => {
     navigation.setOptions({
       headerTitle: t('download.title'),
-      headerBackVisible: false,
-      headerLeft: headerLeftFactory(handleBack),
+      headerTitleAlign: 'center',
+      headerRight: () => (
+        <Pressable
+          onPress={handleClose}
+          hitSlop={12}
+          style={styles.headerCloseBtn}
+        >
+          <Text style={styles.headerCloseText}>{t('download.close')}</Text>
+        </Pressable>
+      ),
     });
-  }, [navigation, handleBack]);
+  }, [navigation, handleClose]);
 
   const renderItem = useCallback(
-    ({item}: {item: string}) => {
+    ({ item }: { item: string }) => {
       const task = state.tasks[item];
       const image = state.article.images.find(i => i.id === item);
       return <DownloadItem task={task} image={image} />;
@@ -102,8 +165,8 @@ export const DownloadScreen: React.FC<Props> = ({route, navigation}) => {
   const primaryLabel = summary.finished
     ? t('download.done')
     : state.isPaused
-    ? t('download.resume')
-    : t('download.pause');
+    ? '▶'
+    : '⏸';
 
   const onPrimary = summary.finished
     ? () => undefined
@@ -114,17 +177,6 @@ export const DownloadScreen: React.FC<Props> = ({route, navigation}) => {
   const secondaryLabel = summary.finished
     ? t('download.backToHome')
     : t('download.cancelAll');
-
-function headerLeftFactory(onPress: () => void) {
-  // eslint-disable-next-line react/no-unstable-nested-components
-  return function HeaderBack() {
-    return (
-      <Pressable onPress={onPress} hitSlop={12}>
-        <Text style={styles.headerBack}>{t('download.close')}</Text>
-      </Pressable>
-    );
-  };
-}
 
   return (
     <SafeAreaView style={styles.safe} edges={['left', 'right', 'bottom']}>
@@ -153,29 +205,35 @@ function headerLeftFactory(onPress: () => void) {
         {summary.failed > 0 && summary.finished ? (
           <Pressable
             onPress={retryFailed}
-            style={({pressed}) => [
+            style={({ pressed }) => [
               styles.retryBtn,
               pressed && styles.pressed,
-            ]}>
+            ]}
+          >
             <Text style={styles.retryText}>
-              {t('download.retryFailed', {count: summary.failed})}
+              {t('download.retryFailed', { count: summary.failed })}
             </Text>
           </Pressable>
         ) : null}
         <Pressable
           onPress={onPrimary}
           disabled={summary.finished}
-          style={({pressed}) => [
+          style={({ pressed }) => [
             styles.primaryBtn,
             state.isPaused ? styles.resumeBtn : styles.pauseBtn,
             summary.finished && styles.disabled,
             pressed && !summary.finished && styles.pressed,
-          ]}>
+          ]}
+        >
           <Text style={styles.primaryText}>{primaryLabel}</Text>
         </Pressable>
         <Pressable
           onPress={handleBack}
-          style={({pressed}) => [styles.secondaryBtn, pressed && styles.pressed]}>
+          style={({ pressed }) => [
+            styles.secondaryBtn,
+            pressed && styles.pressed,
+          ]}
+        >
           <Text style={styles.secondaryText}>{secondaryLabel}</Text>
         </Pressable>
       </View>
@@ -186,7 +244,11 @@ function headerLeftFactory(onPress: () => void) {
 function hasHotlinkFailure(state: DownloadState): boolean {
   for (const id of state.taskOrder) {
     const task = state.tasks[id];
-    if (task && task.status === 'failed' && /ERR_HOTLINK_BLOCKED/.test(task.error ?? '')) {
+    if (
+      task &&
+      task.status === 'failed' &&
+      /ERR_HOTLINK_BLOCKED|ERR_BLOCKED_HOST/.test(task.error ?? '')
+    ) {
       return true;
     }
   }
@@ -194,7 +256,7 @@ function hasHotlinkFailure(state: DownloadState): boolean {
 }
 
 const styles = StyleSheet.create({
-  safe: {flex: 1, backgroundColor: '#fff'},
+  safe: { flex: 1, backgroundColor: '#fff' },
   list: {
     paddingVertical: 4,
   },
@@ -222,8 +284,8 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
-  pauseBtn: {backgroundColor: '#f0a020'},
-  resumeBtn: {backgroundColor: '#1976d2'},
+  pauseBtn: { backgroundColor: '#f0a020' },
+  resumeBtn: { backgroundColor: '#1976d2' },
   primaryText: {
     color: '#fff',
     fontSize: 14,
@@ -260,10 +322,18 @@ const styles = StyleSheet.create({
   pressed: {
     opacity: 0.75,
   },
-  headerBack: {
+  headerCloseBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: '#1976d2',
+    borderRadius: 6,
+    marginRight: 4,
+  },
+  headerCloseText: {
     color: '#1976d2',
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 13,
+    fontWeight: '600',
   },
   hotlinkNotice: {
     paddingHorizontal: 16,

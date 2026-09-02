@@ -212,40 +212,45 @@ export function computeSummary(state: DownloadState): DownloadSummary {
   let downloading = 0;
   let paused = 0;
   let cancelled = 0;
+  let progressSum = 0;
   for (const id of state.taskOrder) {
     const t = state.tasks[id];
     if (!t) continue;
     switch (t.status) {
       case 'success':
         success += 1;
+        progressSum += 100;
         break;
       case 'failed':
         failed += 1;
+        progressSum += 0;
         break;
       case 'skipped':
         skipped += 1;
+        progressSum += 100;
         break;
       case 'downloading':
         downloading += 1;
+        progressSum += t.progress ?? 0;
         break;
       case 'paused':
         paused += 1;
+        progressSum += t.progress ?? 0;
         break;
       case 'cancelled':
         cancelled += 1;
+        progressSum += 0;
         break;
       case 'pending':
         pending += 1;
+        progressSum += 0;
         break;
     }
   }
   const total = state.taskOrder.length;
   const finished = total > 0 && pending === 0 && downloading === 0 && paused === 0;
-  // Use "success + skipped" as effective done progress so a skipped file still
-  // counts toward the bar. failed/cancelled/paused are still in flight.
-  const effectiveDone = success + skipped;
   const progressPercent =
-    total > 0 ? Math.min(100, (effectiveDone / total) * 100) : 0;
+    total > 0 ? Math.min(100, progressSum / total) : 0;
   return {
     total,
     success,

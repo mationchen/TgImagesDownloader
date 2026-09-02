@@ -29,6 +29,7 @@ export type TaskRunner = (
   image: TelegraphImage,
   subfolder: string,
   ctx: TaskRunnerContext,
+  meta?: {articleTitle: string; indexCounter?: number},
 ) => Promise<TaskOutcome>;
 
 export interface TaskRunnerContext {
@@ -146,10 +147,12 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
   }
 
   async function drain(): Promise<void> {
+    console.log(`[DL] drain start active=${active} cap=${getConcurrency()} pending=${countPending(getState())} live=${countActive(getState())}`);
     try {
       while (active) {
         const state = getState();
         if (state.isPaused) {
+          console.log('[DL] drain paused');
           // Wait for the resume action to bump state.rev.
           await waitForRev(state.rev, getState);
           continue;
@@ -157,14 +160,17 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
         const cap = getConcurrency();
         const live = countActive(state);
         if (live >= cap) {
+          console.log(`[DL] drain at cap live=${live} cap=${cap}`);
           // Wait for any task to finish (rev bump) before pulling more.
           await waitForRev(state.rev, getState);
           continue;
         }
         const next = pickNextPending(state, inFlight.keys());
+        console.log(`[DL] drain pick next=${next?.imageId ?? 'none'} live=${live} cap=${cap} total=${state.taskOrder.length}`);
         if (!next) {
           // No more work; check if anything is still in flight.
           if (live === 0) {
+            console.log('[DL] drain no more work, stopping');
             active = false;
             dispatch({type: 'queue/stopped'});
             return;
@@ -185,15 +191,18 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
           }
         }
         inFlight.set(next.imageId, ctrl);
+        console.log(`[DL] dispatch task/started id=${next.imageId}`);
         dispatch({type: 'task/started', id: next.imageId, startedAt: Date.now()});
         runOne(next.imageId, ctrl).finally(() => {
           inFlight.delete(next.imageId);
+          console.log(`[DL] inFlight deleted id=${next.imageId} remaining=${inFlight.size}`);
         });
         // Yield to the event loop so React can flush the dispatch.
         await microtask();
       }
     } finally {
       drainPromise = null;
+      console.log('[DL] drain end');
     }
   }
 
@@ -201,13 +210,17 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
     let attempt = 1;
     while (true) {
       if (ctrl.signal.aborted) {
+        console.log(`[DL] runOne aborted before start id=${id}`);
         // Task was cancelled between scheduling and execution.
         return;
       }
       const state = getState();
       const subfolder = state.subfolder;
       const image = state.article.images.find(i => i.id === id);
+      const articleTitle = state.article.title;
+      const indexCounter = state.taskOrder.indexOf(id) + 1;
       if (!image) {
+        console.log(`[DL] runOne no image id=${id}`);
         dispatch({
           type: 'task/failed',
           id,
@@ -216,21 +229,25 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
         });
         return;
       }
+      console.log(`[DL] runOne attempt=${attempt} id=${id} url=${image.url}`);
       const ctx: TaskRunnerContext = {
         signal: ctrl.signal,
         attempt,
-        onProgress: (downloaded, total) =>
+        onProgress: (downloaded, total) => {
+          console.log(`[DL] task/progress id=${id} ${downloaded}/${total}`);
           dispatch({
             type: 'task/progress',
             id,
             downloadedBytes: downloaded,
             totalBytes: total,
-          }),
+          });
+        },
       };
       let outcome: TaskOutcome;
       try {
-        outcome = await runTask(image, subfolder, ctx);
+        outcome = await runTask(image, subfolder, ctx, {articleTitle, indexCounter});
       } catch (err) {
+        console.log(`[DL] runTask threw id=${id} err=${String(err)}`);
         // Defensive: runTask should never throw, but if it does, treat as
         // a hard failure so the slot can move on.
         outcome = {
@@ -240,6 +257,7 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
         };
       }
 
+      console.log(`[DL] runOne outcome id=${id} kind=${outcome.kind}`);
       if (outcome.kind === 'cancelled') {
         dispatch({type: 'task/cancelled', id});
         return;
@@ -254,6 +272,7 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
       }
       // failed — maybe retry
       const isRetryable = isRetryableCode(outcome.code);
+      console.log(`[DL] failed id=${id} code=${outcome.code} retryable=${isRetryable} attempt=${attempt}`);
       if (!isRetryable || attempt > maxRetries) {
         dispatch({
           type: 'task/failed',
@@ -297,6 +316,14 @@ function countActive(state: DownloadState): number {
   let n = 0;
   for (const id of state.taskOrder) {
     if (state.tasks[id]?.status === 'downloading') n += 1;
+  }
+  return n;
+}
+
+function countPending(state: DownloadState): number {
+  let n = 0;
+  for (const id of state.taskOrder) {
+    if (state.tasks[id]?.status === 'pending') n += 1;
   }
   return n;
 }
@@ -385,8 +412,9 @@ function isRetryableCode(code: string): boolean {
   if (/^HTTP_(5\d\d|429|408)$/.test(code)) return true;
   if (/^HTTP_404$/.test(code)) return false;
   if (/^HTTP_403$/.test(code)) return false;
-  // Anti-hotlink protection is deterministic — retrying won't help.
+  // Anti-hotlink / blocked-host protection is deterministic — retrying won't help.
   if (/^ERR_HOTLINK_BLOCKED$/.test(code)) return false;
+  if (/^ERR_BLOCKED_HOST/.test(code)) return false;
   if (/^ERR_DOWNLOAD$/.test(code)) return true;
   if (/^ERR_IO$/.test(code)) return true;
   if (/^ERR_NATIVE$/.test(code)) return false;

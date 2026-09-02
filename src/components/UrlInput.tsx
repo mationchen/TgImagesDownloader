@@ -5,10 +5,12 @@ import {
   Text,
   TextInput,
   View,
+  type StyleProp,
+  type ViewStyle,
 } from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {extractWebUrls, validateWebUrl} from '../utils/url';
 import {t} from '../i18n';
-import {extractTelegraphUrls, isValidTelegraphUrl} from '../utils/url';
 
 type Props = {
   value: string;
@@ -16,6 +18,10 @@ type Props = {
   onSubmit: () => void;
   onClear: () => void;
   loading: boolean;
+  /** Optional outer container style. When provided, the bottom padding
+   * (originally for tab-bar safe-area) is dropped so the input can be
+   * placed inside the scroll/layout flow. */
+  containerStyle?: StyleProp<ViewStyle>;
 };
 
 export const UrlInput: React.FC<Props> = ({
@@ -24,16 +30,22 @@ export const UrlInput: React.FC<Props> = ({
   onSubmit,
   onClear,
   loading,
+  containerStyle,
 }) => {
   const insets = useSafeAreaInsets();
-  const detected = extractTelegraphUrls(value);
+  const detected = extractWebUrls(value);
   const detectedCount = detected.length;
   const firstUrl = detected[0];
-  const firstValid = firstUrl ? isValidTelegraphUrl(firstUrl) : false;
+  const firstValid = firstUrl ? validateWebUrl(firstUrl) === null : false;
   const canParse = !loading && firstValid;
 
   return (
-    <View style={[styles.wrap, {paddingBottom: 12 + insets.bottom}]}>
+    <View
+      style={
+        containerStyle
+          ? [styles.wrap, containerStyle]
+          : [styles.wrap, {paddingBottom: 12 + insets.bottom}]
+      }>
       <TextInput
         style={styles.input}
         multiline

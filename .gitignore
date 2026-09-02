@@ -65,6 +65,8 @@ backup/
 
 # Temporary files created by Metro to check the health of the file watcher
 .metro-health-check*
+# Metro log captured to the repo root during development
+metro.log
 
 # testing
 /coverage
@@ -76,5 +78,8 @@ backup/
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
-´ò°üAAB.bat
-´ò°üApk.bat
+ï¿½ï¿½ï¿½AAB.bat
+ï¿½ï¿½ï¿½Apk.bat
+
+# Project uses npm; yarn.lock is not needed
+yarn.lock

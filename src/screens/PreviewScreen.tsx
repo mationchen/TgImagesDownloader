@@ -1,23 +1,23 @@
-import React, {useCallback, useMemo, useState} from 'react';
-import {Pressable, StyleSheet, Text, View} from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
-import {ImageGrid} from '../components/ImageGrid';
-import {ViewerModal} from '../components/ViewerModal';
-import type {RootStackScreenProps} from '../navigation/types';
-import {t} from '../i18n';
-import type {TelegraphImage} from '../types/telegraph';
+import React, { useCallback, useMemo, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { ImageGrid } from '../components/ImageGrid';
+import { ViewerModal } from '../components/ViewerModal';
+import type { RootStackScreenProps } from '../navigation/types';
+import { t } from '../i18n';
+import type { TelegraphImage } from '../types/telegraph';
 
 type Props = RootStackScreenProps<'Preview'>;
 
 type SelectionMode = 'all' | 'none' | 'mixed';
 
-export const PreviewScreen: React.FC<Props> = ({route, navigation}) => {
-  const {article} = route.params;
+export const PreviewScreen: React.FC<Props> = ({ route, navigation }) => {
+  const { article } = route.params;
   const [images, setImages] = useState<TelegraphImage[]>(article.images);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   React.useLayoutEffect(() => {
-    navigation.setOptions({title: article.title.slice(0, 32) || 'Preview'});
+    navigation.setOptions({ title: article.title.slice(0, 32) || 'Preview' });
   }, [navigation, article.title]);
 
   const selectionMode = useMemo<SelectionMode>(() => {
@@ -40,16 +40,16 @@ export const PreviewScreen: React.FC<Props> = ({route, navigation}) => {
   const toggleOne = useCallback((target: TelegraphImage) => {
     setImages(prev =>
       prev.map(img =>
-        img.id === target.id ? {...img, selected: !img.selected} : img,
+        img.id === target.id ? { ...img, selected: !img.selected } : img,
       ),
     );
   }, []);
 
-  const handleItemPress = useCallback((_img: TelegraphImage, idx: number) => {
+  const handlePreview = useCallback((_img: TelegraphImage, idx: number) => {
     setViewerIndex(idx);
   }, []);
 
-  const handleItemLongPress = useCallback(
+  const handleToggle = useCallback(
     (img: TelegraphImage) => {
       toggleOne(img);
     },
@@ -57,36 +57,39 @@ export const PreviewScreen: React.FC<Props> = ({route, navigation}) => {
   );
 
   const selectAll = useCallback(() => {
-    setImages(prev => prev.map(img => ({...img, selected: true})));
+    setImages(prev => prev.map(img => ({ ...img, selected: true })));
   }, []);
 
   const deselectAll = useCallback(() => {
-    setImages(prev => prev.map(img => ({...img, selected: false})));
+    setImages(prev => prev.map(img => ({ ...img, selected: false })));
   }, []);
 
   const invertSelection = useCallback(() => {
-    setImages(prev => prev.map(img => ({...img, selected: !img.selected})));
+    setImages(prev => prev.map(img => ({ ...img, selected: !img.selected })));
   }, []);
 
   const closeViewer = useCallback(() => setViewerIndex(null), []);
 
   const startDownload = useCallback(() => {
     if (selectedImages.length === 0) return;
+    // Download in reverse source order so the saved MediaStore entries show
+    // up in the system gallery in *forward* source order (the last image in
+    // the article appears first because it was inserted last).
     navigation.navigate('Download', {
       article,
-      images: selectedImages,
+      images: [...selectedImages].reverse(),
     });
   }, [article, selectedImages, navigation]);
 
   return (
-    <SafeAreaView style={styles.safe} edges={['left', 'right']}>
+    <SafeAreaView style={styles.safe} edges={['left', 'right', 'bottom']}>
       <View style={styles.header}>
         <Text style={styles.headerLabel}>{t('preview.title')}</Text>
         <Text style={styles.headerTitle} numberOfLines={2}>
           {article.title}
         </Text>
         <Text style={styles.headerCount}>
-          {t('preview.imageCount', {count: images.length})}
+          {t('preview.imageCount', { count: images.length })}
         </Text>
       </View>
 
@@ -113,8 +116,8 @@ export const PreviewScreen: React.FC<Props> = ({route, navigation}) => {
 
       <ImageGrid
         images={images}
-        onItemPress={handleItemPress}
-        onItemLongPress={handleItemLongPress}
+        onItemPress={handlePreview}
+        onItemToggle={handleToggle}
       />
 
       <View style={styles.footer}>
@@ -127,11 +130,12 @@ export const PreviewScreen: React.FC<Props> = ({route, navigation}) => {
           <Pressable
             onPress={startDownload}
             disabled={selectedCount === 0}
-            style={({pressed}) => [
+            style={({ pressed }) => [
               styles.startBtn,
               selectedCount === 0 && styles.startBtnDisabled,
               pressed && selectedCount > 0 && styles.startBtnPressed,
-            ]}>
+            ]}
+          >
             <Text style={styles.startBtnText}>
               {t('preview.startDownload')}
             </Text>
@@ -157,19 +161,25 @@ type BtnProps = {
   testID?: string;
 };
 
-const ToolbarButton: React.FC<BtnProps> = ({label, onPress, active, testID}) => {
+const ToolbarButton: React.FC<BtnProps> = ({
+  label,
+  onPress,
+  active,
+  testID,
+}) => {
   return (
     <Text
       testID={testID}
       onPress={onPress}
-      style={[styles.toolbarBtn, active && styles.toolbarBtnActive]}>
+      style={[styles.toolbarBtn, active && styles.toolbarBtnActive]}
+    >
       {label}
     </Text>
   );
 };
 
 const styles = StyleSheet.create({
-  safe: {flex: 1, backgroundColor: '#fff'},
+  safe: { flex: 1, backgroundColor: '#fff' },
   header: {
     paddingHorizontal: 16,
     paddingTop: 12,
@@ -260,8 +270,8 @@ const styles = StyleSheet.create({
   },
   pathHint: {
     paddingHorizontal: 16,
-    paddingBottom: 6,
-    paddingTop: 2,
+    paddingBottom: 14,
+    paddingTop: 6,
     fontSize: 11,
     color: '#888',
     backgroundColor: '#fff',

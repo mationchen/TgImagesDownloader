@@ -82,7 +82,7 @@ android {
         abi {
             enable true
             reset()
-            //Ö»°üº¬ÕâÈıÖÖ¼Ü¹¹
+            //Ö»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¼Ü¹ï¿½
             include "armeabi-v7a", "arm64-v8a", "x86_64"
             universalApk false
         }
@@ -111,9 +111,8 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
-            // debug ²»¼Ó applicationIdSuffix£¬ÈÃ `npx react-native run-android`
-            // Ä¬ÈÏ°´ base applicationId Æô¶¯ debug °ü£¨CLI ²»»á×Ô¶¯¼Ó suffix£©¡£
-            // release ¼Ó `.release` suffix ÊµÏÖ¹²´æ£¨ÓÃ»§ÒÑ×°µÄ release ²»±»¸²¸Ç£©¡£
+            // Display name suffix so the two launchers are visually distinct
+            resValue "string", "app_name", "ç½‘é¡µå›¾ç‰‡æ‰¹é‡ä¸‹è½½å™¨ Debug"
             versionNameSuffix "-debug"
         }
         release {

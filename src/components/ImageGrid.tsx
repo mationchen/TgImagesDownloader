@@ -11,9 +11,10 @@ import {ThumbnailItem} from './ThumbnailItem';
 
 type Props = {
   images: TelegraphImage[];
+  /** 点击图片区域：预览大图 */
   onItemPress: (image: TelegraphImage, index: number) => void;
-  onItemLongPress?: (image: TelegraphImage, index: number) => void;
-  /** Number of grid columns. Default 3. */
+  /** 点击对勾区域：切换选中/取消选中 */
+  onItemToggle: (image: TelegraphImage) => void;
   columns?: number;
 };
 
@@ -23,7 +24,7 @@ const SIDE_PADDING = 8;
 export const ImageGrid: React.FC<Props> = ({
   images,
   onItemPress,
-  onItemLongPress,
+  onItemToggle,
   columns = 3,
 }) => {
   const {width} = useWindowDimensions();
@@ -39,15 +40,11 @@ export const ImageGrid: React.FC<Props> = ({
           image={item}
           size={cellSize}
           onPress={img => onItemPress(img, img.index - 1)}
-          onLongPress={
-            onItemLongPress
-              ? img => onItemLongPress(img, img.index - 1)
-              : undefined
-          }
+          onToggle={onItemToggle}
         />
       );
     },
-    [cellSize, onItemPress, onItemLongPress],
+    [cellSize, onItemPress, onItemToggle],
   );
 
   const keyExtractor = useCallback((item: TelegraphImage) => item.id, []);

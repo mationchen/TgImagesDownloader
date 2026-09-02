@@ -1,4 +1,5 @@
-import {open, type DB} from '@op-engineering/op-sqlite';
+import { open, type DB } from '@op-engineering/op-sqlite';
+import type { Scalar } from '@op-engineering/op-sqlite';
 
 /**
  * Local SQLite history for Telegraph download batches.
@@ -33,6 +34,18 @@ export interface HistoryRecord {
   createdAt: number;
   /** UTC milliseconds. */
   updatedAt: number;
+  /** Source image URLs (in download order). Empty for records made before v2. */
+  imageUrls: string[];
+  /**
+   * MediaStore content:// URIs for each successfully saved image (in download
+   * order). Empty for records made before v2.
+   */
+  imagePaths: string[];
+  /**
+   * Relative MediaStore paths (e.g. "Pictures/TelegraphDownloader/foo/001.jpg")
+   * in download order. Empty for records made before v2.
+   */
+  savePaths: string[];
 }
 
 export type HistoryStatus = 'done' | 'partial' | 'failed' | 'cancelled';
@@ -46,6 +59,12 @@ export interface UpsertHistoryInput {
   skippedCount: number;
   saveDir: string;
   status: HistoryStatus;
+  /** Source image URLs (in download order). Defaults to []. */
+  imageUrls?: string[];
+  /** MediaStore content URIs for saved images (in download order). */
+  imagePaths?: string[];
+  /** Relative MediaStore paths for saved images (in download order). */
+  savePaths?: string[];
 }
 
 export interface HistoryRow {
@@ -57,6 +76,9 @@ export interface HistoryRow {
   skippedCount: number;
   saveDir: string;
   status: HistoryStatus;
+  imageUrls: string[];
+  imagePaths: string[];
+  savePaths: string[];
 }
 
 /** A migration step: brings the schema from `version - 1` to `version`. */
@@ -70,7 +92,7 @@ interface Migration {
   up: (db: DB) => Promise<void>;
 }
 
-export const LATEST_SCHEMA_VERSION = 1;
+export const LATEST_SCHEMA_VERSION = 3;
 
 /**
  * Migration manifest (AGENTS.md §4). Add a new entry here for every future
@@ -109,6 +131,51 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    version: 2,
+    description:
+      'Per-image detail columns (image_urls/image_paths/save_paths) + settings KV table',
+    up: async db => {
+      // Add per-image detail columns. Stored as JSON-encoded arrays so we
+      // don't need a separate child table for the MVP. Defaults to '[]' so
+      // existing rows survive the migration cleanly (AGENTS.md §4).
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN image_urls TEXT NOT NULL DEFAULT '[]';`,
+      );
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN image_paths TEXT NOT NULL DEFAULT '[]';`,
+      );
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN save_paths TEXT NOT NULL DEFAULT '[]';`,
+      );
+
+      // Settings KV store (used by SettingsScreen for download preferences).
+      await db.execute(
+        `CREATE TABLE IF NOT EXISTS settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );`,
+      );
+    },
+  },
+  {
+    version: 3,
+    description:
+      'downloaded_images ledger: source image URLs that were successfully saved, for duplicate skip',
+    up: async db => {
+      // Tracks every successfully-saved source image URL so a later "re-download
+      // the same URL" can be skipped without fetching the bytes again. Keyed by
+      // source URL (not by generated filename) because the filename embeds the
+      // date, so it is not a stable identity across days.
+      await db.execute(
+        `CREATE TABLE IF NOT EXISTS downloaded_images (
+          url TEXT PRIMARY KEY,
+          saved_at INTEGER NOT NULL
+        );`,
+      );
+    },
+  },
 ];
 
 /** Single in-process connection, lazily opened and migrated once. */
@@ -131,13 +198,15 @@ export function initHistoryDatabase(): Promise<void> {
 }
 
 async function doInit(): Promise<void> {
-  db = open({name: getDatabaseName()});
+  db = open({ name: getDatabaseName() });
   await runMigrations(db);
 }
 
 export function getDb(): DB {
   if (!db) {
-    throw new Error('history database not initialised; call initHistoryDatabase() first');
+    throw new Error(
+      'history database not initialised; call initHistoryDatabase() first',
+    );
   }
   return db;
 }
@@ -188,17 +257,25 @@ export function getLatestSchemaVersion(): number {
 
 /**
  * Insert or update a history row for a given URL (one row per Telegraph page).
- * On conflict, the counters and status are overwritten with the latest run.
+ * On conflict, the counters, status, and per-image details are overwritten
+ * with the latest run — EXCEPT the per-image URI arrays: if the new run
+ * produced an empty array (e.g. a pure "already downloaded, skip" re-run), the
+ * previously recorded URIs are kept instead of being wiped, so the history
+ * detail grid keeps its thumbnails and the save path list stays meaningful.
  */
 export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
   await initHistoryDatabase();
   const d = getDb();
   const now = Date.now();
+  const imageUrls = JSON.stringify(input.imageUrls ?? []);
+  const imagePaths = JSON.stringify(input.imagePaths ?? []);
+  const savePaths = JSON.stringify(input.savePaths ?? []);
   await d.execute(
     `INSERT INTO history
        (url, title, image_count, success_count, failed_count, skipped_count,
-        save_dir, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        save_dir, status, image_urls, image_paths, save_paths,
+        created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(url) DO UPDATE SET
        title = excluded.title,
        image_count = excluded.image_count,
@@ -207,6 +284,9 @@ export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
        skipped_count = excluded.skipped_count,
        save_dir = excluded.save_dir,
        status = excluded.status,
+       image_urls = CASE WHEN excluded.image_urls = '[]' THEN history.image_urls ELSE excluded.image_urls END,
+       image_paths = CASE WHEN excluded.image_paths = '[]' THEN history.image_paths ELSE excluded.image_paths END,
+       save_paths = CASE WHEN excluded.save_paths = '[]' THEN history.save_paths ELSE excluded.save_paths END,
        updated_at = excluded.updated_at;`,
     [
       input.url,
@@ -217,25 +297,169 @@ export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
       input.skippedCount,
       input.saveDir,
       input.status,
+      imageUrls,
+      imagePaths,
+      savePaths,
       now,
       now,
     ],
   );
 }
 
-/** List most recent records, newest first. */
-export async function listHistory(limit = 100): Promise<HistoryRecord[]> {
+/**
+ * List history records newest first, paginated.
+ *
+ * @param limit   Max rows to return (cap, not page size).
+ * @param offset  Number of rows to skip from the newest end (>=0 for
+ *                chronological pages: 0 = newest 0..limit-1, 100 = next page
+ *                starting at row 101, etc.).
+ * @param filter  Optional title / date-range predicate applied in SQL so the
+ *                pagination math stays correct under filtering.
+ */
+export async function listHistory(
+  limit = 100,
+  offset = 0,
+  filter?: HistoryListFilter,
+): Promise<HistoryRecord[]> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const { whereSql, params } = buildHistoryFilter(filter);
+  const res = await d.execute(
+    `SELECT id, url, title, image_count, success_count, failed_count,
+            skipped_count, save_dir, status, image_urls, image_paths, save_paths,
+            created_at, updated_at
+     FROM history
+     ${whereSql}
+     ORDER BY created_at DESC
+     LIMIT ? OFFSET ?;`,
+    [...params, limit, Math.max(0, offset)],
+  );
+  return (res.rows ?? []).map(rowToRecord);
+}
+
+/** Optional predicate for {@link listHistory} / {@link countHistory}. */
+export interface HistoryListFilter {
+  /** Case-insensitive substring match on the article title. */
+  title?: string;
+  /** Inclusive lower bound on created_at (UTC ms). */
+  createdAfterMs?: number;
+  /** Exclusive upper bound on created_at (UTC ms). */
+  createdBeforeMs?: number;
+}
+
+/**
+ * Turn a {@link HistoryListFilter} into a reusable SQL WHERE clause + params.
+ * The caller owns the placeholders, so this helper returns only the WHERE
+ * text and bound params (no LIMIT/OFFSET).
+ */
+function buildHistoryFilter(filter?: HistoryListFilter): {
+  whereSql: string;
+  params: Scalar[];
+} {
+  if (!filter) return { whereSql: '', params: [] };
+  const clauses: string[] = [];
+  const params: Scalar[] = [];
+  const title = filter.title?.trim();
+  if (title) {
+    clauses.push('title LIKE ?');
+    // Escape LIKE wildcards so user input matches literally.
+    const escaped = title.replace(/[\\%_]/g, m => `\\${m}`);
+    params.push(`%${escaped}%`);
+  }
+  if (filter.createdAfterMs != null) {
+    clauses.push('created_at >= ?');
+    params.push(filter.createdAfterMs);
+  }
+  if (filter.createdBeforeMs != null) {
+    clauses.push('created_at < ?');
+    params.push(filter.createdBeforeMs);
+  }
+  return {
+    whereSql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
+    params,
+  };
+}
+
+/**
+ * Count history rows (optionally matching a filter). Used by the
+ * HistoryScreen to decide whether a "next page" exists when the user has
+ * loaded the current one fully.
+ */
+export async function countHistory(
+  filter?: HistoryListFilter,
+): Promise<number> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const { whereSql, params } = buildHistoryFilter(filter);
+  const res = await d.execute(
+    `SELECT COUNT(*) AS n FROM history ${whereSql};`,
+    params,
+  );
+  const row = (res.rows ?? [])[0] as { n?: number } | undefined;
+  return Number(row?.n ?? 0);
+}
+
+/** Per-local-day record counts for the given inclusive local-day window. */
+export interface DayCountRecord {
+  /** Start-of-local-day timestamp (UTC ms). */
+  dayStartMs: number;
+  /** Number of history rows created that local day. */
+  count: number;
+}
+
+/**
+ * Aggregate history rows by the *user's local day* (AGENTS.md §6: persist UTC,
+ * interpret in device-local time). The calendar uses this to show how many
+ * records exist under each date.
+ *
+ * @param fromStartOfDayMs  Start-of-local-day of the window start (UTC ms).
+ * @param toStartOfDayMs    Start-of-local-day of the window end (UTC ms,
+ *                          exclusive) — i.e. fromStartOfDayMs + N*DAY_MS.
+ */
+export async function listDailyCounts(
+  fromStartOfDayMs: number,
+  toStartOfDayMs: number,
+): Promise<DayCountRecord[]> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const res = await d.execute(
+    `SELECT created_at FROM history
+     WHERE created_at >= ? AND created_at < ?;`,
+    [fromStartOfDayMs, toStartOfDayMs],
+  );
+  const counts = new Map<number, number>();
+  for (const row of res.rows ?? []) {
+    const ts = Number((row as { created_at?: unknown }).created_at ?? NaN);
+    if (!Number.isFinite(ts)) continue;
+    const dayStart = startOfLocalDay(ts);
+    counts.set(dayStart, (counts.get(dayStart) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([dayStartMs, count]) => ({ dayStartMs, count }))
+    .sort((a, b) => a.dayStartMs - b.dayStartMs);
+}
+
+function startOfLocalDay(ts: number): number {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** Fetch a single history record by id (returns null if not found). */
+export async function getHistory(id: number): Promise<HistoryRecord | null> {
   await initHistoryDatabase();
   const d = getDb();
   const res = await d.execute(
     `SELECT id, url, title, image_count, success_count, failed_count,
-            skipped_count, save_dir, status, created_at, updated_at
+            skipped_count, save_dir, status, image_urls, image_paths, save_paths,
+            created_at, updated_at
      FROM history
-     ORDER BY created_at DESC
-     LIMIT ?;`,
-    [limit],
+     WHERE id = ?
+     LIMIT 1;`,
+    [id],
   );
-  return (res.rows ?? []).map(rowToRecord);
+  const row = (res.rows ?? [])[0];
+  return row ? rowToRecord(row) : null;
 }
 
 /** Delete a single history row (does NOT touch downloaded files). */
@@ -276,9 +500,92 @@ function rowToRecord(row: Record<string, unknown>): HistoryRecord {
     skippedCount: Number(row.skipped_count),
     saveDir: String(row.save_dir),
     status: String(row.status) as HistoryStatus,
+    imageUrls: decodeJsonArray(row.image_urls),
+    imagePaths: decodeJsonArray(row.image_paths),
+    savePaths: decodeJsonArray(row.save_paths),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function decodeJsonArray(value: unknown): string[] {
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Downloaded-image URL ledger                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Record that {@code url} was successfully saved. Used so re-downloading the
+ * same source URL can be skipped (AGENTS.md duplicate policy).
+ */
+export async function markImageDownloaded(url: string): Promise<void> {
+  await initHistoryDatabase();
+  const d = getDb();
+  await d.execute(
+    `INSERT INTO downloaded_images (url, saved_at)
+     VALUES (?, ?)
+     ON CONFLICT(url) DO NOTHING;`,
+    [url, Date.now()],
+  );
+}
+
+/** True if {@code url} was already successfully downloaded before. */
+export async function isImageDownloaded(url: string): Promise<boolean> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const res = await d.execute(
+    `SELECT url FROM downloaded_images WHERE url = ? LIMIT 1;`,
+    [url],
+  );
+  return (res.rows ?? []).length > 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings KV                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Settings KV store. Each key holds a string; callers are responsible for
+ * encoding values (e.g. JSON for complex values). Used by the SettingsScreen
+ * for download-folder / naming-rule preferences (see module 5).
+ */
+export async function getSetting(key: string): Promise<string | null> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const res = await d.execute(
+    `SELECT value FROM settings WHERE key = ? LIMIT 1;`,
+    [key],
+  );
+  const row = (res.rows ?? [])[0];
+  return row ? String(row.value) : null;
+}
+
+export async function setSetting(key: string, value: string): Promise<void> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const now = Date.now();
+  await d.execute(
+    `INSERT INTO settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at;`,
+    [key, value, now],
+  );
+}
+
+export async function deleteSetting(key: string): Promise<void> {
+  await initHistoryDatabase();
+  const d = getDb();
+  await d.execute(`DELETE FROM settings WHERE key = ?;`, [key]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -288,4 +595,4 @@ export function _testMigrations(): Migration[] {
   return MIGRATIONS;
 }
 
-export type {DB};
+export type { DB };

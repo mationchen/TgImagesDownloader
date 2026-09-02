@@ -1,4 +1,4 @@
-import {NativeModules} from 'react-native';
+import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
 
 export type SaveResult = {
   /** content:// URI on Android Q+, file:// URI on Android < Q. */
@@ -20,6 +20,10 @@ export type SaveError = {
   message: string;
 };
 
+export type TreePickedEvent = {
+  uri: string;
+};
+
 /**
  * Lightweight wrapper around the native TelegraphDownloader module.
  *
@@ -34,10 +38,34 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
         localFilePath: string,
         subfolder: string,
         filename: string,
+        customTreeUri?: string,
       ): Promise<SaveResult>;
+      listGalleryImages?(relativePathPrefix: string): Promise<string[]>;
+      pickSaveDirectory?(): Promise<boolean>;
+      persistPickedTreeUri?(uri: string): Promise<boolean>;
     }
   | undefined;
 
 export function isDownloaderAvailable(): boolean {
   return TelegraphDownloader != null;
+}
+
+const nativeEmitter =
+  Platform.OS === 'android' && TelegraphDownloader != null
+    ? new NativeEventEmitter(NativeModules.TelegraphDownloader as never)
+    : null;
+
+/**
+ * Subscribe to the native "user picked a directory tree" event. The native
+ * module emits `TelegraphDownloader:treePicked` after the system SAF picker
+ * returns; the JS side persists the URI in settings and updates the UI.
+ */
+export function subscribeTreePicked(
+  listener: (event: TreePickedEvent) => void,
+): () => void {
+  if (!nativeEmitter) return () => undefined;
+  const sub = nativeEmitter.addListener('TelegraphDownloader:treePicked', ((
+    payload: TreePickedEvent,
+  ) => listener(payload)) as never);
+  return () => sub.remove();
 }
