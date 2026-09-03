@@ -1,7 +1,7 @@
 <<<<<<< HEAD
 # ImagesBatchDownloader
 网页图片批量下载工具
-为LSP开发的Tg链接的一大堆图片的下载工具
+为LSP开发的网页链接的中有一大堆图片的下载工具
 =======
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
 
