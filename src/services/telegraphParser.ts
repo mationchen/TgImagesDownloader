@@ -18,7 +18,7 @@
  * public interface.
  */
 
-import {APP_CONFIG} from '../constants/config';
+import { APP_CONFIG } from '../constants/config';
 import {
   isSafeImageUrl,
   isSafeFetchUrl,
@@ -27,15 +27,15 @@ import {
   validateTelegraphUrl,
   validateWebUrl,
 } from '../utils/url';
-import {inferExtFromUrl} from '../utils/mime';
-import {isRetryableHttpStatus, withRetry} from '../utils/retry';
+import { inferExtFromUrl } from '../utils/mime';
+import { isRetryableHttpStatus, withRetry } from '../utils/retry';
 import type {
   ParseErrorCode,
   ParseResult,
   TelegraphArticle,
   TelegraphImage,
 } from '../types/telegraph';
-import {defaultAdapterRegistry} from './adapters/registry';
+import { defaultAdapterRegistry } from './adapters/registry';
 
 class HttpError extends Error {
   status: number;
@@ -51,9 +51,41 @@ class ResponseTooLargeError extends Error {
   }
 }
 
+export type ParseStage =
+  /** Resolving/normalising the URL through the adapter registry. */
+  | 'resolving'
+  /** Fetching the page HTML from the source host. */
+  | 'fetching'
+  /** Parsing the fetched HTML into a structured article. */
+  | 'parsing';
+
+export interface ParseArticleOptions {
+  /**
+   * Fires when the parser enters a major stage. Used by the Home screen to
+   * render real-time feedback (stage label + cancel button) so the user
+   * knows what's happening while a fetch may take a long time.
+   */
+  onStage?: (stage: ParseStage) => void;
+  /**
+   * Optional AbortSignal: when fired, the fetch will reject with an
+   * AbortError so the caller can recover quickly. Supported for both the
+   * Telegraph and generic-web parser paths.
+   */
+  signal?: AbortSignal;
+}
+
+/** User-facing label for a parser stage, keyed by i18n namespace `parseStage.*`. */
+export const PARSE_STAGE_I18N: Record<ParseStage, string> = {
+  resolving: 'parseStage.resolving',
+  fetching: 'parseStage.fetching',
+  parsing: 'parseStage.parsing',
+};
+
 export async function parseTelegraphArticle(
   rawUrl: string,
+  opts: ParseArticleOptions = {},
 ): Promise<ParseResult> {
+  opts.onStage?.('resolving');
   const normalized = normalizeTelegraphUrl(rawUrl ?? '');
   if (!normalized) {
     return fail(
@@ -63,20 +95,26 @@ export async function parseTelegraphArticle(
     );
   }
 
+  opts.onStage?.('fetching');
   let html: string;
   try {
-    html = await fetchHtml(normalized);
+    html = await fetchHtml(normalized, opts.signal);
   } catch (err) {
     return mapFetchError(err);
   }
 
+  opts.onStage?.('parsing');
   let title: string;
   let images: TelegraphImage[];
   try {
     title = extractTitle(html) || 'untitled';
     images = extractImages(html, normalized);
   } catch (err) {
-    return fail('PARSE_ERROR', '页面解析失败', String((err as Error)?.message ?? err));
+    return fail(
+      'PARSE_ERROR',
+      '页面解析失败',
+      String((err as Error)?.message ?? err),
+    );
   }
 
   if (images.length === 0) {
@@ -90,7 +128,7 @@ export async function parseTelegraphArticle(
     parsedAt: Date.now(),
     source: 'telegraph',
   };
-  return {ok: true, article};
+  return { ok: true, article };
 }
 
 /**
@@ -103,9 +141,11 @@ export async function parseTelegraphArticle(
  */
 export async function parseWebArticle(
   rawUrl: string,
-  opts: {maxPages?: number} = {},
+  opts: { maxPages?: number } & ParseArticleOptions = {},
 ): Promise<ParseResult> {
-  const maxPages = Math.min(50, Math.max(1, opts.maxPages ?? 20));
+  const { maxPages: rawMax, onStage, signal } = opts;
+  const maxPages = Math.min(50, Math.max(1, rawMax ?? 20));
+  onStage?.('resolving');
   const normalized = normalizeWebUrl(rawUrl ?? '');
   if (!normalized || !isSafeFetchUrl(normalized)) {
     return fail(
@@ -119,17 +159,18 @@ export async function parseWebArticle(
   let title = '';
   const firstArticleUrl = normalized;
   const fetchedUrls: string[] = [];
-  let pageHtmls: {url: string; html: string}[] = [];
+  let pageHtmls: { url: string; html: string }[] = [];
 
   // Fetch the first page; if it carries pagination links we follow them
+  onStage?.('fetching');
   let firstHtml: string;
   try {
-    firstHtml = await fetchHtml(normalized);
+    firstHtml = await fetchHtml(normalized, signal);
   } catch (err) {
     return mapFetchError(err);
   }
   fetchedUrls.push(normalized);
-  pageHtmls.push({url: normalized, html: firstHtml});
+  pageHtmls.push({ url: normalized, html: firstHtml });
   title = extractTitle(firstHtml) || 'untitled';
 
   // Resolve site-specific adapter based on the first page's HTML.
@@ -141,13 +182,9 @@ export async function parseWebArticle(
   const paginationUrls = mergedPagination.slice(0, maxPages - 1);
   if (paginationUrls.length === 0) {
     // No pagination detected — single page.
-    const images = extractWithAdapter(
-      firstHtml,
-      normalized,
-      seen,
-      adapter,
-      {skipRelatedCards: true},
-    );
+    const images = extractWithAdapter(firstHtml, normalized, seen, adapter, {
+      skipRelatedCards: true,
+    });
     if (images.length === 0) {
       return fail('NO_IMAGES', '这个页面没有找到可下载的图片');
     }
@@ -174,12 +211,20 @@ export async function parseWebArticle(
   for (let n = 2; n <= maxPages && urlsToFetch.length < maxPages - 1; n += 1) {
     if (existingNumbers.has(n)) continue;
     const constructed = paginationUrl(normalized, n);
-    if (!isSafeFetchUrl(constructed) || fetchedUrls.includes(constructed) || urlsToFetch.includes(constructed)) continue;
+    if (
+      !isSafeFetchUrl(constructed) ||
+      fetchedUrls.includes(constructed) ||
+      urlsToFetch.includes(constructed)
+    )
+      continue;
     // Only add constructed URL if the page likely exists (heuristic: there was
     // at least pagination). We will 404-skip at fetch time if it doesn't.
     // To avoid over-fetching, only fill when we have fewer than expected pages
     // and the constructed URL looks like a pagination candidate.
-    if (isPaginationCandidate(constructed, normalized) || paginationUrls.length >= 1) {
+    if (
+      isPaginationCandidate(constructed, normalized) ||
+      paginationUrls.length >= 1
+    ) {
       // Avoid blindly adding too many; add one at a time until maxPages
       // In practice this covers the common gap case where page 2 link is a
       // rel=next but page 3+ are numeric.
@@ -198,19 +243,20 @@ export async function parseWebArticle(
     if (fetchedUrls.length >= maxPages) break;
     let html: string;
     try {
-      html = await fetchHtml(pageUrl);
+      html = await fetchHtml(pageUrl, signal);
     } catch {
       // 404 or network on a later page just stops the walk
       break;
     }
     fetchedUrls.push(pageUrl);
-    pageHtmls.push({url: pageUrl, html});
+    pageHtmls.push({ url: pageUrl, html });
     // Update title if empty (should already be set)
     if (!title) title = extractTitle(html) || 'untitled';
   }
 
   // Merge images across all fetched pages
-  for (const {html, url} of pageHtmls) {
+  onStage?.('parsing');
+  for (const { html, url } of pageHtmls) {
     const imgs = extractWithAdapter(html, url, seen, adapter, {
       skipRelatedCards: true,
     });
@@ -220,7 +266,9 @@ export async function parseWebArticle(
   }
   // If later pages yielded no *new* URLs, seen already reflects it; just
   // ensure we had at least something
-  const images = Array.from(seen).map((url, index) => buildImage(url, index + 1));
+  const images = Array.from(seen).map((url, index) =>
+    buildImage(url, index + 1),
+  );
   if (images.length === 0) {
     return fail('NO_IMAGES', '这个页面没有找到可下载的图片');
   }
@@ -270,7 +318,10 @@ function getPageNumber(urlStr: string): number {
     if (m1) return parseInt(m1[1]!, 10);
     const m2 = u.pathname.match(/\/(\d+)\/?$/);
     if (m2) return parseInt(m2[1]!, 10);
-    const qp = u.searchParams.get('page') || u.searchParams.get('paged') || u.searchParams.get('p');
+    const qp =
+      u.searchParams.get('page') ||
+      u.searchParams.get('paged') ||
+      u.searchParams.get('p');
     if (qp && /^\d+$/.test(qp)) return parseInt(qp, 10);
     return Number.MAX_SAFE_INTEGER;
   } catch {
@@ -278,7 +329,10 @@ function getPageNumber(urlStr: string): number {
   }
 }
 
-function isPaginationCandidate(candidateHref: string, baseUrl: string): boolean {
+function isPaginationCandidate(
+  candidateHref: string,
+  baseUrl: string,
+): boolean {
   try {
     const cand = new URL(candidateHref, baseUrl);
     const base = new URL(baseUrl);
@@ -286,16 +340,29 @@ function isPaginationCandidate(candidateHref: string, baseUrl: string): boolean 
     if (cand.href === base.href) return false;
     const basePrefix = getBasePrefixPath(baseUrl);
     // Path-based pagination: candidate shares prefix and suffix looks like pagination
-    if (cand.pathname.startsWith(basePrefix) && cand.pathname !== base.pathname) {
+    if (
+      cand.pathname.startsWith(basePrefix) &&
+      cand.pathname !== base.pathname
+    ) {
       const suffix = cand.pathname.slice(basePrefix.length);
-      if (/^\d+\/?$/.test(suffix) || /^page\/\d+\/?$/i.test(suffix)) return true;
+      if (/^\d+\/?$/.test(suffix) || /^page\/\d+\/?$/i.test(suffix))
+        return true;
     }
     // Query-based: same pathname (allow trailing slash variance), query has page param
-    const candPathNorm = cand.pathname.endsWith('/') ? cand.pathname : `${cand.pathname}/`;
-    const basePathNorm = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
-    const basePrefNorm = basePrefix.endsWith('/') ? basePrefix : `${basePrefix}/`;
+    const candPathNorm = cand.pathname.endsWith('/')
+      ? cand.pathname
+      : `${cand.pathname}/`;
+    const basePathNorm = base.pathname.endsWith('/')
+      ? base.pathname
+      : `${base.pathname}/`;
+    const basePrefNorm = basePrefix.endsWith('/')
+      ? basePrefix
+      : `${basePrefix}/`;
     if (candPathNorm === basePathNorm || candPathNorm === basePrefNorm) {
-      const qp = cand.searchParams.get('page') || cand.searchParams.get('paged') || cand.searchParams.get('p');
+      const qp =
+        cand.searchParams.get('page') ||
+        cand.searchParams.get('paged') ||
+        cand.searchParams.get('p');
       if (qp && /^\d+$/.test(qp) && parseInt(qp, 10) > 1) return true;
     }
     return false;
@@ -322,7 +389,8 @@ function collectPaginationUrls(html: string, baseUrl: string): string[] {
     }
   }
   // Alternative order href before rel
-  const linkAltRe = /<link\b[^>]*href\s*=\s*(?:"[^"]+"|'[^']+'|[^\s>]+)[^>]*rel\s*=\s*["']next["'][^>]*>/gi;
+  const linkAltRe =
+    /<link\b[^>]*href\s*=\s*(?:"[^"]+"|'[^']+'|[^\s>]+)[^>]*rel\s*=\s*["']next["'][^>]*>/gi;
   while ((m = linkAltRe.exec(html)) !== null) {
     const tag = m[0] ?? '';
     const href = pickAttr(tag, 'href');
@@ -336,11 +404,13 @@ function collectPaginationUrls(html: string, baseUrl: string): string[] {
     }
   }
   // <a href="..."> candidates
-  const anchorRe = /<a\b[^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>/gi;
+  const anchorRe =
+    /<a\b[^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>/gi;
   while ((m = anchorRe.exec(html)) !== null) {
     const href = (m[1] ?? m[2] ?? m[3] ?? '').trim();
     // eslint-disable-next-line no-script-url
-    if (!href || href.startsWith('#') || href.startsWith('javascript:')) continue;
+    if (!href || href.startsWith('#') || href.startsWith('javascript:'))
+      continue;
     if (!isPaginationCandidate(href, baseUrl)) continue;
     try {
       const abs = new URL(href, baseUrl).toString();
@@ -364,12 +434,16 @@ function hasMorePages(html: string, baseUrl: string): boolean {
   return collectPaginationUrls(html, baseUrl).length > 0;
 }
 
-async function fetchHtml(url: string): Promise<string> {
+async function fetchHtml(url: string, signal?: AbortSignal): Promise<string> {
   const ctrl = new AbortController();
   const timer = setTimeout(
     () => ctrl.abort(),
     APP_CONFIG.telegraph.readTimeoutMs,
   );
+  if (signal) {
+    if (signal.aborted) ctrl.abort();
+    else signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  }
 
   try {
     const resp = await withRetry(
@@ -428,11 +502,7 @@ function mapFetchError(err: unknown): ParseResult {
       );
     }
     if (err.status === 403) {
-      return fail(
-        'HTTP_FORBIDDEN',
-        'Telegraph 页面访问被拒绝',
-        `HTTP 403`,
-      );
+      return fail('HTTP_FORBIDDEN', 'Telegraph 页面访问被拒绝', `HTTP 403`);
     }
     if (err.status >= 500) {
       return fail(
@@ -441,19 +511,23 @@ function mapFetchError(err: unknown): ParseResult {
         `HTTP ${err.status}`,
       );
     }
-    return fail('NETWORK_ERROR', `Telegraph 页面请求失败`, `HTTP ${err.status}`);
+    return fail(
+      'NETWORK_ERROR',
+      `Telegraph 页面请求失败`,
+      `HTTP ${err.status}`,
+    );
   }
   if (err instanceof ResponseTooLargeError) {
-    return fail(
-      'RESPONSE_TOO_LARGE',
-      '页面过大，暂不支持',
-      err.message,
-    );
+    return fail('RESPONSE_TOO_LARGE', '页面过大，暂不支持', err.message);
   }
   if ((err as Error)?.name === 'AbortError') {
     return fail('TIMEOUT', '网络连接超时，请检查网络后重试');
   }
-  return fail('NETWORK_ERROR', '网络连接失败，请检查网络后重试', String((err as Error)?.message ?? err));
+  return fail(
+    'NETWORK_ERROR',
+    '网络连接失败，请检查网络后重试',
+    String((err as Error)?.message ?? err),
+  );
 }
 
 function fail(
@@ -461,7 +535,7 @@ function fail(
   message: string,
   detail?: string,
 ): ParseResult {
-  return {ok: false, error: {code, message, detail}};
+  return { ok: false, error: { code, message, detail } };
 }
 
 /* ------------------------------------------------------------------ */
@@ -515,9 +589,13 @@ function isDecorativeUrl(url: string, attrs: string): boolean {
   const w = parseIntOrUndefined(pickAttr(attrs, 'width'));
   const h = parseIntOrUndefined(pickAttr(attrs, 'height'));
   if (w !== undefined && h !== undefined && w < 120 && h < 120) return true;
-  if (/avatar|icon|logo|spinner|loading/i.test(attrs) && (w === undefined || w < 200)) {
+  if (
+    /avatar|icon|logo|spinner|loading/i.test(attrs) &&
+    (w === undefined || w < 200)
+  ) {
     // Heuristic: small icon-like images outside article body often carry these tokens
-    if (/class=["'][^"']*(avatar|icon|logo)[^"']*["']/i.test(attrs)) return true;
+    if (/class=["'][^"']*(avatar|icon|logo)[^"']*["']/i.test(attrs))
+      return true;
   }
   return false;
 }
@@ -526,7 +604,7 @@ function extractImages(
   html: string,
   baseUrl: string,
   externalSeen?: Set<string>,
-  opts: {skipRelatedCards?: boolean} = {},
+  opts: { skipRelatedCards?: boolean } = {},
 ): TelegraphImage[] {
   const seen = externalSeen ?? new Set<string>();
   const images: TelegraphImage[] = [];
@@ -534,7 +612,8 @@ function extractImages(
 
   const pushUrl = (raw: string | undefined, attrs: string): void => {
     if (!raw) return;
-    if (opts.skipRelatedCards && /fifu-featured|post-id=["']?\d+/.test(attrs)) return;
+    if (opts.skipRelatedCards && /fifu-featured|post-id=["']?\d+/.test(attrs))
+      return;
     let absolute: string;
     try {
       absolute = new URL(raw, baseUrl).toString();
@@ -554,7 +633,8 @@ function extractImages(
   let m: RegExpExecArray | null;
   while ((m = imgTagRe.exec(html)) !== null) {
     const attrs = m[1] ?? '';
-    if (opts.skipRelatedCards && /fifu-featured|post-id=["']?\d+/.test(attrs)) continue;
+    if (opts.skipRelatedCards && /fifu-featured|post-id=["']?\d+/.test(attrs))
+      continue;
     const src =
       pickAttr(attrs, 'src') ||
       pickLazySrc(attrs) ||
@@ -574,12 +654,14 @@ function extractImages(
   }
 
   // 3) <a href="*.jpg|png|webp"> — some galleries wrap the full image in an anchor
-  const anchorRe = /<a\b[^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>/gi;
+  const anchorRe =
+    /<a\b[^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>/gi;
   while ((m = anchorRe.exec(html)) !== null) {
     const href = (m[1] ?? m[2] ?? m[3] ?? '').trim();
     if (!/\.(?:jpe?g|png|webp|gif|bmp|avif)(\?.*)?$/i.test(href)) continue;
     // Avoid navigation links that happen to end with an image-like path
-    if (/class=["'][^"']*(avatar|logo|icon)[^"']*["']/i.test(m[0] ?? '')) continue;
+    if (/class=["'][^"']*(avatar|logo|icon)[^"']*["']/i.test(m[0] ?? ''))
+      continue;
     pushUrl(href, m[0] ?? '');
   }
 
@@ -619,10 +701,16 @@ function extractImages(
   const scriptRe = /<script[^>]*>([\s\S]*?)<\/script>/gi;
   while ((m = scriptRe.exec(html)) !== null) {
     const js = m[1] ?? '';
-    if (!/https?:\/\/[^"'\s]+\.(?:jpe?g|png|webp|gif|bmp|avif)/i.test(js)) continue;
+    if (!/https?:\/\/[^"'\s]+\.(?:jpe?g|png|webp|gif|bmp|avif)/i.test(js))
+      continue;
     // Only harvest from scripts that look like gallery data to avoid noise
-    if (!/(?:gallery|images|photos|slides|data|__NEXT_DATA__|__INITIAL)/i.test(js)) continue;
-    const urls = js.match(/https?:\/\/[^"'\s<>]+\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\?[^\s"']*)?/gi);
+    if (
+      !/(?:gallery|images|photos|slides|data|__NEXT_DATA__|__INITIAL)/i.test(js)
+    )
+      continue;
+    const urls = js.match(
+      /https?:\/\/[^"'\s<>]+\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\?[^\s"']*)?/gi,
+    );
     if (!urls) continue;
     for (const u of urls) pushUrl(u, '');
   }
@@ -645,17 +733,23 @@ function extractUrlsFromJsonText(jsonText: string): string[] {
     const stack: unknown[] = [parsed];
     while (stack.length) {
       const cur = stack.pop();
-      if (typeof cur === 'string' && /^https?:\/\//.test(cur) && /\.(?:jpe?g|png|webp|gif|bmp|avif)/i.test(cur)) {
+      if (
+        typeof cur === 'string' &&
+        /^https?:\/\//.test(cur) &&
+        /\.(?:jpe?g|png|webp|gif|bmp|avif)/i.test(cur)
+      ) {
         out.push(cur);
       } else if (Array.isArray(cur)) {
         for (const v of cur) stack.push(v);
       } else if (cur && typeof cur === 'object') {
-        for (const v of Object.values(cur as Record<string, unknown>)) stack.push(v);
+        for (const v of Object.values(cur as Record<string, unknown>))
+          stack.push(v);
       }
     }
   } catch {
     // Fallback regex when JSON is not strictly valid
-    const re = /https?:\/\/[^"'\s<>]+\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\?[^\s"']*)?/gi;
+    const re =
+      /https?:\/\/[^"'\s<>]+\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\?[^\s"']*)?/gi;
     let mm: RegExpExecArray | null;
     while ((mm = re.exec(jsonText)) !== null) out.push(mm[0]);
   }
@@ -666,8 +760,15 @@ function extractWithAdapter(
   html: string,
   baseUrl: string,
   seen: Set<string>,
-  adapter: {extractImages?: (html: string, baseUrl: string, seen: Set<string>, opts?: {skipRelatedCards?: boolean}) => TelegraphImage[] | string[]},
-  opts: {skipRelatedCards?: boolean} = {},
+  adapter: {
+    extractImages?: (
+      html: string,
+      baseUrl: string,
+      seen: Set<string>,
+      opts?: { skipRelatedCards?: boolean },
+    ) => TelegraphImage[] | string[];
+  },
+  opts: { skipRelatedCards?: boolean } = {},
 ): TelegraphImage[] {
   if (adapter.extractImages) {
     const custom = adapter.extractImages(html, baseUrl, seen, opts);
@@ -686,7 +787,9 @@ function buildImage(
   attrs?: string,
 ): TelegraphImage {
   const ext = inferExtFromUrl(absolute);
-  const width = parseIntOrUndefined(attrs ? pickAttr(attrs, 'width') : undefined);
+  const width = parseIntOrUndefined(
+    attrs ? pickAttr(attrs, 'width') : undefined,
+  );
   const height = parseIntOrUndefined(
     attrs ? pickAttr(attrs, 'height') : undefined,
   );
@@ -703,7 +806,10 @@ function buildImage(
 }
 
 function pickAttr(attrs: string, name: string): string | undefined {
-  const re = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+  const re = new RegExp(
+    `(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
+    'i',
+  );
   const m = re.exec(attrs);
   if (!m) return undefined;
   return (m[1] ?? m[2] ?? m[3] ?? '').trim() || undefined;
@@ -718,7 +824,10 @@ function firstSrcsetUrl(srcset: string | undefined): string | undefined {
 function largestSrcsetUrl(srcset: string | undefined): string | undefined {
   if (!srcset) return undefined;
   // srcset = "url1 1x, url2 2x" or "url1 320w, url2 640w" — pick the largest descriptor
-  const entries = srcset.split(',').map(s => s.trim()).filter(Boolean);
+  const entries = srcset
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
   if (entries.length === 0) return undefined;
   let bestUrl: string | undefined;
   let bestScore = -1;
@@ -729,7 +838,8 @@ function largestSrcsetUrl(srcset: string | undefined): string | undefined {
     const descriptor = parts[1] ?? '';
     let score = 0;
     if (/^\d+w$/.test(descriptor)) score = parseInt(descriptor, 10);
-    else if (/^\d+(?:\.\d+)?x$/.test(descriptor)) score = parseFloat(descriptor) * 1000;
+    else if (/^\d+(?:\.\d+)?x$/.test(descriptor))
+      score = parseFloat(descriptor) * 1000;
     else score = bestScore + 0.1; // no descriptor — treat as incremental
     if (score >= bestScore) {
       bestScore = score;
@@ -755,7 +865,10 @@ function decodeHtmlEntities(s: string): string {
     '&#39;': "'",
     '&nbsp;': ' ',
   };
-  return s.replace(/&(?:amp|lt|gt|quot|apos|#39|nbsp);/g, m => entities[m] ?? m);
+  return s.replace(
+    /&(?:amp|lt|gt|quot|apos|#39|nbsp);/g,
+    m => entities[m] ?? m,
+  );
 }
 
 function parseIntOrUndefined(s: string | undefined): number | undefined {
@@ -782,14 +895,17 @@ function hashShort(s: string): string {
  *   - any other http(s)     -> generic web parser (with pagination)
  * Invalid / unsafe URLs -> INVALID_URL error.
  */
-export async function parseArticle(rawUrl: string): Promise<ParseResult> {
+export async function parseArticle(
+  rawUrl: string,
+  opts: ParseArticleOptions = {},
+): Promise<ParseResult> {
   const trimmed = (rawUrl ?? '').trim();
   try {
     const host = new URL(trimmed).hostname.toLowerCase();
     if (host === 'telegra.ph' || host === 'www.telegra.ph') {
-      return parseTelegraphArticle(trimmed);
+      return parseTelegraphArticle(trimmed, opts);
     }
-    return parseWebArticle(trimmed);
+    return parseWebArticle(trimmed, opts);
   } catch {
     return fail('INVALID_URL', '请输入有效的链接');
   }

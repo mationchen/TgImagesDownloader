@@ -1,8 +1,12 @@
-import {getSetting, setSetting} from './historyService';
-import {sanitizeFilename} from '../utils/filename';
+import { getSetting, setSetting } from './historyService';
+import { sanitizeFilename } from '../utils/filename';
+import { APP_CONFIG, type SupportedLocale } from '../constants/config';
 
 export type SubfolderTemplate = 'title' | 'domain' | 'custom';
 export type NamingRule = 'date_index' | 'original' | 'title';
+
+/** How the app resolves light/dark: follow the system, or force one. */
+export type AppThemeMode = 'system' | 'light' | 'dark';
 
 /**
  * Where saved images live on Android:
@@ -32,6 +36,10 @@ export interface AppSettings {
    * storageType === 'custom'). Empty when not yet picked.
    */
   customTreeUri: string;
+  /** UI language. Defaults to the app-wide default locale (zh-CN). */
+  locale: SupportedLocale;
+  /** Light/Dark resolution. Defaults to following the system. */
+  theme: AppThemeMode;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -41,6 +49,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoFillClipboard: true,
   storageType: 'pictures',
   customTreeUri: '',
+  locale: APP_CONFIG.i18n.defaultLocale,
+  theme: 'system',
 };
 
 const SETTINGS_KEY = 'app_settings_v1';
@@ -50,7 +60,7 @@ const SETTINGS_KEY = 'app_settings_v1';
  * user's subfolder-template preference (title / domain / custom).
  */
 export function computeSubfolder(
-  article: {title: string; url: string},
+  article: { title: string; url: string },
   settings: AppSettings,
 ): string {
   let raw: string;
@@ -75,19 +85,17 @@ export function computeSubfolder(
 
 /** Build the full RELATIVE_PATH (under MediaStore) for a given article. */
 export function computeRelativePath(
-  article: {title: string; url: string},
+  article: { title: string; url: string },
   settings: AppSettings,
 ): string {
   const subfolder = computeSubfolder(article, settings);
-  const root =
-    settings.storageType === 'downloads' ? 'Download' : 'Pictures';
+  const root = settings.storageType === 'downloads' ? 'Download' : 'Pictures';
   return `${root}/${APP_FOLDER_NAME}/${subfolder}`;
 }
 
 /** Compute the default fixed top-level directory under MediaStore. */
 export function computeBaseRelativePath(settings: AppSettings): string {
-  const root =
-    settings.storageType === 'downloads' ? 'Download' : 'Pictures';
+  const root = settings.storageType === 'downloads' ? 'Download' : 'Pictures';
   return `${root}/${APP_FOLDER_NAME}`;
 }
 
@@ -134,6 +142,20 @@ export async function loadSettings(): Promise<AppSettings> {
         typeof parsed.customTreeUri === 'string'
           ? parsed.customTreeUri
           : DEFAULT_SETTINGS.customTreeUri,
+      locale:
+        typeof parsed.locale === 'string' &&
+        (APP_CONFIG.i18n.supportedLocales as readonly string[]).includes(
+          parsed.locale,
+        )
+          ? (parsed.locale as SupportedLocale)
+          : DEFAULT_SETTINGS.locale,
+      theme:
+        typeof parsed.theme === 'string' &&
+        (parsed.theme === 'light' ||
+          parsed.theme === 'dark' ||
+          parsed.theme === 'system')
+          ? parsed.theme
+          : DEFAULT_SETTINGS.theme,
     };
     return cache;
   } catch {

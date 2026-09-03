@@ -1,8 +1,9 @@
-import React, {useCallback, useMemo, useState} from 'react';
-import {Image, Pressable, StyleSheet, Text, View} from 'react-native';
-import type {TelegraphImage} from '../types/telegraph';
-import {defaultResolverRegistry} from '../services/resolvers/registry';
-import {t} from '../i18n';
+import React, { useCallback, useMemo, useState } from 'react';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { TelegraphImage } from '../types/telegraph';
+import { defaultResolverRegistry } from '../services/resolvers/registry';
+import { t, useI18n } from '../i18n';
+import { useThemedStyles, type ThemeColors } from '../theme';
 
 type Props = {
   image: TelegraphImage;
@@ -14,7 +15,10 @@ type Props = {
 };
 
 export const ThumbnailItem: React.FC<Props> = React.memo(
-  ({image, size, onPress, onToggle}) => {
+  ({ image, size, onPress, onToggle }) => {
+    // Subscribe so the blocked label re-renders in the active language.
+    useI18n();
+    const styles = useThemedStyles(createStyles);
     const [loaded, setLoaded] = useState(false);
     const [failed, setFailed] = useState(false);
 
@@ -35,12 +39,17 @@ export const ThumbnailItem: React.FC<Props> = React.memo(
       <View
         style={[
           styles.container,
-          {width: size, height: size},
+          { width: size, height: size },
           image.selected && styles.selected,
-        ]}>
+        ]}
+      >
         <Pressable
           onPress={handlePress}
-          style={({pressed}) => [styles.imagePress, pressed && styles.pressed]}>
+          style={({ pressed }) => [
+            styles.imagePress,
+            pressed && styles.pressed,
+          ]}
+        >
           {blocked ? (
             <View style={styles.lockedBox}>
               <Text style={styles.lockedIcon}>🔒</Text>
@@ -50,7 +59,7 @@ export const ThumbnailItem: React.FC<Props> = React.memo(
             </View>
           ) : !failed ? (
             <Image
-              source={{uri: image.url}}
+              source={{ uri: image.url }}
               style={styles.image}
               resizeMode="cover"
               onLoad={() => setLoaded(true)}
@@ -74,10 +83,11 @@ export const ThumbnailItem: React.FC<Props> = React.memo(
         <Pressable
           onPress={handleToggle}
           hitSlop={8}
-          style={({pressed}) => [
+          style={({ pressed }) => [
             styles.checkWrap,
             pressed && styles.checkWrapPressed,
-          ]}>
+          ]}
+        >
           {image.selected ? (
             <View style={styles.checkmark}>
               <Text style={styles.checkmarkText}>✓</Text>
@@ -93,102 +103,104 @@ export const ThumbnailItem: React.FC<Props> = React.memo(
 
 ThumbnailItem.displayName = 'ThumbnailItem';
 
-const styles = StyleSheet.create({
-  container: {
-    backgroundColor: '#f0f0f0',
-    overflow: 'hidden',
-    margin: 4,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  selected: {
-    borderColor: '#1976d2',
-  },
-  imagePress: {
-    flex: 1,
-  },
-  pressed: {
-    opacity: 0.7,
-  },
-  image: {
-    width: '100%',
-    height: '100%',
-  },
-  placeholder: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: '#ececec',
-  },
-  fallback: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#fde0e0',
-  },
-  fallbackText: {
-    fontSize: 24,
-    color: '#c33',
-    fontWeight: '700',
-  },
-  lockedBox: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#efe7d3',
-  },
-  lockedIcon: {
-    fontSize: 18,
-  },
-  lockedText: {
-    marginTop: 2,
-    fontSize: 9,
-    color: '#8a6d1a',
-    paddingHorizontal: 2,
-    textAlign: 'center',
-  },
-  indexBadge: {
-    position: 'absolute',
-    left: 4,
-    bottom: 4,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 3,
-  },
-  indexText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: '600',
-    fontVariant: ['tabular-nums'],
-  },
-  checkWrap: {
-    position: 'absolute',
-    right: 2,
-    top: 2,
-    padding: 2,
-  },
-  checkWrapPressed: {
-    opacity: 0.7,
-  },
-  checkmark: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#1976d2',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkmarkText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  unselectedDot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.85)',
-    backgroundColor: 'rgba(0,0,0,0.25)',
-  },
-});
+function createStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    container: {
+      backgroundColor: c.surfaceStrong,
+      overflow: 'hidden',
+      margin: 4,
+      borderRadius: 6,
+      borderWidth: 2,
+      borderColor: 'transparent',
+    },
+    selected: {
+      borderColor: c.primary,
+    },
+    imagePress: {
+      flex: 1,
+    },
+    pressed: {
+      opacity: 0.7,
+    },
+    image: {
+      width: '100%',
+      height: '100%',
+    },
+    placeholder: {
+      ...StyleSheet.absoluteFill,
+      backgroundColor: c.surfaceStrong,
+    },
+    fallback: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: c.dangerBg,
+    },
+    fallbackText: {
+      fontSize: 24,
+      color: c.danger,
+      fontWeight: '700',
+    },
+    lockedBox: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: c.warningBg,
+    },
+    lockedIcon: {
+      fontSize: 18,
+    },
+    lockedText: {
+      marginTop: 2,
+      fontSize: 9,
+      color: c.warning,
+      paddingHorizontal: 2,
+      textAlign: 'center',
+    },
+    indexBadge: {
+      position: 'absolute',
+      left: 4,
+      bottom: 4,
+      backgroundColor: 'rgba(0,0,0,0.55)',
+      paddingHorizontal: 5,
+      paddingVertical: 1,
+      borderRadius: 3,
+    },
+    indexText: {
+      color: '#fff',
+      fontSize: 10,
+      fontWeight: '600',
+      fontVariant: ['tabular-nums'],
+    },
+    checkWrap: {
+      position: 'absolute',
+      right: 2,
+      top: 2,
+      padding: 2,
+    },
+    checkWrapPressed: {
+      opacity: 0.7,
+    },
+    checkmark: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      backgroundColor: c.primary,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    checkmarkText: {
+      color: c.textOnPrimary,
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    unselectedDot: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      borderWidth: 2,
+      borderColor: 'rgba(255,255,255,0.85)',
+      backgroundColor: 'rgba(0,0,0,0.25)',
+    },
+  });
+}

@@ -1,7 +1,8 @@
 import React from 'react';
-import {ActivityIndicator, StyleSheet, Text, View} from 'react-native';
-import type {DownloadState} from '../store/downloadReducer';
-import {t} from '../i18n';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import type { DownloadState } from '../store/downloadReducer';
+import { t, useI18n } from '../i18n';
+import { useThemedStyles, type ThemeColors } from '../theme';
 
 type Props = {
   state: DownloadState;
@@ -19,8 +20,12 @@ type Props = {
   };
 };
 
-export const DownloadProgress: React.FC<Props> = ({state, summary}) => {
-  const finishedCount = summary.success + summary.skipped + summary.failed + summary.cancelled;
+export const DownloadProgress: React.FC<Props> = ({ state, summary }) => {
+  // Subscribe so the component re-renders with fresh strings on locale change.
+  useI18n();
+  const styles = useThemedStyles(createStyles);
+  const finishedCount =
+    summary.success + summary.skipped + summary.failed + summary.cancelled;
   const counter = `${finishedCount} / ${summary.total}`;
   const subtitle = state.isPaused ? t('download.paused') : null;
 
@@ -36,7 +41,7 @@ export const DownloadProgress: React.FC<Props> = ({state, summary}) => {
         <View
           style={[
             styles.barInner,
-            {width: `${Math.round(summary.progressPercent)}%`},
+            { width: `${Math.round(summary.progressPercent)}%` },
             summary.finished && styles.barInnerDone,
           ]}
         />
@@ -44,14 +49,20 @@ export const DownloadProgress: React.FC<Props> = ({state, summary}) => {
       <View style={styles.statsRow}>
         <Stat label={t('download.success')} value={summary.success} tone="ok" />
         <Stat label={t('download.failed')} value={summary.failed} tone="err" />
-        <Stat label={t('download.skipped')} value={summary.skipped} tone="muted" />
+        <Stat
+          label={t('download.skipped')}
+          value={summary.skipped}
+          tone="muted"
+        />
       </View>
-      {state.isPaused ? <Text style={styles.pausedHint}>{subtitle}</Text> : null}
+      {state.isPaused ? (
+        <Text style={styles.pausedHint}>{subtitle}</Text>
+      ) : null}
       {!summary.finished && summary.downloading > 0 ? (
         <View style={styles.spinnerRow}>
           <ActivityIndicator size="small" />
           <Text style={styles.spinnerText}>
-            {t('download.activeCount', {count: summary.downloading})}
+            {t('download.activeCount', { count: summary.downloading })}
           </Text>
         </View>
       ) : null}
@@ -60,14 +71,21 @@ export const DownloadProgress: React.FC<Props> = ({state, summary}) => {
 };
 
 type StatTone = 'ok' | 'err' | 'muted';
-const Stat: React.FC<{label: string; value: number; tone: StatTone}> = ({
+const Stat: React.FC<{ label: string; value: number; tone: StatTone }> = ({
   label,
   value,
   tone,
 }) => {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.stat}>
-      <Text style={[styles.statValue, tone === 'ok' && styles.statOk, tone === 'err' && styles.statErr]}>
+      <Text
+        style={[
+          styles.statValue,
+          tone === 'ok' && styles.statOk,
+          tone === 'err' && styles.statErr,
+        ]}
+      >
         {value}
       </Text>
       <Text style={styles.statLabel}>{label}</Text>
@@ -75,77 +93,79 @@ const Stat: React.FC<{label: string; value: number; tone: StatTone}> = ({
   );
 };
 
-const styles = StyleSheet.create({
-  root: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 12,
-    backgroundColor: '#f6f8fa',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5e5',
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-  },
-  heading: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#111',
-  },
-  counter: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1976d2',
-    fontVariant: ['tabular-nums'],
-  },
-  barOuter: {
-    height: 6,
-    backgroundColor: '#e6e9ed',
-    borderRadius: 3,
-    marginTop: 10,
-    overflow: 'hidden',
-  },
-  barInner: {
-    height: '100%',
-    backgroundColor: '#1976d2',
-  },
-  barInnerDone: {
-    backgroundColor: '#1b7a3a',
-  },
-  statsRow: {
-    flexDirection: 'row',
-    marginTop: 10,
-  },
-  stat: {
-    marginRight: 24,
-  },
-  statValue: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#444',
-    fontVariant: ['tabular-nums'],
-  },
-  statOk: {color: '#1b7a3a'},
-  statErr: {color: '#a32'},
-  statLabel: {
-    fontSize: 11,
-    color: '#888',
-  },
-  pausedHint: {
-    marginTop: 8,
-    fontSize: 12,
-    color: '#a32',
-  },
-  spinnerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  spinnerText: {
-    marginLeft: 8,
-    fontSize: 12,
-    color: '#666',
-  },
-});
+function createStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    root: {
+      paddingHorizontal: 16,
+      paddingTop: 12,
+      paddingBottom: 12,
+      backgroundColor: c.surface,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'baseline',
+      justifyContent: 'space-between',
+    },
+    heading: {
+      fontSize: 16,
+      fontWeight: '600',
+      color: c.textPrimary,
+    },
+    counter: {
+      fontSize: 16,
+      fontWeight: '600',
+      color: c.primary,
+      fontVariant: ['tabular-nums'],
+    },
+    barOuter: {
+      height: 6,
+      backgroundColor: c.surfaceStrong,
+      borderRadius: 3,
+      marginTop: 10,
+      overflow: 'hidden',
+    },
+    barInner: {
+      height: '100%',
+      backgroundColor: c.primary,
+    },
+    barInnerDone: {
+      backgroundColor: c.success,
+    },
+    statsRow: {
+      flexDirection: 'row',
+      marginTop: 10,
+    },
+    stat: {
+      marginRight: 24,
+    },
+    statValue: {
+      fontSize: 16,
+      fontWeight: '600',
+      color: c.textSecondary,
+      fontVariant: ['tabular-nums'],
+    },
+    statOk: { color: c.success },
+    statErr: { color: c.danger },
+    statLabel: {
+      fontSize: 11,
+      color: c.textHint,
+    },
+    pausedHint: {
+      marginTop: 8,
+      fontSize: 12,
+      color: c.danger,
+    },
+    spinnerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginTop: 10,
+    },
+    spinnerText: {
+      marginLeft: 8,
+      fontSize: 12,
+      color: c.textSecondary,
+    },
+  });
+}

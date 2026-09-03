@@ -1,7 +1,6 @@
 const TELEGRAPH_HOST = 'telegra.ph';
 const TELEGRAPH_PROTOCOL_ALLOWED = ['https:', 'http:'] as const;
-const URL_REGEX =
-  /https?:\/\/(?:www\.)?telegra\.ph\/[^\s<>"'`]+/gi;
+const URL_REGEX = /https?:\/\/(?:www\.)?telegra\.ph\/[^\s<>"'`]+/gi;
 
 /**
  * A generic http(s) URL anywhere on the web (used for non-Telegraph pages).
@@ -9,19 +8,46 @@ const URL_REGEX =
  */
 const WEB_URL_REGEX = /https?:\/\/[^\s<>"'`]+/gi;
 
+/**
+ * Invisible characters that commonly sneak into copied text (chat apps,
+ * web pages) and break URL parsing. Unlike whitespace they are NOT removed
+ * by trim() and NOT excluded by \s in the URL regex — a URL containing them
+ * either fails `new URL()` or gets percent-encoded into a broken link.
+ * U+200B-U+200F (zero-width space/joiners/marks), U+2028-U+202F (line/para
+ * separators, narrow nbsp), U+FEFF (BOM/ZWNBSP).
+ */
+const INVISIBLE_CHARS = /[\u200b-\u200f\u2028-\u202f\ufeff]/g;
+
 export function extractWebUrls(input: string): string[] {
   if (!input) return [];
-  const matches = input.match(WEB_URL_REGEX);
-  if (!matches) return [];
+  // Strip invisible characters first so pasted links parse reliably.
+  const cleaned = input.replace(INVISIBLE_CHARS, '');
+  if (!cleaned) return [];
+  const matches = cleaned.match(WEB_URL_REGEX);
   const seen = new Set<string>();
   const result: string[] = [];
-  for (const raw of matches) {
-    const cleaned = stripTrailingPunctuation(raw);
-    const normalized = normalizeWebUrl(cleaned);
-    if (normalized && !seen.has(normalized)) {
-      seen.add(normalized);
-      result.push(normalized);
+  if (matches) {
+    for (const raw of matches) {
+      const noPunct = stripTrailingPunctuation(raw);
+      const normalized = normalizeWebUrl(noPunct);
+      if (normalized && !seen.has(normalized)) {
+        seen.add(normalized);
+        result.push(normalized);
+      }
     }
+  }
+  if (result.length > 0) return result;
+  // Fallback: the clipboard may hold a bare link without a scheme
+  // (e.g. "telegra.ph/abc" copied from an address bar). Try https://.
+  const trimmed = cleaned.trim();
+  if (
+    trimmed &&
+    !/^[a-z][a-z0-9+.-]*:/i.test(trimmed) &&
+    !/\s/.test(trimmed) &&
+    trimmed.includes('.')
+  ) {
+    const normalized = normalizeWebUrl(`https://${trimmed}`);
+    if (normalized) return [normalized];
   }
   return result;
 }
@@ -64,7 +90,9 @@ export function validateTelegraphUrl(input: string): UrlValidationError | null {
     return 'INVALID_FORMAT';
   }
 
-  if (!TELEGRAPH_PROTOCOL_ALLOWED.includes(url.protocol as 'http:' | 'https:')) {
+  if (
+    !TELEGRAPH_PROTOCOL_ALLOWED.includes(url.protocol as 'http:' | 'https:')
+  ) {
     return 'INVALID_PROTOCOL';
   }
 
@@ -239,10 +267,10 @@ function isPrivateOrLoopbackIp(host: string): boolean {
   });
   if (nums.some(n => n < 0)) return false;
   const [a, b] = nums as [number, number, number, number];
-  if (a === 10) return true;             // 10.0.0.0/8
-  if (a === 172 && b >= 16 && b <= 31) return true;  // 172.16.0.0/12
-  if (a === 192 && b === 168) return true;           // 192.168.0.0/16
-  if (a === 169 && b === 254) return true;           // link-local
+  if (a === 10) return true; // 10.0.0.0/8
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (a === 169 && b === 254) return true; // link-local
   if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
   return false;
 }

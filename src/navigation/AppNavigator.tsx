@@ -7,22 +7,26 @@ import { DownloadScreen } from '../screens/DownloadScreen';
 import { PrivacyScreen } from '../screens/PrivacyScreen';
 import { HistoryDetailScreen } from '../screens/HistoryDetailScreen';
 import { DownloadProvider } from '../store/DownloadContext';
-import { t } from '../i18n';
+import { t, useI18n } from '../i18n';
+import { useTheme } from '../theme';
 import type { RootStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export const AppNavigator: React.FC = () => {
+  // Subscribe so stack titles re-render in the active language.
+  useI18n();
+  const { colors } = useTheme();
   return (
     <DownloadProvider>
       <Stack.Navigator
         initialRouteName="Splash"
         screenOptions={{
-          headerStyle: { backgroundColor: '#fff' },
-          headerTitleStyle: { color: '#111', fontWeight: '600' },
-          headerTintColor: '#1976d2',
+          headerStyle: { backgroundColor: colors.headerBackground },
+          headerTitleStyle: { color: colors.headerTitle, fontWeight: '600' },
+          headerTintColor: colors.primary,
           headerShadowVisible: false,
-          contentStyle: { backgroundColor: '#fff' },
+          contentStyle: { backgroundColor: colors.background },
         }}
       >
         <Stack.Screen

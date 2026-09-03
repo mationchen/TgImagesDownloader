@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -10,13 +10,14 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   computeBaseRelativePath,
   DEFAULT_SETTINGS,
   loadSettings,
   saveSettings,
   type AppSettings,
+  type AppThemeMode,
   type NamingRule,
   type StorageType,
   type SubfolderTemplate,
@@ -26,9 +27,20 @@ import {
   subscribeTreePicked,
   TelegraphDownloader,
 } from '../services/nativeDownloader';
-import {t} from '../i18n';
+import { t, useI18n, type SupportedLocale } from '../i18n';
+import { useTheme, useThemedStyles, type ThemeColors } from '../theme';
 
 export const SettingsScreen: React.FC = () => {
+  // Subscribe so the whole screen re-renders with fresh strings/colors when
+  // the user switches language or appearance below.
+  const { setLocale } = useI18n();
+  const {
+    mode: themeMode,
+    setMode: setThemeMode,
+    colors: themeColors,
+  } = useTheme();
+  const styles = useThemedStyles(createStyles);
+
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -51,7 +63,7 @@ export const SettingsScreen: React.FC = () => {
   // event -> we keep customTreeUri fresh).
   useEffect(() => {
     const unsub = subscribeTreePicked(payload => {
-      setSettings(prev => ({...prev, customTreeUri: payload.uri}));
+      setSettings(prev => ({ ...prev, customTreeUri: payload.uri }));
     });
     return () => unsub();
   }, []);
@@ -66,34 +78,57 @@ export const SettingsScreen: React.FC = () => {
     }
   }, []);
 
+  const setLanguage = useCallback(
+    (v: SupportedLocale) => {
+      setSettings(prev => ({ ...prev, locale: v }));
+      // Persists + flips the module-level locale so every `t()` re-evaluates.
+      setLocale(v).catch(() => undefined);
+    },
+    [setLocale],
+  );
+
+  const setAppearance = useCallback(
+    (v: AppThemeMode) => {
+      setSettings(prev => ({ ...prev, theme: v }));
+      setThemeMode(v).catch(() => undefined);
+    },
+    [setThemeMode],
+  );
+
   const setTemplate = useCallback(
-    (v: SubfolderTemplate) => persist({...settings, subfolderTemplate: v}),
+    (v: SubfolderTemplate) => persist({ ...settings, subfolderTemplate: v }),
     [persist, settings],
   );
   const setCustom = useCallback(
-    (v: string) => persist({...settings, subfolderCustom: v}),
+    (v: string) => persist({ ...settings, subfolderCustom: v }),
     [persist, settings],
   );
   const setNaming = useCallback(
-    (v: NamingRule) => persist({...settings, namingRule: v}),
+    (v: NamingRule) => persist({ ...settings, namingRule: v }),
     [persist, settings],
   );
   const setAutoFill = useCallback(
-    (v: boolean) => persist({...settings, autoFillClipboard: v}),
+    (v: boolean) => persist({ ...settings, autoFillClipboard: v }),
     [persist, settings],
   );
   const setStorage = useCallback(
-    (v: StorageType) => persist({...settings, storageType: v}),
+    (v: StorageType) => persist({ ...settings, storageType: v }),
     [persist, settings],
   );
 
   const pickCustomFolder = useCallback(async () => {
     if (Platform.OS !== 'android') {
-      Alert.alert(t('settings.unsupported.title'), t('settings.unsupported.body'));
+      Alert.alert(
+        t('settings.unsupported.title'),
+        t('settings.unsupported.body'),
+      );
       return;
     }
     if (!isDownloaderAvailable() || !TelegraphDownloader?.pickSaveDirectory) {
-      Alert.alert(t('settings.unsupported.title'), t('settings.unsupported.body'));
+      Alert.alert(
+        t('settings.unsupported.title'),
+        t('settings.unsupported.body'),
+      );
       return;
     }
     try {
@@ -109,7 +144,7 @@ export const SettingsScreen: React.FC = () => {
   }, []);
 
   const clearCustomFolder = useCallback(
-    () => persist({...settings, customTreeUri: '', storageType: 'pictures'}),
+    () => persist({ ...settings, customTreeUri: '', storageType: 'pictures' }),
     [persist, settings],
   );
 
@@ -121,6 +156,38 @@ export const SettingsScreen: React.FC = () => {
         <Text style={styles.title}>{t('settings.title')}</Text>
       </View>
       <ScrollView contentContainerStyle={styles.body}>
+        <Section title={t('settings.language.title')}>
+          <RadioRow
+            label={t('settings.language.zhLabel')}
+            selected={settings.locale === 'zh-CN'}
+            onSelect={() => setLanguage('zh-CN')}
+          />
+          <RadioRow
+            label={t('settings.language.enLabel')}
+            selected={settings.locale === 'en'}
+            onSelect={() => setLanguage('en')}
+          />
+        </Section>
+
+        <Section title={t('settings.appearance.title')}>
+          <RadioRow
+            label={t('settings.appearance.systemLabel')}
+            hint={t('settings.appearance.systemHint')}
+            selected={themeMode === 'system'}
+            onSelect={() => setAppearance('system')}
+          />
+          <RadioRow
+            label={t('settings.appearance.lightLabel')}
+            selected={themeMode === 'light'}
+            onSelect={() => setAppearance('light')}
+          />
+          <RadioRow
+            label={t('settings.appearance.darkLabel')}
+            selected={themeMode === 'dark'}
+            onSelect={() => setAppearance('dark')}
+          />
+        </Section>
+
         <Section title={t('settings.subfolder.title')}>
           <RadioRow
             label={t('settings.subfolder.titleLabel')}
@@ -146,7 +213,7 @@ export const SettingsScreen: React.FC = () => {
               value={settings.subfolderCustom}
               onChangeText={setCustom}
               placeholder={t('settings.subfolder.customPlaceholder')}
-              placeholderTextColor="#999"
+              placeholderTextColor={themeColors.textHint}
               autoCapitalize="none"
               autoCorrect={false}
               maxLength={60}
@@ -177,7 +244,7 @@ export const SettingsScreen: React.FC = () => {
 
         <Section title={t('settings.storage.title')}>
           <Text style={styles.pathPreview}>
-            {t('settings.storage.current', {path: currentSavePath})}
+            {t('settings.storage.current', { path: currentSavePath })}
           </Text>
           <RadioRow
             label={t('settings.storage.picturesLabel')}
@@ -207,7 +274,10 @@ export const SettingsScreen: React.FC = () => {
                 </Text>
               </Pressable>
               {settings.customTreeUri ? (
-                <Pressable style={styles.folderClear} onPress={clearCustomFolder}>
+                <Pressable
+                  style={styles.folderClear}
+                  onPress={clearCustomFolder}
+                >
                   <Text style={styles.folderClearText}>
                     {t('settings.storage.clearFolder')}
                   </Text>
@@ -235,7 +305,10 @@ export const SettingsScreen: React.FC = () => {
             <Switch
               value={settings.autoFillClipboard}
               onValueChange={setAutoFill}
-              trackColor={{false: '#ccc', true: '#1976d2'}}
+              trackColor={{
+                false: themeColors.borderStrong,
+                true: themeColors.primary,
+              }}
             />
           </View>
         </Section>
@@ -254,134 +327,144 @@ export const SettingsScreen: React.FC = () => {
   );
 };
 
-const Section: React.FC<{title: string; children: React.ReactNode}> = ({
+const Section: React.FC<{ title: string; children: React.ReactNode }> = ({
   title,
   children,
-}) => (
-  <View style={styles.section}>
-    <Text style={styles.sectionTitle}>{title}</Text>
-    <View style={styles.sectionBody}>{children}</View>
-  </View>
-);
+}) => {
+  const styles = useThemedStyles(createStyles);
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.sectionBody}>{children}</View>
+    </View>
+  );
+};
 
 const RadioRow: React.FC<{
   label: string;
   hint?: string;
   selected: boolean;
   onSelect: () => void;
-}> = ({label, hint, selected, onSelect}) => (
-  <Pressable
-    onPress={onSelect}
-    style={({pressed}) => [styles.row, pressed && styles.rowPressed]}>
-    <View style={styles.rowMain}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
-    </View>
-    <View
-      style={[
-        styles.radio,
-        selected ? styles.radioSelected : styles.radioUnselected,
-      ]}>
-      {selected ? <View style={styles.radioInner} /> : null}
-    </View>
-  </Pressable>
-);
+}> = ({ label, hint, selected, onSelect }) => {
+  const styles = useThemedStyles(createStyles);
+  return (
+    <Pressable
+      onPress={onSelect}
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+    >
+      <View style={styles.rowMain}>
+        <Text style={styles.rowLabel}>{label}</Text>
+        {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
+      </View>
+      <View
+        style={[
+          styles.radio,
+          selected ? styles.radioSelected : styles.radioUnselected,
+        ]}
+      >
+        {selected ? <View style={styles.radioInner} /> : null}
+      </View>
+    </Pressable>
+  );
+};
 
-const styles = StyleSheet.create({
-  safe: {flex: 1, backgroundColor: '#fff'},
-  header: {paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8},
-  title: {fontSize: 22, fontWeight: '700', color: '#111'},
-  body: {paddingHorizontal: 16, paddingBottom: 32},
-  section: {marginTop: 16},
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#555',
-    marginBottom: 6,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  sectionBody: {
-    backgroundColor: '#f7f8fa',
-    borderRadius: 10,
-    paddingHorizontal: 4,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-  },
-  rowPressed: {backgroundColor: '#eef0f3'},
-  rowMain: {flex: 1, paddingRight: 12},
-  rowLabel: {fontSize: 15, color: '#111', fontWeight: '500'},
-  rowHint: {marginTop: 2, fontSize: 12, color: '#666'},
-  radio: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  radioSelected: {borderColor: '#1976d2'},
-  radioUnselected: {borderColor: '#bbb'},
-  radioInner: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#1976d2',
-  },
-  input: {
-    marginHorizontal: 12,
-    marginVertical: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#fff',
-    borderRadius: 6,
-    fontSize: 14,
-    color: '#111',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#ccc',
-  },
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-  },
-  pathPreview: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 12,
-    color: '#555',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  folderRow: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 8,
-  },
-  folderBtn: {
-    backgroundColor: '#1976d2',
-    paddingVertical: 10,
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  folderBtnText: {color: '#fff', fontSize: 14, fontWeight: '600'},
-  folderClear: {
-    paddingVertical: 8,
-    borderRadius: 6,
-    alignItems: 'center',
-    backgroundColor: '#ececec',
-  },
-  folderClearText: {color: '#555', fontSize: 13},
-  uriPreview: {
-    fontSize: 11,
-    color: '#888',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    marginTop: 4,
-  },
-  statusRow: {marginTop: 20, alignItems: 'center'},
-  statusText: {fontSize: 12, color: '#888'},
-});
+function createStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    safe: { flex: 1, backgroundColor: c.background },
+    header: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
+    title: { fontSize: 22, fontWeight: '700', color: c.textPrimary },
+    body: { paddingHorizontal: 16, paddingBottom: 32 },
+    section: { marginTop: 16 },
+    sectionTitle: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: c.textSecondary,
+      marginBottom: 6,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    sectionBody: {
+      backgroundColor: c.surface,
+      borderRadius: 10,
+      paddingHorizontal: 4,
+    },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 12,
+    },
+    rowPressed: { backgroundColor: c.surfaceStrong },
+    rowMain: { flex: 1, paddingRight: 12 },
+    rowLabel: { fontSize: 15, color: c.textPrimary, fontWeight: '500' },
+    rowHint: { marginTop: 2, fontSize: 12, color: c.textSecondary },
+    radio: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      borderWidth: 2,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    radioSelected: { borderColor: c.primary },
+    radioUnselected: { borderColor: c.borderStrong },
+    radioInner: {
+      width: 10,
+      height: 10,
+      borderRadius: 5,
+      backgroundColor: c.primary,
+    },
+    input: {
+      marginHorizontal: 12,
+      marginVertical: 6,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      backgroundColor: c.background,
+      borderRadius: 6,
+      fontSize: 14,
+      color: c.textPrimary,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.borderStrong,
+    },
+    switchRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 12,
+    },
+    pathPreview: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      fontSize: 12,
+      color: c.textSecondary,
+      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    },
+    folderRow: {
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      gap: 8,
+    },
+    folderBtn: {
+      backgroundColor: c.primary,
+      paddingVertical: 10,
+      borderRadius: 6,
+      alignItems: 'center',
+    },
+    folderBtnText: { color: c.textOnPrimary, fontSize: 14, fontWeight: '600' },
+    folderClear: {
+      paddingVertical: 8,
+      borderRadius: 6,
+      alignItems: 'center',
+      backgroundColor: c.surfaceStrong,
+    },
+    folderClearText: { color: c.textSecondary, fontSize: 13 },
+    uriPreview: {
+      fontSize: 11,
+      color: c.textHint,
+      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+      marginTop: 4,
+    },
+    statusRow: { marginTop: 20, alignItems: 'center' },
+    statusText: { fontSize: 12, color: c.textHint },
+  });
+}

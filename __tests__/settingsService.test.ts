@@ -6,8 +6,8 @@ import {
   _resetSettingsCacheForTests,
   type AppSettings,
 } from '../src/services/settingsService';
-import {buildFilename} from '../src/services/imageDownloader';
-import {open} from '@op-engineering/op-sqlite';
+import { buildFilename } from '../src/services/imageDownloader';
+import { open } from '@op-engineering/op-sqlite';
 
 // Minimal fake DB: historyService reads/writes the settings KV via getDb().
 const fakeStore: Record<string, Record<string, unknown>[]> = {
@@ -23,34 +23,33 @@ const fakeDb = {
       const [key, value, updated_at] = params ?? [];
       const arr = fakeStore.settings;
       const idx = arr.findIndex(r => r.key === key);
-      const entry = {key, value, updated_at};
+      const entry = { key, value, updated_at };
       if (idx >= 0) arr[idx] = entry;
       else arr.push(entry);
-      return {rows: [], insertId: arr.length, rowsAffected: 1};
+      return { rows: [], insertId: arr.length, rowsAffected: 1 };
     }
     const getv = sql.match(/SELECT value FROM settings WHERE key = ?/i);
     if (getv) {
       const [key] = params ?? [];
       const arr = fakeStore.settings;
       const row = arr.find(r => r.key === key);
-      return {rows: row ? [row] : [], insertId: 0, rowsAffected: row ? 1 : 0};
+      return { rows: row ? [row] : [], insertId: 0, rowsAffected: row ? 1 : 0 };
     }
     const delv = sql.match(/DELETE FROM settings WHERE key = ?/i);
     if (delv) {
       const [key] = params ?? [];
       fakeStore.settings = fakeStore.settings.filter(r => r.key !== key);
-      return {rows: [], insertId: 0, rowsAffected: 1};
+      return { rows: [], insertId: 0, rowsAffected: 1 };
     }
     // Pass through anything else (PRAGMA, schema_meta, history, etc.).
-    return {rows: [], insertId: 0, rowsAffected: 0};
+    return { rows: [], insertId: 0, rowsAffected: 0 };
   },
   executeSync: (sql: string, params?: any[]) =>
     // synchronous mirrors of the same handlers (used by runMigrations etc.)
     fakeDb.execute(sql, params),
-  executeAsync: (sql: string, params?: any[]) =>
-    fakeDb.execute(sql, params),
+  executeAsync: (sql: string, params?: any[]) => fakeDb.execute(sql, params),
   transaction: async (fn: any) => {
-    await fn({execute: fakeDb.execute});
+    await fn({ execute: fakeDb.execute });
   },
   close: async () => undefined,
 } as any;
@@ -65,7 +64,7 @@ beforeEach(() => {
 
 describe('settingsService', () => {
   describe('computeSubfolder', () => {
-    const article = {title: 'My Article', url: 'https://example.com/foo'};
+    const article = { title: 'My Article', url: 'https://example.com/foo' };
 
     it('uses the article title by default', () => {
       expect(computeSubfolder(article, DEFAULT_SETTINGS)).toBe('My Article');
@@ -84,7 +83,7 @@ describe('settingsService', () => {
         ...DEFAULT_SETTINGS,
         subfolderTemplate: 'domain',
       };
-      expect(computeSubfolder({title: 'X', url: 'not a url'}, s)).toBe('X');
+      expect(computeSubfolder({ title: 'X', url: 'not a url' }, s)).toBe('X');
     });
 
     it('uses custom value when template = custom', () => {
@@ -120,6 +119,8 @@ describe('settingsService', () => {
         autoFillClipboard: false,
         storageType: 'downloads',
         customTreeUri: 'content://test/tree',
+        locale: 'en',
+        theme: 'dark',
       };
       await saveSettings(next);
       const loaded = await loadSettings();
@@ -146,6 +147,8 @@ describe('settingsService', () => {
           autoFillClipboard: 'maybe',
           storageType: 'bogus',
           customTreeUri: 99,
+          locale: 'fr',
+          theme: 'ultraviolet',
         }),
         updated_at: 0,
       });
@@ -156,11 +159,15 @@ describe('settingsService', () => {
       expect(s.autoFillClipboard).toBe(true);
       expect(s.storageType).toBe('pictures');
       expect(s.customTreeUri).toBe('');
+      expect(s.locale).toBe('zh-CN');
+      expect(s.theme).toBe('system');
     });
   });
 
   describe('buildFilename', () => {
-    const baseImage = (overrides: Partial<{index: number; filename: string; url: string}> = {}) => ({
+    const baseImage = (
+      overrides: Partial<{ index: number; filename: string; url: string }> = {},
+    ) => ({
       id: 'x',
       index: 1,
       url: 'https://example.com/photo.jpg',
@@ -170,25 +177,21 @@ describe('settingsService', () => {
     });
 
     it('uses zero-padded 6-digit index for the date_index rule', () => {
-      const s: AppSettings = {...DEFAULT_SETTINGS, namingRule: 'date_index'};
-      const name = buildFilename(baseImage({index: 7}), undefined, s);
+      const s: AppSettings = { ...DEFAULT_SETTINGS, namingRule: 'date_index' };
+      const name = buildFilename(baseImage({ index: 7 }), undefined, s);
       expect(name).toMatch(/^\d{8}_000007$/);
     });
 
     it('appends the article title short-tag for the title rule', () => {
-      const s: AppSettings = {...DEFAULT_SETTINGS, namingRule: 'title'};
-      const name = buildFilename(
-        baseImage({index: 12}),
-        'My Album',
-        s,
-      );
+      const s: AppSettings = { ...DEFAULT_SETTINGS, namingRule: 'title' };
+      const name = buildFilename(baseImage({ index: 12 }), 'My Album', s);
       expect(name).toMatch(/^000012_/);
     });
 
     it('uses the URL basename for the original rule', () => {
-      const s: AppSettings = {...DEFAULT_SETTINGS, namingRule: 'original'};
+      const s: AppSettings = { ...DEFAULT_SETTINGS, namingRule: 'original' };
       const name = buildFilename(
-        baseImage({url: 'https://cdn.example.com/path/photo.jpg?x=1'}),
+        baseImage({ url: 'https://cdn.example.com/path/photo.jpg?x=1' }),
         undefined,
         s,
       );
@@ -196,9 +199,9 @@ describe('settingsService', () => {
     });
 
     it('falls back to index when the URL cannot be parsed', () => {
-      const s: AppSettings = {...DEFAULT_SETTINGS, namingRule: 'original'};
+      const s: AppSettings = { ...DEFAULT_SETTINGS, namingRule: 'original' };
       const name = buildFilename(
-        baseImage({url: 'not a url', index: 5}),
+        baseImage({ url: 'not a url', index: 5 }),
         undefined,
         s,
       );

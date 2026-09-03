@@ -29,7 +29,8 @@ import {
 } from '../services/historyService';
 import { parseTelegraphArticle } from '../services/telegraphParser';
 import type { MainTabScreenProps } from '../navigation/types';
-import { t } from '../i18n';
+import { t, useI18n } from '../i18n';
+import { useTheme, useThemedStyles, type ThemeColors } from '../theme';
 
 type Props = MainTabScreenProps<'History'>;
 
@@ -45,6 +46,10 @@ const PAGE_SIZE = 20; // records loaded per scroll/pull
 const PAGE_BATCH = 100; // records per "page" (5 batches) — pagination buttons appear once a page is full
 
 export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
+  // Subscribe so sections/headers re-render in the active language.
+  useI18n();
+  const styles = useThemedStyles(createStyles);
+  const { colors: themeColors } = useTheme();
   // Records currently loaded (the visible page).
   const [records, setRecords] = useState<HistoryRecord[]>([]);
   // Offset (in the underlying history rows) of the first record in `records`.
@@ -263,7 +268,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
             value={query}
             onChangeText={setQuery}
             placeholder={t('history.searchPlaceholder')}
-            placeholderTextColor="#999"
+            placeholderTextColor={themeColors.textHint}
             autoCorrect={false}
             autoCapitalize="none"
             returnKeyType="search"
@@ -368,7 +373,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
           {loadError ? (
             <Text style={styles.loadingText}>{t('history.loadFailed')}</Text>
           ) : (
-            <ActivityIndicator color="#1976d2" />
+            <ActivityIndicator color={themeColors.primary} />
           )}
         </View>
       ) : records.length === 0 ? (
@@ -403,7 +408,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
             <View style={styles.footerWrap}>
               {loadingMore ? (
                 <View style={styles.footerStatus}>
-                  <ActivityIndicator color="#1976d2" />
+                  <ActivityIndicator color={themeColors.primary} />
                   <Text style={styles.footerStatusText}>
                     {t('history.loadingMore')}
                   </Text>
@@ -452,6 +457,9 @@ const HistoryRow: React.FC<{
   onPress: () => void;
   onLongPress: () => void;
 }> = React.memo(({ record, onPress, onLongPress }) => {
+  // Subscribe so item labels re-render in the active language.
+  useI18n();
+  const styles = useThemedStyles(createStyles);
   return (
     <Pressable
       onPress={onPress}
@@ -499,6 +507,9 @@ const HistoryCalendar: React.FC<{
   onSelect: (date: Date) => void;
   onClose: () => void;
 }> = ({ visible, initialDate, onSelect, onClose }) => {
+  // Subscribe so weekday/month labels re-render in the active language.
+  useI18n();
+  const styles = useThemedStyles(createStyles);
   const [viewYear, setViewYear] = useState(() => new Date().getFullYear());
   const [viewMonth, setViewMonth] = useState(() => new Date().getMonth());
   const [dayCounts, setDayCounts] = useState<Map<number, number>>(new Map());
@@ -743,212 +754,233 @@ function formatLocalTime(utcMs: number): string {
   ).padStart(2, '0')}`;
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#fff' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  loadingText: { color: '#888', fontSize: 13 },
-  list: { paddingBottom: 96 },
-  filterBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
-    backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#eee',
-  },
-  searchWrap: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f2f4f6',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    height: 38,
-  },
-  searchInput: { flex: 1, fontSize: 14, color: '#111', paddingVertical: 0 },
-  searchClear: {
-    marginLeft: 4,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#cfd4da',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  searchClearText: { color: '#fff', fontSize: 14, lineHeight: 16 },
-  dateBtn: {
-    height: 38,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: '#f2f4f6',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dateBtnActive: { backgroundColor: '#e3f0fc' },
-  dateBtnText: { fontSize: 13, color: '#444' },
-  dateBtnTextActive: { color: '#0d5fb8', fontWeight: '600' },
-  chipRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingTop: 6,
-    paddingBottom: 2,
-    gap: 8,
-  },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#e3f0fc',
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-  },
-  chipText: { fontSize: 12, color: '#0d5fb8', marginRight: 4 },
-  chipClear: { fontSize: 14, color: '#0d5fb8', lineHeight: 16 },
-  clearAllBtn: { paddingVertical: 2, paddingHorizontal: 4 },
-  clearAllText: { fontSize: 12, color: '#1976d2' },
-  pageBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#eee',
-    backgroundColor: '#fff',
-  },
-  pageBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 6,
-    backgroundColor: '#eef4fb',
-    minWidth: 92,
-    alignItems: 'center',
-  },
-  pageBtnDisabled: { backgroundColor: '#f2f4f6' },
-  pageBtnText: { color: '#1976d2', fontSize: 13, fontWeight: '600' },
-  pageBtnTextDisabled: { color: '#bbb' },
-  pageIndicator: { color: '#555', fontSize: 12, fontVariant: ['tabular-nums'] },
-  sectionHeader: {
-    backgroundColor: '#f2f4f6',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-  },
-  sectionTitle: { fontSize: 12, fontWeight: '600', color: '#555' },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#eee',
-  },
-  pressed: { backgroundColor: '#f6f8fa', opacity: 0.85 },
-  rowMain: { flex: 1, paddingRight: 12 },
-  rowTitle: { fontSize: 15, fontWeight: '500', color: '#111' },
-  rowMeta: { marginTop: 3, fontSize: 12, color: '#888' },
-  rowBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    backgroundColor: '#e3f0fc',
-  },
-  rowBadgeText: {
-    fontSize: 11,
-    color: '#0d5fb8',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-  footerWrap: { paddingVertical: 16, alignItems: 'center' },
-  footerStatus: { flexDirection: 'row', alignItems: 'center' },
-  footerStatusText: { marginLeft: 8, color: '#888', fontSize: 12 },
-  footerError: { color: '#a32', fontSize: 12, marginTop: 4 },
-  fab: {
-    position: 'absolute',
-    right: 16,
-    bottom: 20,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#1976d2',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  fabIcon: { color: '#fff', fontSize: 22, fontWeight: '700', lineHeight: 24 },
-  calBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    justifyContent: 'flex-end',
-  },
-  calSheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingBottom: 24,
-    paddingTop: 12,
-    paddingHorizontal: 8,
-  },
-  calHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 8,
-    marginBottom: 10,
-  },
-  calNavBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#f2f4f6',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  calNavText: { fontSize: 22, color: '#1976d2', lineHeight: 26 },
-  calMonthWrap: { alignItems: 'center' },
-  calMonthTitle: { fontSize: 16, fontWeight: '600', color: '#111' },
-  calGoToday: { marginTop: 2, fontSize: 12, color: '#1976d2' },
-  calWeekRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  calWeekChar: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 11,
-    color: '#888',
-    paddingVertical: 6,
-  },
-  calDayCell: {
-    flex: 1,
-    minHeight: 52,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingVertical: 6,
-    margin: 1,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'transparent',
-  },
-  calDayOut: { opacity: 0.35 },
-  calDayToday: { borderColor: '#1976d2' },
-  calDaySelected: { backgroundColor: '#e3f0fc', borderColor: '#1976d2' },
-  calDayNum: { fontSize: 14, color: '#222' },
-  calDayNumOut: { color: '#999' },
-  calDayNumToday: { color: '#1976d2', fontWeight: '700' },
-  calDayNumSelected: { color: '#0d5fb8', fontWeight: '700' },
-  calDayCount: {
-    marginTop: 2,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 8,
-    backgroundColor: '#e3f0fc',
-  },
-  calDayCountText: { fontSize: 10, color: '#0d5fb8', fontWeight: '600' },
-});
+function createStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    safe: { flex: 1, backgroundColor: c.background },
+    center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+    loadingText: { color: c.textHint, fontSize: 13 },
+    list: { paddingBottom: 96 },
+    filterBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      gap: 8,
+      backgroundColor: c.background,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    searchWrap: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: c.surface,
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      height: 38,
+    },
+    searchInput: {
+      flex: 1,
+      fontSize: 14,
+      color: c.textPrimary,
+      paddingVertical: 0,
+    },
+    searchClear: {
+      marginLeft: 4,
+      width: 20,
+      height: 20,
+      borderRadius: 10,
+      backgroundColor: c.borderStrong,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    searchClearText: { color: c.background, fontSize: 14, lineHeight: 16 },
+    dateBtn: {
+      height: 38,
+      paddingHorizontal: 12,
+      borderRadius: 8,
+      backgroundColor: c.surface,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    dateBtnActive: { backgroundColor: c.primarySoft },
+    dateBtnText: { fontSize: 13, color: c.textSecondary },
+    dateBtnTextActive: { color: c.primarySoftText, fontWeight: '600' },
+    chipRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingTop: 6,
+      paddingBottom: 2,
+      gap: 8,
+    },
+    chip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: c.primarySoft,
+      borderRadius: 12,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+    },
+    chipText: { fontSize: 12, color: c.primarySoftText, marginRight: 4 },
+    chipClear: { fontSize: 14, color: c.primarySoftText, lineHeight: 16 },
+    clearAllBtn: { paddingVertical: 2, paddingHorizontal: 4 },
+    clearAllText: { fontSize: 12, color: c.primary },
+    pageBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+      backgroundColor: c.background,
+    },
+    pageBtn: {
+      paddingVertical: 6,
+      paddingHorizontal: 10,
+      borderRadius: 6,
+      backgroundColor: c.primarySoft,
+      minWidth: 92,
+      alignItems: 'center',
+    },
+    pageBtnDisabled: { backgroundColor: c.surface },
+    pageBtnText: { color: c.primary, fontSize: 13, fontWeight: '600' },
+    pageBtnTextDisabled: { color: c.textHint },
+    pageIndicator: {
+      color: c.textSecondary,
+      fontSize: 12,
+      fontVariant: ['tabular-nums'],
+    },
+    sectionHeader: {
+      backgroundColor: c.surface,
+      paddingHorizontal: 16,
+      paddingVertical: 6,
+    },
+    sectionTitle: { fontSize: 12, fontWeight: '600', color: c.textSecondary },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+      backgroundColor: c.background,
+    },
+    pressed: { backgroundColor: c.surface, opacity: 0.85 },
+    rowMain: { flex: 1, paddingRight: 12 },
+    rowTitle: { fontSize: 15, fontWeight: '500', color: c.textPrimary },
+    rowMeta: { marginTop: 3, fontSize: 12, color: c.textHint },
+    rowBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+      backgroundColor: c.primarySoft,
+    },
+    rowBadgeText: {
+      fontSize: 11,
+      color: c.primarySoftText,
+      fontWeight: '600',
+      textTransform: 'uppercase',
+    },
+    footerWrap: { paddingVertical: 16, alignItems: 'center' },
+    footerStatus: { flexDirection: 'row', alignItems: 'center' },
+    footerStatusText: { marginLeft: 8, color: c.textHint, fontSize: 12 },
+    footerError: { color: c.danger, fontSize: 12, marginTop: 4 },
+    fab: {
+      position: 'absolute',
+      right: 16,
+      bottom: 20,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      backgroundColor: c.primary,
+      alignItems: 'center',
+      justifyContent: 'center',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.18,
+      shadowRadius: 4,
+      elevation: 4,
+    },
+    fabIcon: {
+      color: c.textOnPrimary,
+      fontSize: 22,
+      fontWeight: '700',
+      lineHeight: 24,
+    },
+    calBackdrop: {
+      flex: 1,
+      backgroundColor: c.backdrop,
+      justifyContent: 'flex-end',
+    },
+    calSheet: {
+      backgroundColor: c.background,
+      borderTopLeftRadius: 16,
+      borderTopRightRadius: 16,
+      paddingBottom: 24,
+      paddingTop: 12,
+      paddingHorizontal: 8,
+    },
+    calHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 8,
+      marginBottom: 10,
+    },
+    calNavBtn: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      backgroundColor: c.surface,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    calNavText: { fontSize: 22, color: c.primary, lineHeight: 26 },
+    calMonthWrap: { alignItems: 'center' },
+    calMonthTitle: { fontSize: 16, fontWeight: '600', color: c.textPrimary },
+    calGoToday: { marginTop: 2, fontSize: 12, color: c.primary },
+    calWeekRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    calWeekChar: {
+      flex: 1,
+      textAlign: 'center',
+      fontSize: 11,
+      color: c.textHint,
+      paddingVertical: 6,
+    },
+    calDayCell: {
+      flex: 1,
+      minHeight: 52,
+      alignItems: 'center',
+      justifyContent: 'flex-start',
+      paddingVertical: 6,
+      margin: 1,
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: 'transparent',
+    },
+    calDayOut: { opacity: 0.35 },
+    calDayToday: { borderColor: c.primary },
+    calDaySelected: { backgroundColor: c.primarySoft, borderColor: c.primary },
+    calDayNum: { fontSize: 14, color: c.textPrimary },
+    calDayNumOut: { color: c.textHint },
+    calDayNumToday: { color: c.primary, fontWeight: '700' },
+    calDayNumSelected: { color: c.primarySoftText, fontWeight: '700' },
+    calDayCount: {
+      marginTop: 2,
+      paddingHorizontal: 6,
+      paddingVertical: 1,
+      borderRadius: 8,
+      backgroundColor: c.primarySoft,
+    },
+    calDayCountText: {
+      fontSize: 10,
+      color: c.primarySoftText,
+      fontWeight: '600',
+    },
+  });
+}

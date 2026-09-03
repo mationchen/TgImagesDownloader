@@ -8,11 +8,15 @@ import type { DownloadState } from '../store/downloadReducer';
 import { upsertHistory, type HistoryStatus } from '../services/historyService';
 
 import type { RootStackScreenProps } from '../navigation/types';
-import { t } from '../i18n';
+import { t, useI18n } from '../i18n';
+import { useThemedStyles, type ThemeColors } from '../theme';
 
 type Props = RootStackScreenProps<'Download'>;
 
 export const DownloadScreen: React.FC<Props> = ({ route, navigation }) => {
+  // Subscribe so all strings re-render in the active language.
+  useI18n();
+  const styles = useThemedStyles(createStyles);
   const params = route.params as
     | {
         article: import('../types/telegraph').TelegraphArticle;
@@ -149,7 +153,7 @@ export const DownloadScreen: React.FC<Props> = ({ route, navigation }) => {
         </Pressable>
       ),
     });
-  }, [navigation, handleClose]);
+  }, [navigation, handleClose, styles]);
 
   const renderItem = useCallback(
     ({ item }: { item: string }) => {
@@ -255,96 +259,98 @@ function hasHotlinkFailure(state: DownloadState): boolean {
   return false;
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#fff' },
-  list: {
-    paddingVertical: 4,
-  },
-  empty: {
-    padding: 24,
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: '#888',
-    fontSize: 13,
-  },
-  footer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e5e5',
-    backgroundColor: '#fff',
-    gap: 8,
-  },
-  primaryBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  pauseBtn: { backgroundColor: '#f0a020' },
-  resumeBtn: { backgroundColor: '#1976d2' },
-  primaryText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  retryBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#1b7a3a',
-    alignItems: 'center',
-  },
-  retryText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  secondaryBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#dcdcdc',
-  },
-  secondaryText: {
-    color: '#444',
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  disabled: {
-    opacity: 0.45,
-  },
-  pressed: {
-    opacity: 0.75,
-  },
-  headerCloseBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: '#1976d2',
-    borderRadius: 6,
-    marginRight: 4,
-  },
-  headerCloseText: {
-    color: '#1976d2',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  hotlinkNotice: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#fff7e0',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0d48a',
-  },
-  hotlinkText: {
-    color: '#8a6d1a',
-    fontSize: 12,
-    lineHeight: 17,
-  },
-});
+function createStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    safe: { flex: 1, backgroundColor: c.background },
+    list: {
+      paddingVertical: 4,
+    },
+    empty: {
+      padding: 24,
+      alignItems: 'center',
+    },
+    emptyText: {
+      color: c.textHint,
+      fontSize: 13,
+    },
+    footer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+      backgroundColor: c.background,
+      gap: 8,
+    },
+    primaryBtn: {
+      flex: 1,
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: 'center',
+    },
+    pauseBtn: { backgroundColor: c.warning },
+    resumeBtn: { backgroundColor: c.primary },
+    primaryText: {
+      color: c.textOnPrimary,
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    retryBtn: {
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      borderRadius: 8,
+      backgroundColor: c.success,
+      alignItems: 'center',
+    },
+    retryText: {
+      color: c.textOnPrimary,
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    secondaryBtn: {
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      borderRadius: 8,
+      alignItems: 'center',
+      borderWidth: 1,
+      borderColor: c.borderStrong,
+    },
+    secondaryText: {
+      color: c.textSecondary,
+      fontSize: 13,
+      fontWeight: '500',
+    },
+    disabled: {
+      opacity: 0.45,
+    },
+    pressed: {
+      opacity: 0.75,
+    },
+    headerCloseBtn: {
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderWidth: 1,
+      borderColor: c.primary,
+      borderRadius: 6,
+      marginRight: 4,
+    },
+    headerCloseText: {
+      color: c.primary,
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    hotlinkNotice: {
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      backgroundColor: c.warningBg,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.warning,
+    },
+    hotlinkText: {
+      color: c.textPrimary,
+      fontSize: 12,
+      lineHeight: 17,
+    },
+  });
+}

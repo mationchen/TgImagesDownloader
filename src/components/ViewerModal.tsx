@@ -1,4 +1,4 @@
-import React, {useCallback, useRef, useState} from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -13,16 +13,24 @@ import {
   type NativeSyntheticEvent,
   type ScrollViewInstance,
 } from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
-import {t} from '../i18n';
-import {probeImageUrl} from '../services/imageDownloader';
-import type {TelegraphImage} from '../types/telegraph';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { t, useI18n } from '../i18n';
+import { probeImageUrl } from '../services/imageDownloader';
+import type { TelegraphImage } from '../types/telegraph';
 
 type Props = {
   visible: boolean;
   images: TelegraphImage[];
   initialIndex: number;
   onClose: () => void;
+  /**
+   * Optional selection mode. When provided, each image page shows a selection
+   * badge in the corner; tapping the image or badge toggles inclusion in the
+   * set. The header counter then shows `selected / total` instead of the raw
+   * page index, matching the WeChat image-picker UX.
+   */
+  selectedIds?: Set<string>;
+  onToggleSelect?: (image: TelegraphImage) => void;
 };
 
 export const ViewerModal: React.FC<Props> = ({
@@ -30,10 +38,16 @@ export const ViewerModal: React.FC<Props> = ({
   images,
   initialIndex,
   onClose,
+  selectedIds,
+  onToggleSelect,
 }) => {
-  const {width} = useWindowDimensions();
+  // The viewer chrome stays black in both themes (standard for media
+  // viewers); the subscription only forces fresh strings on locale change.
+  useI18n();
+  const { width } = useWindowDimensions();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const scrollRef = useRef<ScrollViewInstance>(null);
+  const selectionMode = !!selectedIds && !!onToggleSelect;
 
   // Reset to initialIndex whenever modal becomes visible
   React.useEffect(() => {
@@ -61,6 +75,20 @@ export const ViewerModal: React.FC<Props> = ({
 
   const safeIndex = Math.max(0, Math.min(currentIndex, images.length - 1));
   const current = images[safeIndex];
+  const selectedCount = selectionMode
+    ? images.reduce((n, img) => (selectedIds!.has(img.id) ? n + 1 : n), 0)
+    : 0;
+
+  const currentSelected =
+    !!selectionMode &&
+    !!selectedIds &&
+    !!current &&
+    selectedIds.has(current.id);
+
+  const onHeaderToggle = useCallback(() => {
+    if (!selectionMode || !onToggleSelect || !current) return;
+    onToggleSelect(current);
+  }, [current, onToggleSelect, selectionMode]);
 
   return (
     <Modal
@@ -68,22 +96,48 @@ export const ViewerModal: React.FC<Props> = ({
       animationType="fade"
       transparent={false}
       onRequestClose={onClose}
-      statusBarTranslucent>
+      statusBarTranslucent
+    >
       <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
         <View style={styles.header}>
           <Pressable
             onPress={onClose}
             hitSlop={12}
-            style={({pressed}) => [styles.closeBtn, pressed && styles.pressed]}>
+            style={({ pressed }) => [
+              styles.closeBtn,
+              pressed && styles.pressed,
+            ]}
+          >
             <Text style={styles.closeText}>×</Text>
           </Pressable>
           <Text style={styles.counter}>
-            {t('preview.viewerIndex', {
-              current: safeIndex + 1,
-              total: images.length,
-            })}
+            {selectionMode
+              ? t('preview.viewerSelected', { count: selectedCount })
+              : t('preview.viewerIndex', {
+                  current: safeIndex + 1,
+                  total: images.length,
+                })}
           </Text>
-          <View style={styles.placeholder} />
+          {selectionMode ? (
+            <Pressable
+              onPress={onHeaderToggle}
+              hitSlop={12}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: currentSelected }}
+              accessibilityLabel={t('preview.viewerSelectHint')}
+              style={({ pressed }) => [
+                styles.headerBadge,
+                currentSelected ? styles.headerBadgeOn : styles.headerBadgeOff,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.headerBadgeText}>
+                {currentSelected ? '✓' : ''}
+              </Text>
+            </Pressable>
+          ) : (
+            <View style={styles.placeholder} />
+          )}
         </View>
 
         <ScrollView
@@ -94,7 +148,8 @@ export const ViewerModal: React.FC<Props> = ({
           onMomentumScrollEnd={handleScrollEnd}
           scrollEventThrottle={16}
           style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}>
+          contentContainerStyle={styles.scrollContent}
+        >
           {images.map(img => (
             <ImagePage key={img.id} image={img} width={width} />
           ))}
@@ -105,15 +160,21 @@ export const ViewerModal: React.FC<Props> = ({
             {current?.filename ?? ''}
           </Text>
         </View>
+
+        {selectionMode && !!images.length ? (
+          <View style={styles.hintBar} pointerEvents="none">
+            <Text style={styles.hintText}>{t('preview.viewerSelectHint')}</Text>
+          </View>
+        ) : null}
       </SafeAreaView>
     </Modal>
   );
 };
 
-const ImagePage: React.FC<{image: TelegraphImage; width: number}> = ({
-  image,
-  width,
-}) => {
+const ImagePage: React.FC<{
+  image: TelegraphImage;
+  width: number;
+}> = ({ image, width }) => {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
@@ -138,7 +199,7 @@ const ImagePage: React.FC<{image: TelegraphImage; width: number}> = ({
       } else if (result.kind === 'hotlink') {
         setProbeLabel(t('preview.imageProbeHotlink'));
       } else if (result.kind === 'http') {
-        setProbeLabel(t('preview.imageProbeHttp', {status: result.status}));
+        setProbeLabel(t('preview.imageProbeHttp', { status: result.status }));
       } else {
         setProbeLabel(t('preview.imageProbeNetwork'));
       }
@@ -150,11 +211,11 @@ const ImagePage: React.FC<{image: TelegraphImage; width: number}> = ({
   }, [image.url, probing]);
 
   return (
-    <View style={[styles.page, {width}]}>
+    <View style={[styles.page, { width }]}>
       {!failed ? (
         <Image
           key={retryKey}
-          source={{uri: image.url}}
+          source={{ uri: image.url }}
           style={styles.fullImage}
           resizeMode="contain"
           onLoadEnd={() => setLoading(false)}
@@ -169,20 +230,22 @@ const ImagePage: React.FC<{image: TelegraphImage; width: number}> = ({
           <View style={styles.errorActions}>
             <Pressable
               onPress={handleRetry}
-              style={({pressed}) => [
+              style={({ pressed }) => [
                 styles.retryBtn,
                 pressed && styles.pressed,
-              ]}>
+              ]}
+            >
               <Text style={styles.retryText}>{t('common.retry')}</Text>
             </Pressable>
             <Pressable
               onPress={handleProbe}
               disabled={probing}
-              style={({pressed}) => [
+              style={({ pressed }) => [
                 styles.retryBtn,
                 styles.probeBtn,
                 pressed && styles.pressed,
-              ]}>
+              ]}
+            >
               <Text style={styles.retryText}>
                 {probing ? t('common.loading') : t('preview.imageProbe')}
               </Text>
@@ -233,9 +296,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
-  placeholder: {width: 40},
-  scroll: {flex: 1},
-  scrollContent: {alignItems: 'center'},
+  placeholder: { width: 40 },
+  scroll: { flex: 1 },
+  scrollContent: { alignItems: 'center' },
   page: {
     flex: 1,
     alignItems: 'center',
@@ -300,5 +363,47 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.7,
+  },
+  headerBadge: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerBadgeOff: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1.5,
+    borderColor: '#fff',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerBadgeOn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1.5,
+    borderColor: '#1976d2',
+    backgroundColor: '#1976d2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerBadgeText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+    lineHeight: 17,
+  },
+  hintBar: {
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.85)',
+  },
+  hintText: {
+    color: '#bbb',
+    fontSize: 12,
   },
 });

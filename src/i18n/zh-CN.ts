@@ -10,8 +10,22 @@ export const zhCN = {
   // Settings
   'settings.title': '设置',
   'settings.placeholder': '设置项即将推出',
+  // Splash
+  'splash.appName': '网页图片批量下载器',
+  'splash.subtitle': '网页图集一键批量保存至相册',
+  'splash.desc': '支持任意网页，自动识别分页，批量下载并按原文顺序保存',
   'settings.saving': '保存中…',
   'settings.saved': '已保存',
+  // Language
+  'settings.language.title': '语言 / Language',
+  'settings.language.zhLabel': '简体中文',
+  'settings.language.enLabel': 'English',
+  // Appearance
+  'settings.appearance.title': '外观',
+  'settings.appearance.systemLabel': '跟随系统',
+  'settings.appearance.systemHint': '自动适配系统的浅色 / 深色模式',
+  'settings.appearance.lightLabel': '浅色',
+  'settings.appearance.darkLabel': '深色',
   // Subfolder template
   'settings.subfolder.title': '下载子目录',
   'settings.subfolder.titleLabel': '使用文章标题',
@@ -56,6 +70,12 @@ export const zhCN = {
   'home.detectedUrls': '已识别链接：{count} 个',
   'home.recent': '最近使用',
   'home.recentEmpty': '暂无记录',
+  'home.parseStage.resolving': '正在解析链接…',
+  'home.parseStage.fetching': '正在抓取页面（可能需要数秒）…',
+  'home.parseStage.parsing': '正在提取图片…',
+  'home.parseCancel': '取消解析',
+  'home.paste': '粘贴',
+  'home.pasteNoUrl': '剪贴板中没有找到可用链接',
 
   // Preview (also used inline on HomeScreen result card — same data, same wording)
   'preview.title': '文章标题',
@@ -75,6 +95,8 @@ export const zhCN = {
   'preview.imageProbeNetwork': '网络连接失败，无法访问图片源',
   'preview.blockedShort': '源站保护',
   'preview.backToHome': '返回首页',
+  'preview.viewerSelected': '已选 {count} 张',
+  'preview.viewerSelectHint': '点击右上角圆圈选择/取消，左右滑动翻页',
 
   // Download (Phase 4: single image inline; Phase 5: full screen)
   'download.preparing': '准备下载…',

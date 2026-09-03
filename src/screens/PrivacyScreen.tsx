@@ -1,11 +1,15 @@
 import React from 'react';
-import {ScrollView, StyleSheet, Text, View} from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
-import {t} from '../i18n';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { t, useI18n } from '../i18n';
+import { useThemedStyles, type ThemeColors } from '../theme';
 
 type Props = {};
 
 export const PrivacyScreen: React.FC<Props> = () => {
+  // Subscribe so all strings re-render in the active language.
+  useI18n();
+  const styles = useThemedStyles(createStyles);
   return (
     <SafeAreaView style={styles.safe} edges={['left', 'right']}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -50,11 +54,16 @@ export const PrivacyScreen: React.FC<Props> = () => {
   );
 };
 
-const Paragraph: React.FC<{children: string}> = ({children}) => {
+const Paragraph: React.FC<{ children: string }> = ({ children }) => {
+  const styles = useThemedStyles(createStyles);
   return <Text style={styles.paragraph}>{children}</Text>;
 };
 
-const Section: React.FC<{title: string; body: string}> = ({title, body}) => {
+const Section: React.FC<{ title: string; body: string }> = ({
+  title,
+  body,
+}) => {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -63,41 +72,43 @@ const Section: React.FC<{title: string; body: string}> = ({title, body}) => {
   );
 };
 
-const styles = StyleSheet.create({
-  safe: {flex: 1, backgroundColor: '#fff'},
-  content: {
-    padding: 20,
-    paddingBottom: 40,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#111',
-    marginBottom: 4,
-  },
-  effective: {
-    fontSize: 12,
-    color: '#888',
-    marginBottom: 16,
-  },
-  paragraph: {
-    fontSize: 14,
-    lineHeight: 22,
-    color: '#333',
-    marginBottom: 18,
-  },
-  section: {
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#111',
-    marginBottom: 6,
-  },
-  sectionBody: {
-    fontSize: 14,
-    lineHeight: 22,
-    color: '#333',
-  },
-});
+function createStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    safe: { flex: 1, backgroundColor: c.background },
+    content: {
+      padding: 20,
+      paddingBottom: 40,
+    },
+    title: {
+      fontSize: 20,
+      fontWeight: '700',
+      color: c.textPrimary,
+      marginBottom: 4,
+    },
+    effective: {
+      fontSize: 12,
+      color: c.textHint,
+      marginBottom: 16,
+    },
+    paragraph: {
+      fontSize: 14,
+      lineHeight: 22,
+      color: c.textSecondary,
+      marginBottom: 18,
+    },
+    section: {
+      marginBottom: 16,
+    },
+    sectionTitle: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: c.textPrimary,
+      marginBottom: 6,
+    },
+    sectionBody: {
+      fontSize: 14,
+      lineHeight: 22,
+      color: c.textSecondary,
+    },
+  });
+}

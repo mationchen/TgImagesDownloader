@@ -12,8 +12,24 @@ export const en: Record<ZhKeys, string> = {
   // Settings
   'settings.title': 'Settings',
   'settings.placeholder': 'Settings coming soon',
+  // Splash
+  'splash.appName': 'Web Image Batch Downloader',
+  'splash.subtitle': 'Save web galleries to your album in one tap',
+  'splash.desc':
+    'Works with any web page, auto-detects pagination, downloads in bulk and saves in source order',
   'settings.saving': 'Saving…',
   'settings.saved': 'Saved',
+  // Language
+  'settings.language.title': 'Language',
+  'settings.language.zhLabel': '简体中文',
+  'settings.language.enLabel': 'English',
+  // Appearance
+  'settings.appearance.title': 'Appearance',
+  'settings.appearance.systemLabel': 'Follow system',
+  'settings.appearance.systemHint':
+    'Automatically match the system light / dark mode',
+  'settings.appearance.lightLabel': 'Light',
+  'settings.appearance.darkLabel': 'Dark',
   'settings.subfolder.title': 'Download subfolder',
   'settings.subfolder.titleLabel': 'Use article title',
   'settings.subfolder.titleHint': 'Default: one subfolder per article',
@@ -58,6 +74,12 @@ export const en: Record<ZhKeys, string> = {
   'home.detectedUrls': '{count} link(s) detected',
   'home.recent': 'Recent',
   'home.recentEmpty': 'No history yet',
+  'home.parseStage.resolving': 'Resolving link…',
+  'home.parseStage.fetching': 'Fetching page (may take a few seconds)…',
+  'home.parseStage.parsing': 'Extracting images…',
+  'home.parseCancel': 'Cancel',
+  'home.paste': 'Paste',
+  'home.pasteNoUrl': 'No usable link found in the clipboard',
 
   'preview.title': 'Article title',
   'preview.imageCount': 'Image count: {count}',
@@ -76,6 +98,9 @@ export const en: Record<ZhKeys, string> = {
   'preview.imageProbeNetwork': 'Network failed while reaching the image host.',
   'preview.blockedShort': 'Host blocked',
   'preview.backToHome': 'Back to home',
+  'preview.viewerSelected': '{count} selected',
+  'preview.viewerSelectHint':
+    'Tap the top-right circle to select, swipe to flip pages',
 
   'download.preparing': 'Preparing…',
   'download.streaming': 'Downloading…',

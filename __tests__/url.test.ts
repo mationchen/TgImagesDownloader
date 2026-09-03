@@ -14,7 +14,10 @@ import {
 describe('utils/url', () => {
   describe('validateTelegraphUrl', () => {
     it.each([
-      ['https://telegra.ph/DJAWA-Photo-Vol0378-CocoPie-Swimming-Lessons-18-07-17', null],
+      [
+        'https://telegra.ph/DJAWA-Photo-Vol0378-CocoPie-Swimming-Lessons-18-07-17',
+        null,
+      ],
       ['http://telegra.ph/foo/bar', null],
       ['https://telegra.ph/', 'INVALID_FORMAT'],
       ['https://example.com/foo', 'INVALID_HOST'],
@@ -44,7 +47,9 @@ describe('utils/url', () => {
         normalizeTelegraphUrl(
           'https://telegra.ph/DJAWA-Photo-Vol0378-CocoPie-Swimming-Lessons-18-07-17).',
         ),
-      ).toBe('https://telegra.ph/DJAWA-Photo-Vol0378-CocoPie-Swimming-Lessons-18-07-17');
+      ).toBe(
+        'https://telegra.ph/DJAWA-Photo-Vol0378-CocoPie-Swimming-Lessons-18-07-17',
+      );
     });
     it('forces https and drops host casing', () => {
       expect(normalizeTelegraphUrl('HTTP://Telegra.ph/foo')).toBe(
@@ -96,9 +101,7 @@ describe('utils/url', () => {
 
   describe('validateWebUrl / normalizeWebUrl (generic web pages)', () => {
     it('accepts public http(s) URLs', () => {
-      expect(
-        validateWebUrl('https://everia.club/2026/08/31/foo/'),
-      ).toBeNull();
+      expect(validateWebUrl('https://everia.club/2026/08/31/foo/')).toBeNull();
       expect(validateWebUrl('http://example.com/x')).toBeNull();
     });
     it('rejects empty / bad protocol / non-URL', () => {
@@ -129,6 +132,24 @@ describe('utils/url', () => {
       expect(
         extractWebUrls('see https://everia.club/a and https://telegra.ph/b'),
       ).toEqual(['https://everia.club/a', 'https://telegra.ph/b']);
+    });
+    it('extractWebUrls accepts a schemeless link by assuming https', () => {
+      expect(extractWebUrls('telegra.ph/abc-09-03')).toEqual([
+        'https://telegra.ph/abc-09-03',
+      ]);
+      expect(extractWebUrls('  www.telegra.ph/abc  ')).toEqual([
+        'https://www.telegra.ph/abc',
+      ]);
+    });
+    it('extractWebUrls ignores non-links even without scheme', () => {
+      expect(extractWebUrls('just some words')).toEqual([]);
+      expect(extractWebUrls('not a url at all')).toEqual([]);
+      expect(extractWebUrls('')).toEqual([]);
+    });
+    it('extractWebUrls strips invisible chars copied from chat apps', () => {
+      expect(extractWebUrls('https://telegra.ph/abc\u200bdef')).toEqual([
+        'https://telegra.ph/abcdef',
+      ]);
     });
   });
 

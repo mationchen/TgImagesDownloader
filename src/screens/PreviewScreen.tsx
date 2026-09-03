@@ -4,7 +4,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImageGrid } from '../components/ImageGrid';
 import { ViewerModal } from '../components/ViewerModal';
 import type { RootStackScreenProps } from '../navigation/types';
-import { t } from '../i18n';
+import { t, useI18n } from '../i18n';
+import { useThemedStyles, type ThemeColors } from '../theme';
 import type { TelegraphImage } from '../types/telegraph';
 
 type Props = RootStackScreenProps<'Preview'>;
@@ -12,6 +13,9 @@ type Props = RootStackScreenProps<'Preview'>;
 type SelectionMode = 'all' | 'none' | 'mixed';
 
 export const PreviewScreen: React.FC<Props> = ({ route, navigation }) => {
+  // Subscribe so all strings re-render in the active language.
+  useI18n();
+  const styles = useThemedStyles(createStyles);
   const { article } = route.params;
   const [images, setImages] = useState<TelegraphImage[]>(article.images);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -35,6 +39,10 @@ export const PreviewScreen: React.FC<Props> = ({ route, navigation }) => {
   const selectedImages = useMemo(
     () => images.filter(i => i.selected),
     [images],
+  );
+  const selectedIdsSet = useMemo(
+    () => new Set(selectedImages.map(i => i.id)),
+    [selectedImages],
   );
 
   const toggleOne = useCallback((target: TelegraphImage) => {
@@ -149,6 +157,8 @@ export const PreviewScreen: React.FC<Props> = ({ route, navigation }) => {
         images={images}
         initialIndex={viewerIndex ?? 0}
         onClose={closeViewer}
+        selectedIds={selectedIdsSet}
+        onToggleSelect={toggleOne}
       />
     </SafeAreaView>
   );
@@ -167,6 +177,7 @@ const ToolbarButton: React.FC<BtnProps> = ({
   active,
   testID,
 }) => {
+  const styles = useThemedStyles(createStyles);
   return (
     <Text
       testID={testID}
@@ -178,102 +189,104 @@ const ToolbarButton: React.FC<BtnProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#fff' },
-  header: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 10,
-    backgroundColor: '#f6f8fa',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e5e5e5',
-  },
-  headerLabel: {
-    fontSize: 12,
-    color: '#888',
-  },
-  headerTitle: {
-    marginTop: 4,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#111',
-  },
-  headerCount: {
-    marginTop: 6,
-    fontSize: 13,
-    color: '#1976d2',
-    fontWeight: '600',
-  },
-  toolbar: {
-    flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#fff',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#eee',
-  },
-  toolbarBtn: {
-    marginRight: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-    color: '#1976d2',
-    fontSize: 13,
-    fontWeight: '500',
-    overflow: 'hidden',
-  },
-  toolbarBtnActive: {
-    backgroundColor: '#e3f0fc',
-    color: '#0d5fb8',
-  },
-  footer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: '#fff',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e5e5e5',
-  },
-  footerLeft: {
-    flex: 1,
-    paddingRight: 12,
-  },
-  footerHint: {
-    fontSize: 13,
-    color: '#666',
-    fontVariant: ['tabular-nums'],
-  },
-  footerBtnWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  startBtn: {
-    backgroundColor: '#1976d2',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-    minWidth: 120,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  startBtnText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  startBtnDisabled: {
-    opacity: 0.45,
-  },
-  startBtnPressed: {
-    opacity: 0.8,
-  },
-  pathHint: {
-    paddingHorizontal: 16,
-    paddingBottom: 14,
-    paddingTop: 6,
-    fontSize: 11,
-    color: '#888',
-    backgroundColor: '#fff',
-  },
-});
+function createStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    safe: { flex: 1, backgroundColor: c.background },
+    header: {
+      paddingHorizontal: 16,
+      paddingTop: 12,
+      paddingBottom: 10,
+      backgroundColor: c.surface,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    headerLabel: {
+      fontSize: 12,
+      color: c.textHint,
+    },
+    headerTitle: {
+      marginTop: 4,
+      fontSize: 16,
+      fontWeight: '600',
+      color: c.textPrimary,
+    },
+    headerCount: {
+      marginTop: 6,
+      fontSize: 13,
+      color: c.primary,
+      fontWeight: '600',
+    },
+    toolbar: {
+      flexDirection: 'row',
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      backgroundColor: c.background,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    toolbarBtn: {
+      marginRight: 12,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 6,
+      color: c.primary,
+      fontSize: 13,
+      fontWeight: '500',
+      overflow: 'hidden',
+    },
+    toolbarBtnActive: {
+      backgroundColor: c.primarySoft,
+      color: c.primarySoftText,
+    },
+    footer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      backgroundColor: c.background,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+    footerLeft: {
+      flex: 1,
+      paddingRight: 12,
+    },
+    footerHint: {
+      fontSize: 13,
+      color: c.textSecondary,
+      fontVariant: ['tabular-nums'],
+    },
+    footerBtnWrap: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    startBtn: {
+      backgroundColor: c.primary,
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      borderRadius: 8,
+      minWidth: 120,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    startBtnText: {
+      color: c.textOnPrimary,
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    startBtnDisabled: {
+      opacity: 0.45,
+    },
+    startBtnPressed: {
+      opacity: 0.8,
+    },
+    pathHint: {
+      paddingHorizontal: 16,
+      paddingBottom: 14,
+      paddingTop: 6,
+      fontSize: 11,
+      color: c.textHint,
+      backgroundColor: c.background,
+    },
+  });
+}
