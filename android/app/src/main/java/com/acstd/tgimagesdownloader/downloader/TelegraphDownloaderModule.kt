@@ -1,6 +1,7 @@
 package com.acstd.tgimagesdownloader.downloader
 
 import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
@@ -150,8 +151,14 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       val selection: String
       val selectionArgs: Array<String>
       if (prefix.isEmpty()) {
-        selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
-        selectionArgs = arrayOf("$BASE_RELATIVE_PATH/%")
+        // No prefix: match BOTH roots (Pictures and Download). The old code
+        // hardcoded the Pictures root, which silently returned nothing for
+        // users whose storageType is 'downloads'.
+        selection =
+            BASE_RELATIVE_PATHS.joinToString(" OR ") {
+              "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+            }
+        selectionArgs = BASE_RELATIVE_PATHS.map { "$it/%" }.toTypedArray()
       } else {
         // Escaping only matters if the prefix contains %, _, or the escape char.
         val escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -174,8 +181,10 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       if (cursor != null) {
         cursor.use {
           while (it.moveToNext()) {
+            // The WHERE clause already restricts to our app folders / prefix,
+            // so no extra (and root-hardcoded) filter is applied here.
             val rel = it.getString(0) ?: continue
-            if (rel.startsWith(BASE_RELATIVE_PATH)) {
+            if (rel.isNotEmpty()) {
               // Build a stable content URI: content://media/external/images/media/<id>
               val id = it.getLong(1)
               out.pushString(
@@ -190,6 +199,217 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     } catch (e: Throwable) {
       promise.reject(ERR_UNKNOWN, e.message ?: "Failed to list gallery images", e)
     }
+  }
+
+  /**
+   * Move every image that currently lives in a per-article subfolder of the
+   * app's base folder up into the base folder itself, then best-effort delete
+   * the now-empty subfolders.
+   *
+   * Critically, on Android Q+ this uses ContentResolver.update(RELATIVE_PATH)
+   * which preserves the media row's `_ID`. Content URIs stored in the history
+   * table therefore remain valid, and the URL-keyed downloaded ledger is
+   * untouched — so history and duplicate detection are unaffected.
+   */
+  @ReactMethod
+  fun migrateImagesToBase(promise: Promise) {
+    try {
+      val result =
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) migrateOnAndroidQ()
+          else migrateOnAndroidLegacy()
+      promise.resolve(result)
+    } catch (e: Throwable) {
+      promise.reject(ERR_UNKNOWN, e.message ?: "Failed to migrate images", e)
+    }
+  }
+
+  private fun migrateOnAndroidQ(): WritableMap {
+    val resolver: ContentResolver = reactApplicationContext.contentResolver
+    var moved = 0
+    var errors = 0
+    val dirsToDelete = LinkedHashSet<String>() // absolute filesystem paths
+
+    for (base in BASE_RELATIVE_PATHS) {
+      val baseTrim = base.trimEnd('/')
+      val rows = mutableListOf<Triple<Long, String, String>>() // id, rel, name
+      val projection =
+          arrayOf(
+              MediaStore.Images.ImageColumns._ID,
+              MediaStore.MediaColumns.RELATIVE_PATH,
+              MediaStore.MediaColumns.DISPLAY_NAME,
+          )
+      val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+      val cursor =
+          try {
+            resolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                projection,
+                selection,
+                arrayOf("$baseTrim/%"),
+                null,
+            )
+          } catch (_: Throwable) {
+            null
+          }
+      cursor?.use {
+        while (it.moveToNext()) {
+          val rel = it.getString(1) ?: continue
+          val name = it.getString(2) ?: continue
+          rows.add(Triple(it.getLong(0), rel, name))
+        }
+      }
+      if (rows.isEmpty()) continue
+
+      // Names already directly in the base folder + ones moved during this run,
+      // so we can pre-empt MediaProvider's automatic rename and keep names tidy.
+      val usedNames = mutableSetOf<String>()
+      for ((_, rel, name) in rows) {
+        if (rel.trimEnd('/') == baseTrim) usedNames.add(name.lowercase())
+      }
+
+      for ((id, rel, name) in rows) {
+        val relNorm = rel.trimEnd('/')
+        if (relNorm == baseTrim) continue
+        if (!relNorm.startsWith("$baseTrim/")) continue
+        val unique = uniqueDisplayName(usedNames, name)
+        usedNames.add(unique.lowercase())
+        val values =
+            ContentValues().apply {
+              put(MediaStore.MediaColumns.RELATIVE_PATH, "$baseTrim/")
+              if (unique != name) put(MediaStore.MediaColumns.DISPLAY_NAME, unique)
+            }
+        val itemUri =
+            ContentUris.withAppendedId(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                id,
+            )
+        try {
+          val updated = resolver.update(itemUri, values, null, null)
+          if (updated > 0) {
+            moved += 1
+            physicalDir(base, relNorm.removePrefix("$baseTrim/"))?.let {
+              dirsToDelete.add(it.absolutePath)
+            }
+          } else {
+            errors += 1
+          }
+        } catch (_: Throwable) {
+          errors += 1
+        }
+      }
+    }
+
+    val (dirsDeleted, dirsRemaining) = deleteEmptyDirs(dirsToDelete)
+    val out = WritableNativeMap()
+    out.putInt("moved", moved)
+    out.putInt("dirsDeleted", dirsDeleted)
+    out.putInt("dirsRemaining", dirsRemaining)
+    out.putInt("errors", errors)
+    return out
+  }
+
+  /**
+   * Best-effort migration for Android 7-9 (legacy File API). Moves files out of
+   * every subfolder of the app base folders into the base folder itself.
+   */
+  private fun migrateOnAndroidLegacy(): WritableMap {
+    var moved = 0
+    var errors = 0
+    var dirsDeleted = 0
+    var dirsRemaining = 0
+    for (base in BASE_RELATIVE_PATHS) {
+      val baseDir = legacyBaseDir(base) ?: continue
+      if (!baseDir.isDirectory) continue
+      val subDirs = baseDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+      for (sub in subDirs) {
+        val files = sub.listFiles()?.filter { it.isFile } ?: emptyList()
+        for (file in files) {
+          val target = uniqueFile(File(baseDir, file.name))
+          val ok =
+              try {
+                if (file.renameTo(target)) true
+                else {
+                  file.inputStream().use { input ->
+                    target.outputStream().use { output -> copyStream(input, output) }
+                  }
+                  file.delete()
+                }
+              } catch (_: Throwable) {
+                false
+              }
+          if (ok) moved += 1 else errors += 1
+        }
+        if (sub.listFiles()?.isEmpty() != false) {
+          if (sub.delete()) dirsDeleted += 1 else dirsRemaining += 1
+        } else {
+          dirsRemaining += 1
+        }
+      }
+    }
+    val out = WritableNativeMap()
+    out.putInt("moved", moved)
+    out.putInt("dirsDeleted", dirsDeleted)
+    out.putInt("dirsRemaining", dirsRemaining)
+    out.putInt("errors", errors)
+    return out
+  }
+
+  private fun uniqueDisplayName(usedLowercase: Set<String>, name: String): String {
+    if (!usedLowercase.contains(name.lowercase())) return name
+    val dot = name.lastIndexOf('.')
+    val stem = if (dot > 0) name.substring(0, dot) else name
+    val ext = if (dot > 0) name.substring(dot) else ""
+    var n = 1
+    while (true) {
+      val candidate = "$stem ($n)$ext"
+      if (!usedLowercase.contains(candidate.lowercase())) return candidate
+      n += 1
+    }
+  }
+
+  private fun uniqueFile(desired: File): File {
+    if (!desired.exists()) return desired
+    val dot = desired.name.lastIndexOf('.')
+    val stem = if (dot > 0) desired.name.substring(0, dot) else desired.name
+    val ext = if (dot > 0) desired.name.substring(dot) else ""
+    var n = 1
+    while (true) {
+      val candidate = File(desired.parentFile, "$stem ($n)$ext")
+      if (!candidate.exists()) return candidate
+      n += 1
+    }
+  }
+
+  /** Physical directory for a RELATIVE_PATH like "Pictures/TelegraphDownloader/sub". */
+  private fun physicalDir(relativeBase: String, subPath: String): File? {
+    val root =
+        when {
+          relativeBase.startsWith("Pictures/") ->
+              Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+          relativeBase.startsWith("Download/") ->
+              Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+          else -> null
+        } ?: return null
+    val baseUnderRoot = relativeBase.substringAfter('/')
+    val baseDir = File(root, baseUnderRoot)
+    return if (subPath.isEmpty()) baseDir else File(baseDir, subPath)
+  }
+
+  private fun legacyBaseDir(relativeBase: String): File? =
+      physicalDir(relativeBase, "")
+
+  /** Delete the given dirs deepest-first; returns (deleted, remaining). */
+  private fun deleteEmptyDirs(dirs: Set<String>): Pair<Int, Int> {
+    var deleted = 0
+    var remaining = 0
+    val ordered = dirs.sortedByDescending { it.length }
+    for (path in ordered) {
+      val dir = File(path)
+      if (!dir.exists() || !dir.isDirectory) continue
+      val empty = dir.listFiles()?.isEmpty() != false
+      if (empty && dir.delete()) deleted += 1 else remaining += 1
+    }
+    return deleted to remaining
   }
 
   fun handlePickedTreeUri(uri: String) {
@@ -401,6 +621,8 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
 
     private const val BASE_FOLDER = "TelegraphDownloader"
     private const val BASE_RELATIVE_PATH = "Pictures/$BASE_FOLDER"
+    private val BASE_RELATIVE_PATHS =
+        listOf("Pictures/$BASE_FOLDER", "Download/$BASE_FOLDER")
 
     const val ERR_INVALID = "ERR_INVALID_FILENAME"
     const val ERR_NOT_FOUND = "ERR_SOURCE_NOT_FOUND"

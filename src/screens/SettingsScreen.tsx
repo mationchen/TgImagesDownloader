@@ -44,6 +44,7 @@ export const SettingsScreen: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [migrating, setMigrating] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -148,6 +149,42 @@ export const SettingsScreen: React.FC = () => {
     [persist, settings],
   );
 
+  const runMigration = useCallback(async () => {
+    if (migrating) return;
+    if (!isDownloaderAvailable() || !TelegraphDownloader?.migrateImagesToBase) {
+      Alert.alert(
+        t('settings.unsupported.title'),
+        t('settings.unsupported.body'),
+      );
+      return;
+    }
+    const proceed = await confirmDialog(
+      t('settings.migrate.confirmTitle'),
+      t('settings.migrate.confirmBody'),
+      t('settings.migrate.confirmOk'),
+      t('settings.migrate.confirmCancel'),
+    );
+    if (!proceed) return;
+    setMigrating(true);
+    try {
+      const res = await TelegraphDownloader.migrateImagesToBase();
+      Alert.alert(
+        t('settings.migrate.doneTitle'),
+        t('settings.migrate.doneBody', {
+          moved: res.moved,
+          dirs: res.dirsDeleted,
+        }),
+      );
+    } catch (err) {
+      Alert.alert(
+        t('settings.unsupported.title'),
+        err instanceof Error ? err.message : String(err),
+      );
+    } finally {
+      setMigrating(false);
+    }
+  }, [migrating]);
+
   const currentSavePath = computeBaseRelativePath(settings);
 
   return (
@@ -189,6 +226,12 @@ export const SettingsScreen: React.FC = () => {
         </Section>
 
         <Section title={t('settings.subfolder.title')}>
+          <RadioRow
+            label={t('settings.subfolder.noneLabel')}
+            hint={t('settings.subfolder.noneHint')}
+            selected={settings.subfolderTemplate === 'none'}
+            onSelect={() => setTemplate('none')}
+          />
           <RadioRow
             label={t('settings.subfolder.titleLabel')}
             hint={t('settings.subfolder.titleHint')}
@@ -310,6 +353,27 @@ export const SettingsScreen: React.FC = () => {
                 true: themeColors.primary,
               }}
             />
+          </View>
+        </Section>
+
+        <Section title={t('settings.migrate.title')}>
+          <View style={styles.row}>
+            <View style={styles.rowMain}>
+              <Text style={styles.rowHint}>{t('settings.migrate.hint')}</Text>
+            </View>
+          </View>
+          <View style={styles.folderRow}>
+            <Pressable
+              style={[styles.folderBtn, migrating && styles.disabledBtn]}
+              onPress={runMigration}
+              disabled={migrating}
+            >
+              <Text style={styles.folderBtnText}>
+                {migrating
+                  ? t('settings.migrate.running')
+                  : t('settings.migrate.button')}
+              </Text>
+            </Pressable>
           </View>
         </Section>
 
@@ -451,6 +515,7 @@ function createStyles(c: ThemeColors) {
       alignItems: 'center',
     },
     folderBtnText: { color: c.textOnPrimary, fontSize: 14, fontWeight: '600' },
+    disabledBtn: { opacity: 0.5 },
     folderClear: {
       paddingVertical: 8,
       borderRadius: 6,
@@ -466,5 +531,28 @@ function createStyles(c: ThemeColors) {
     },
     statusRow: { marginTop: 20, alignItems: 'center' },
     statusText: { fontSize: 12, color: c.textHint },
+  });
+}
+
+/**
+ * Promise wrapper around Alert.alert so callers can `await` the user's choice.
+ * Resolves true when the confirm button is pressed, false on cancel/dismiss.
+ */
+function confirmDialog(
+  title: string,
+  message: string,
+  confirmLabel: string,
+  cancelLabel: string,
+): Promise<boolean> {
+  return new Promise(resolve => {
+    Alert.alert(
+      title,
+      message,
+      [
+        { text: cancelLabel, style: 'cancel', onPress: () => resolve(false) },
+        { text: confirmLabel, onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    );
   });
 }

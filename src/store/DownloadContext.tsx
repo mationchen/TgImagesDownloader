@@ -19,8 +19,8 @@ import {
   type TaskOutcome,
   type TaskRunner,
 } from './downloadQueue';
-import type {TelegraphArticle, TelegraphImage} from '../types/telegraph';
-import {downloadImageToMediaStore} from '../services/imageDownloader';
+import type { TelegraphArticle, TelegraphImage } from '../types/telegraph';
+import { downloadImageToMediaStore } from '../services/imageDownloader';
 import {
   ensureNotificationPermission,
   isNotifierSupported,
@@ -29,9 +29,13 @@ import {
   notifyDownloadStart,
   notifyDownloadStop,
 } from '../services/downloadNotifier';
-import {APP_CONFIG} from '../constants/config';
-import {computeRelativePath, getSettingsSync} from '../services/settingsService';
-import {PermissionsAndroid, Platform} from 'react-native';
+import { APP_CONFIG } from '../constants/config';
+import {
+  computeRelativePath,
+  computeSubfolder,
+  getSettingsSync,
+} from '../services/settingsService';
+import { PermissionsAndroid, Platform } from 'react-native';
 
 interface DownloadContextValue {
   state: DownloadState;
@@ -57,8 +61,10 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   initialConcurrency = APP_CONFIG.download.defaultConcurrency,
 }) => {
   const [state, dispatch] = useReducer(downloadReducer, undefined, () => ({
-    article: {url: '', title: '', images: [], parsedAt: 0},
+    article: { url: '', title: '', images: [], parsedAt: 0 },
     subfolder: 'untitled',
+    subfolderLeaf: '',
+    batchToken: '',
     tasks: {},
     taskOrder: [],
     isPaused: false,
@@ -81,7 +87,9 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   const buildRunner = useCallback((): TaskRunner => {
     return async (image, subfolder, ctx, meta) => {
       console.log(
-        `[DL] runTask start id=${image.id} index=${image.index} subfolder=${subfolder} articleTitle=${meta?.articleTitle ?? ''}`,
+        `[DL] runTask start id=${image.id} index=${
+          image.index
+        } subfolder=${subfolder} articleTitle=${meta?.articleTitle ?? ''}`,
       );
       // Translate DownloadOutcome -> TaskOutcome so the queue doesn't have
       // to know about MediaStore / blob-util specifics.
@@ -92,9 +100,7 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
         {
           signal: ctx.signal,
           onProgress: (downloaded, total) => {
-            console.log(
-              `[DL] progress id=${image.id} ${downloaded}/${total}`,
-            );
+            console.log(`[DL] progress id=${image.id} ${downloaded}/${total}`);
             ctx.onProgress(downloaded, total);
           },
         },
@@ -102,6 +108,7 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
           ? {
               articleTitle: meta.articleTitle,
               indexCounter: meta.indexCounter,
+              batchToken: meta.batchToken,
               customTreeUri:
                 settings.storageType === 'custom'
                   ? settings.customTreeUri
@@ -114,10 +121,14 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
                   : undefined,
             },
       );
-      console.log(`[DL] runTask done id=${image.id} kind=${r.kind} code=${(r as {code?: string}).code ?? ''}`);
+      console.log(
+        `[DL] runTask done id=${image.id} kind=${r.kind} code=${
+          (r as { code?: string }).code ?? ''
+        }`,
+      );
       if (ctx.signal.aborted) {
         console.log(`[DL] cancelled mid-task id=${image.id}`);
-        return {kind: 'cancelled'} satisfies TaskOutcome;
+        return { kind: 'cancelled' } satisfies TaskOutcome;
       }
       if (r.kind === 'success') {
         return {
@@ -127,44 +138,71 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
         };
       }
       if (r.kind === 'skipped') {
-        return {kind: 'skipped', reason: r.reason};
+        return { kind: 'skipped', reason: r.reason };
       }
-      return {kind: 'failed', code: r.code, message: r.message};
+      return { kind: 'failed', code: r.code, message: r.message };
     };
   }, []);
 
   // Throttle progress notifications so we don't spam NotificationManager.
   const lastNotifyRef = useRef(0);
-  const notifyStartedForRef = useRef<{title: string; total: number} | null>(null);
+  const notifyStartedForRef = useRef<{ title: string; total: number } | null>(
+    null,
+  );
 
   const start = useCallback(
     (article: TelegraphArticle, images: TelegraphImage[]) => {
       const settings = getSettingsSync();
       const relativePath = computeRelativePath(article, settings);
+      // Native saver prepends its own base path, so it must only receive the
+      // leaf subfolder ('' = save straight into the app base folder).
+      const subfolderLeaf = computeSubfolder(article, settings);
       console.log(
-        `[DL] start title="${article.title}" images=${images.length} relativePath=${relativePath} storageType=${settings.storageType}`,
+        `[DL] start title="${article.title}" images=${images.length} relativePath=${relativePath} subfolderLeaf=${subfolderLeaf} storageType=${settings.storageType}`,
       );
       // Legacy Android (< Q) needs WRITE_EXTERNAL_STORAGE for File API path;
       // Q+ uses MediaStore and needs no runtime permission.
       if (Platform.OS === 'android' && Platform.Version < 29) {
-        PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE).then(granted => {
+        PermissionsAndroid.check(
+          PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
+        ).then(granted => {
           if (!granted) {
-            PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE).then(result => {
-              console.log(`[DL] WRITE_EXTERNAL_STORAGE request result=${result}`);
+            PermissionsAndroid.request(
+              PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
+            ).then(result => {
+              console.log(
+                `[DL] WRITE_EXTERNAL_STORAGE request result=${result}`,
+              );
             });
           } else {
             console.log('[DL] WRITE_EXTERNAL_STORAGE already granted');
           }
         });
       } else {
-        console.log(`[DL] storage permission not needed (Q+ MediaStore) SDK=${Platform.Version}`);
+        console.log(
+          `[DL] storage permission not needed (Q+ MediaStore) SDK=${Platform.Version}`,
+        );
       }
-      const initState = initDownloadState(article, images, relativePath);
-      dispatch({type: 'init', article, images, subfolder: relativePath});
+      const initState = initDownloadState(
+        article,
+        images,
+        relativePath,
+        subfolderLeaf,
+      );
+      dispatch({
+        type: 'init',
+        article,
+        images,
+        subfolder: relativePath,
+        subfolderLeaf,
+      });
 
       // Kick off a foreground service + progress notification (spec §20/§21).
       if (isNotifierSupported() && images.length > 0) {
-        notifyStartedForRef.current = {title: article.title, total: images.length};
+        notifyStartedForRef.current = {
+          title: article.title,
+          total: images.length,
+        };
         ensureNotificationPermission().then(granted => {
           if (granted) {
             notifyDownloadStart(article.title, images.length);
@@ -183,14 +221,24 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
         getState: () => queueState,
         dispatch: a => {
           queueState = downloadReducer(queueState, a);
-          console.log(`[DL] dispatch ${a.type} id=${(a as {id?: string}).id ?? ''} rev=${queueState.rev} live=${Object.values(queueState.tasks).filter(t => t.status === 'downloading').length}`);
+          console.log(
+            `[DL] dispatch ${a.type} id=${
+              (a as { id?: string }).id ?? ''
+            } rev=${queueState.rev} live=${
+              Object.values(queueState.tasks).filter(
+                t => t.status === 'downloading',
+              ).length
+            }`,
+          );
           dispatch(a);
         },
         runTask: buildRunner(),
         getConcurrency: () => concurrencyRef.current,
       });
       queueRef.current = q;
-      console.log(`[DL] queue created total=${initState.taskOrder.length} concurrency=${concurrencyRef.current}`);
+      console.log(
+        `[DL] queue created total=${initState.taskOrder.length} concurrency=${concurrencyRef.current}`,
+      );
       // Keep stateRef in sync for consumers that read React state (Home badge etc.)
       // The queue's own state is synchronous; React state will catch up via dispatch.
       setTimeout(() => {
@@ -222,13 +270,12 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
     const failedImages = stateRef.current.taskOrder
       .map(id => stateRef.current.tasks[id])
       .filter(
-        (t): t is NonNullable<typeof t> =>
-          t != null && t.status === 'failed',
+        (t): t is NonNullable<typeof t> => t != null && t.status === 'failed',
       )
       .map(t => {
         const img = stateRef.current.article.images.find(i => i.id === t.id);
         if (!img) return null;
-        return {...img, selected: true};
+        return { ...img, selected: true };
       })
       .filter((img): img is TelegraphImage => img != null);
     if (failedImages.length === 0) return;
@@ -249,12 +296,10 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
     if (!notifyStartedForRef.current) return;
 
     if (summary.finished) {
-      console.log(`[DL] download FINISHED success=${summary.success} failed=${summary.failed} skipped=${summary.skipped} total=${summary.total}`);
-      notifyDownloadFinished(
-        summary.success,
-        summary.failed,
-        summary.skipped,
+      console.log(
+        `[DL] download FINISHED success=${summary.success} failed=${summary.failed} skipped=${summary.skipped} total=${summary.total}`,
       );
+      notifyDownloadFinished(summary.success, summary.failed, summary.skipped);
       if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
       // Let the user see the summary for a few seconds, then dismiss.
       stopTimerRef.current = setTimeout(() => {
@@ -269,7 +314,8 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
     const now = Date.now();
     if (now - lastNotifyRef.current < 500) return;
     lastNotifyRef.current = now;
-    const done = summary.success + summary.skipped + summary.failed + summary.cancelled;
+    const done =
+      summary.success + summary.skipped + summary.failed + summary.cancelled;
     notifyDownloadProgress(done, summary.total);
   }, [summary, state.isPaused]);
 
@@ -297,7 +343,9 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   );
 
   return (
-    <DownloadContext.Provider value={value}>{children}</DownloadContext.Provider>
+    <DownloadContext.Provider value={value}>
+      {children}
+    </DownloadContext.Provider>
   );
 };
 

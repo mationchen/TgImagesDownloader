@@ -462,6 +462,32 @@ export async function getHistory(id: number): Promise<HistoryRecord | null> {
   return row ? rowToRecord(row) : null;
 }
 
+/**
+ * Find the most recent history row for a given article URL (exact match).
+ * Used on the Home screen to warn the user before re-parsing an article that
+ * has already been downloaded.
+ */
+export async function findHistoryByUrl(
+  url: string,
+): Promise<HistoryRecord | null> {
+  const target = (url ?? '').trim();
+  if (!target) return null;
+  await initHistoryDatabase();
+  const d = getDb();
+  const res = await d.execute(
+    `SELECT id, url, title, image_count, success_count, failed_count,
+            skipped_count, save_dir, status, image_urls, image_paths, save_paths,
+            created_at, updated_at
+     FROM history
+     WHERE url = ?
+     ORDER BY created_at DESC
+     LIMIT 1;`,
+    [target],
+  );
+  const row = (res.rows ?? [])[0];
+  return row ? rowToRecord(row) : null;
+}
+
 /** Delete a single history row (does NOT touch downloaded files). */
 export async function removeHistory(id: number): Promise<void> {
   await initHistoryDatabase();

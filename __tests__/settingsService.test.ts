@@ -1,4 +1,5 @@
 import {
+  computeRelativePath,
   computeSubfolder,
   DEFAULT_SETTINGS,
   loadSettings,
@@ -66,8 +67,17 @@ describe('settingsService', () => {
   describe('computeSubfolder', () => {
     const article = { title: 'My Article', url: 'https://example.com/foo' };
 
-    it('uses the article title by default', () => {
-      expect(computeSubfolder(article, DEFAULT_SETTINGS)).toBe('My Article');
+    it('returns empty string when template = none (single folder)', () => {
+      const s: AppSettings = { ...DEFAULT_SETTINGS, subfolderTemplate: 'none' };
+      expect(computeSubfolder(article, s)).toBe('');
+    });
+
+    it('uses the article title when template = title', () => {
+      const s: AppSettings = {
+        ...DEFAULT_SETTINGS,
+        subfolderTemplate: 'title',
+      };
+      expect(computeSubfolder(article, s)).toBe('My Article');
     });
 
     it('uses the source domain when template = domain', () => {
@@ -102,6 +112,38 @@ describe('settingsService', () => {
         subfolderCustom: '   ',
       };
       expect(computeSubfolder(article, s)).toBe('My Article');
+    });
+  });
+
+  describe('computeRelativePath', () => {
+    const article = { title: 'My Article', url: 'https://example.com/foo' };
+
+    it('returns just the base folder when template = none', () => {
+      const s: AppSettings = { ...DEFAULT_SETTINGS, subfolderTemplate: 'none' };
+      expect(computeRelativePath(article, s)).toBe(
+        'Pictures/TelegraphDownloader',
+      );
+    });
+
+    it('appends the subfolder when template = title', () => {
+      const s: AppSettings = {
+        ...DEFAULT_SETTINGS,
+        subfolderTemplate: 'title',
+      };
+      expect(computeRelativePath(article, s)).toBe(
+        'Pictures/TelegraphDownloader/My Article',
+      );
+    });
+
+    it('uses the Download root when storageType = downloads', () => {
+      const s: AppSettings = {
+        ...DEFAULT_SETTINGS,
+        subfolderTemplate: 'none',
+        storageType: 'downloads',
+      };
+      expect(computeRelativePath(article, s)).toBe(
+        'Download/TelegraphDownloader',
+      );
     });
   });
 
@@ -153,7 +195,7 @@ describe('settingsService', () => {
         updated_at: 0,
       });
       const s = await loadSettings();
-      expect(s.subfolderTemplate).toBe('title');
+      expect(s.subfolderTemplate).toBe('none');
       expect(s.subfolderCustom).toBe('');
       expect(s.namingRule).toBe('date_index');
       expect(s.autoFillClipboard).toBe(true);
@@ -206,6 +248,42 @@ describe('settingsService', () => {
         s,
       );
       expect(name).toBe('5');
+    });
+
+    it('embeds the batch token for globally-unique names (date_index)', () => {
+      const s: AppSettings = { ...DEFAULT_SETTINGS, namingRule: 'date_index' };
+      const name = buildFilename(
+        baseImage({ index: 7 }),
+        undefined,
+        s,
+        undefined,
+        '153045',
+      );
+      expect(name).toMatch(/^\d{8}_153045_0007$/);
+    });
+
+    it('embeds the batch token for the title rule', () => {
+      const s: AppSettings = { ...DEFAULT_SETTINGS, namingRule: 'title' };
+      const name = buildFilename(
+        baseImage({ index: 12 }),
+        'My Album',
+        s,
+        undefined,
+        '153045',
+      );
+      expect(name).toBe('0012_My_Album_153045');
+    });
+
+    it('embeds the batch token for the original rule', () => {
+      const s: AppSettings = { ...DEFAULT_SETTINGS, namingRule: 'original' };
+      const name = buildFilename(
+        baseImage({ url: 'https://cdn.example.com/path/photo.jpg?x=1' }),
+        undefined,
+        s,
+        3,
+        '153045',
+      );
+      expect(name).toBe('photo_153045_0003');
     });
   });
 });

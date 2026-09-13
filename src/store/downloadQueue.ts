@@ -1,10 +1,7 @@
-import {delayMs} from '../utils/retry';
-import {computeSummary} from './downloadReducer';
-import type {
-  DownloadAction,
-  DownloadState,
-} from './downloadReducer';
-import type {TelegraphImage} from '../types/telegraph';
+import { delayMs } from '../utils/retry';
+import { computeSummary } from './downloadReducer';
+import type { DownloadAction, DownloadState } from './downloadReducer';
+import type { TelegraphImage } from '../types/telegraph';
 
 /**
  * Reason a single task invocation ended. The queue uses this to decide
@@ -12,10 +9,10 @@ import type {TelegraphImage} from '../types/telegraph';
  * or finalized.
  */
 export type TaskOutcome =
-  | {kind: 'success'; localPath: string; bytes: number}
-  | {kind: 'skipped'; reason: string}
-  | {kind: 'failed'; code: string; message: string}
-  | {kind: 'cancelled'};
+  | { kind: 'success'; localPath: string; bytes: number }
+  | { kind: 'skipped'; reason: string }
+  | { kind: 'failed'; code: string; message: string }
+  | { kind: 'cancelled' };
 
 /**
  * A pluggable function that performs the actual work for one task.
@@ -27,9 +24,10 @@ export type TaskOutcome =
  */
 export type TaskRunner = (
   image: TelegraphImage,
+  /** Leaf subfolder handed to the native saver ('' = app base folder). */
   subfolder: string,
   ctx: TaskRunnerContext,
-  meta?: {articleTitle: string; indexCounter?: number},
+  meta?: { articleTitle: string; indexCounter?: number; batchToken?: string },
 ) => Promise<TaskOutcome>;
 
 export interface TaskRunnerContext {
@@ -105,18 +103,18 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
   function start(): void {
     if (active) return;
     active = true;
-    dispatch({type: 'queue/resumed'});
+    dispatch({ type: 'queue/resumed' });
     drainPromise = drain();
   }
 
   function pause(): void {
     if (!active) return;
-    dispatch({type: 'queue/paused'});
+    dispatch({ type: 'queue/paused' });
   }
 
   function resume(): void {
     if (!active) return;
-    dispatch({type: 'queue/resumed'});
+    dispatch({ type: 'queue/resumed' });
     if (!drainPromise) {
       drainPromise = drain();
     }
@@ -131,13 +129,13 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
     }
     inFlight.clear();
     active = false;
-    dispatch({type: 'queue/stopped'});
+    dispatch({ type: 'queue/stopped' });
     // Mark any remaining pending as cancelled.
     const s = getState();
     for (const id of s.taskOrder) {
       const t = s.tasks[id];
       if (t && (t.status === 'pending' || t.status === 'downloading')) {
-        dispatch({type: 'task/cancelled', id});
+        dispatch({ type: 'task/cancelled', id });
       }
     }
   }
@@ -147,7 +145,11 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
   }
 
   async function drain(): Promise<void> {
-    console.log(`[DL] drain start active=${active} cap=${getConcurrency()} pending=${countPending(getState())} live=${countActive(getState())}`);
+    console.log(
+      `[DL] drain start active=${active} cap=${getConcurrency()} pending=${countPending(
+        getState(),
+      )} live=${countActive(getState())}`,
+    );
     try {
       while (active) {
         const state = getState();
@@ -166,13 +168,17 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
           continue;
         }
         const next = pickNextPending(state, inFlight.keys());
-        console.log(`[DL] drain pick next=${next?.imageId ?? 'none'} live=${live} cap=${cap} total=${state.taskOrder.length}`);
+        console.log(
+          `[DL] drain pick next=${
+            next?.imageId ?? 'none'
+          } live=${live} cap=${cap} total=${state.taskOrder.length}`,
+        );
         if (!next) {
           // No more work; check if anything is still in flight.
           if (live === 0) {
             console.log('[DL] drain no more work, stopping');
             active = false;
-            dispatch({type: 'queue/stopped'});
+            dispatch({ type: 'queue/stopped' });
             return;
           }
           await waitForRev(state.rev, getState);
@@ -192,10 +198,16 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
         }
         inFlight.set(next.imageId, ctrl);
         console.log(`[DL] dispatch task/started id=${next.imageId}`);
-        dispatch({type: 'task/started', id: next.imageId, startedAt: Date.now()});
+        dispatch({
+          type: 'task/started',
+          id: next.imageId,
+          startedAt: Date.now(),
+        });
         runOne(next.imageId, ctrl).finally(() => {
           inFlight.delete(next.imageId);
-          console.log(`[DL] inFlight deleted id=${next.imageId} remaining=${inFlight.size}`);
+          console.log(
+            `[DL] inFlight deleted id=${next.imageId} remaining=${inFlight.size}`,
+          );
         });
         // Yield to the event loop so React can flush the dispatch.
         await microtask();
@@ -215,7 +227,8 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
         return;
       }
       const state = getState();
-      const subfolder = state.subfolder;
+      // Native saver expects the *leaf* subfolder, not the full RELATIVE_PATH.
+      const subfolder = state.subfolderLeaf;
       const image = state.article.images.find(i => i.id === id);
       const articleTitle = state.article.title;
       const indexCounter = state.taskOrder.indexOf(id) + 1;
@@ -245,7 +258,11 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
       };
       let outcome: TaskOutcome;
       try {
-        outcome = await runTask(image, subfolder, ctx, {articleTitle, indexCounter});
+        outcome = await runTask(image, subfolder, ctx, {
+          articleTitle,
+          indexCounter,
+          batchToken: state.batchToken,
+        });
       } catch (err) {
         console.log(`[DL] runTask threw id=${id} err=${String(err)}`);
         // Defensive: runTask should never throw, but if it does, treat as
@@ -259,20 +276,22 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
 
       console.log(`[DL] runOne outcome id=${id} kind=${outcome.kind}`);
       if (outcome.kind === 'cancelled') {
-        dispatch({type: 'task/cancelled', id});
+        dispatch({ type: 'task/cancelled', id });
         return;
       }
       if (outcome.kind === 'success') {
-        dispatch({type: 'task/success', id, localPath: outcome.localPath});
+        dispatch({ type: 'task/success', id, localPath: outcome.localPath });
         return;
       }
       if (outcome.kind === 'skipped') {
-        dispatch({type: 'task/skipped', id, reason: outcome.reason});
+        dispatch({ type: 'task/skipped', id, reason: outcome.reason });
         return;
       }
       // failed — maybe retry
       const isRetryable = isRetryableCode(outcome.code);
-      console.log(`[DL] failed id=${id} code=${outcome.code} retryable=${isRetryable} attempt=${attempt}`);
+      console.log(
+        `[DL] failed id=${id} code=${outcome.code} retryable=${isRetryable} attempt=${attempt}`,
+      );
       if (!isRetryable || attempt > maxRetries) {
         dispatch({
           type: 'task/failed',
@@ -298,14 +317,14 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
         const s = getState();
         const t = s.tasks[id];
         if (t && t.status !== 'cancelled') {
-          dispatch({type: 'task/cancelled', id});
+          dispatch({ type: 'task/cancelled', id });
         }
         return;
       }
     }
   }
 
-  return {start, pause, resume, cancel, isActive};
+  return { start, pause, resume, cancel, isActive };
 }
 
 /* ------------------------------------------------------------------ */
@@ -331,7 +350,7 @@ function countPending(state: DownloadState): number {
 function pickNextPending(
   state: DownloadState,
   inFlightKeys: Iterable<string>,
-): {imageId: string} | null {
+): { imageId: string } | null {
   let inFlight: Set<string> | null = null;
   for (const id of state.taskOrder) {
     const t = state.tasks[id];
@@ -341,10 +360,11 @@ function pickNextPending(
     // dispatched `task/retrying` would look pending again and the drain loop
     // would pick it up a second time, double-firing the runner.
     if (!inFlight) {
-      inFlight = inFlightKeys instanceof Set ? inFlightKeys : new Set(inFlightKeys);
+      inFlight =
+        inFlightKeys instanceof Set ? inFlightKeys : new Set(inFlightKeys);
     }
     if (inFlight.has(id)) continue;
-    return {imageId: id};
+    return { imageId: id };
   }
   return null;
 }
@@ -374,7 +394,7 @@ function waitForRev(
 
 function microtask(): Promise<void> {
   return new Promise(resolve => {
-    const q = (globalThis as {queueMicrotask?: (cb: () => void) => void})
+    const q = (globalThis as { queueMicrotask?: (cb: () => void) => void })
       .queueMicrotask;
     if (typeof q === 'function') {
       q(resolve);
@@ -398,7 +418,7 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
       clearTimeout(t);
       reject(new Error('aborted'));
     };
-    signal.addEventListener('abort', onAbort, {once: true});
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -424,4 +444,4 @@ function isRetryableCode(code: string): boolean {
   return false;
 }
 
-export {computeSummary};
+export { computeSummary };

@@ -23,6 +23,7 @@ import {
   TelegraphDownloader,
 } from '../services/nativeDownloader';
 import { EmptyState } from '../components/EmptyState';
+import { ZoomableImage } from '../components/ZoomableImage';
 import type { RootStackScreenProps } from '../navigation/types';
 import { t, useI18n } from '../i18n';
 
@@ -59,13 +60,20 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
         // MediaStore by matching the save folder. Image files live on disk, so
         // the thumbnails can still be shown.
         if (r && (r.imagePaths ?? []).length === 0) {
-          const prefix = r.saveDir || `Pictures/TelegraphDownloader/`;
+          const prefix = r.saveDir || `Pictures/TelegraphDownloader`;
           if (
             isDownloaderAvailable() &&
             TelegraphDownloader?.listGalleryImages
           ) {
             try {
-              const uris = await TelegraphDownloader.listGalleryImages(prefix);
+              let uris = await TelegraphDownloader.listGalleryImages(prefix);
+              // The row's saveDir may point at a per-article subfolder that no
+              // longer holds the files (e.g. after "migrate images"). Retry
+              // against the app root before giving up.
+              const base = appRootFromSaveDir(prefix);
+              if (uris.length === 0 && base !== prefix) {
+                uris = await TelegraphDownloader.listGalleryImages(base);
+              }
               if (!cancelled) setFolderUris(uris);
             } catch {
               // best-effort; leave the grid empty if the query fails
@@ -248,11 +256,15 @@ const ImageViewer: React.FC<{
   const styles = useThemedStyles(createStyles);
   const { width } = useWindowDimensions();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  // True while the current page is zoomed in; disables page swiping so the
+  // image can be dragged without flipping pages.
+  const [zoomed, setZoomed] = useState(false);
   const scrollRef = useRef<ScrollViewInstance>(null);
 
   useEffect(() => {
     if (visible) {
       setCurrentIndex(initialIndex);
+      setZoomed(false);
       requestAnimationFrame(() => {
         scrollRef.current?.scrollTo({
           x: initialIndex * width,
@@ -261,6 +273,11 @@ const ImageViewer: React.FC<{
       });
     }
   }, [visible, initialIndex, width]);
+
+  // Reset zoom whenever the visible page changes (only reachable while at 1x).
+  useEffect(() => {
+    setZoomed(false);
+  }, [currentIndex]);
 
   const handleScrollEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -308,15 +325,19 @@ const ImageViewer: React.FC<{
           ref={scrollRef}
           horizontal
           pagingEnabled
+          scrollEnabled={!zoomed}
           showsHorizontalScrollIndicator={false}
           onMomentumScrollEnd={handleScrollEnd}
           scrollEventThrottle={16}
           style={styles.viewerScroll}
           contentContainerStyle={styles.viewerScrollContent}
         >
-          {uris.map(uri => (
+          {uris.map((uri, index) => (
             <View key={uri} style={[styles.viewerPage, { width }]}>
-              <ImageViewerPage uri={uri} />
+              <ImageViewerPage
+                uri={uri}
+                onZoomChange={index === safeIndex ? setZoomed : undefined}
+              />
             </View>
           ))}
         </ScrollView>
@@ -325,7 +346,10 @@ const ImageViewer: React.FC<{
   );
 };
 
-const ImageViewerPage: React.FC<{ uri: string }> = ({ uri }) => {
+const ImageViewerPage: React.FC<{
+  uri: string;
+  onZoomChange?: (zoomed: boolean) => void;
+}> = ({ uri, onZoomChange }) => {
   // Subscribe so retry/error strings track the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -340,6 +364,7 @@ const ImageViewerPage: React.FC<{ uri: string }> = ({ uri }) => {
             onPress={() => {
               setFailed(false);
               setRetryKey(k => k + 1);
+              onZoomChange?.(false);
             }}
             style={({ pressed }) => [
               styles.retryBtn,
@@ -350,17 +375,26 @@ const ImageViewerPage: React.FC<{ uri: string }> = ({ uri }) => {
           </Pressable>
         </View>
       ) : (
-        <Image
+        <ZoomableImage
           key={retryKey}
-          source={{ uri }}
-          style={styles.viewerImage}
-          resizeMode="contain"
+          uri={uri}
+          onZoomChange={onZoomChange}
           onError={() => setFailed(true)}
         />
       )}
     </View>
   );
 };
+
+/**
+ * Derive the app's root MediaStore folder from a stored saveDir
+ * (e.g. "Pictures/TelegraphDownloader/<title>" -> "Pictures/TelegraphDownloader").
+ * Defaults to the Pictures root when the value is unexpected.
+ */
+function appRootFromSaveDir(saveDir: string): string {
+  const match = /^(Pictures|Download)\/TelegraphDownloader/.exec(saveDir);
+  return match ? match[0] : 'Pictures/TelegraphDownloader';
+}
 
 function formatLocal(utcMs: number): string {
   const d = new Date(utcMs);

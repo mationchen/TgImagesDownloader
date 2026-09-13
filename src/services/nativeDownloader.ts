@@ -24,6 +24,18 @@ export type TreePickedEvent = {
   uri: string;
 };
 
+/** Result of {@link TelegraphDownloader.migrateImagesToBase}. */
+export type MigrateResult = {
+  /** Number of media rows moved into their app base folder. */
+  moved: number;
+  /** Empty subfolders successfully deleted afterwards. */
+  dirsDeleted: number;
+  /** Subfolders still present (deletion blocked by the OS, typically AAC). */
+  dirsRemaining: number;
+  /** Non-fatal per-item failures encountered while moving. */
+  errors: number;
+};
+
 /**
  * Lightweight wrapper around the native TelegraphDownloader module.
  *
@@ -41,6 +53,13 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
         customTreeUri?: string,
       ): Promise<SaveResult>;
       listGalleryImages?(relativePathPrefix: string): Promise<string[]>;
+      /**
+       * Move every image currently in a per-article subfolder of the app's
+       * MediaStore base folder up into the base folder itself, then
+       * best-effort delete the now-empty subfolders. Preserves each media
+       * row's `_ID`, so stored content:// URIs remain valid.
+       */
+      migrateImagesToBase?(): Promise<MigrateResult>;
       pickSaveDirectory?(): Promise<boolean>;
       persistPickedTreeUri?(uri: string): Promise<boolean>;
     }

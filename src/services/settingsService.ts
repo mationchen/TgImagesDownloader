@@ -2,7 +2,7 @@ import { getSetting, setSetting } from './historyService';
 import { sanitizeFilename } from '../utils/filename';
 import { APP_CONFIG, type SupportedLocale } from '../constants/config';
 
-export type SubfolderTemplate = 'title' | 'domain' | 'custom';
+export type SubfolderTemplate = 'none' | 'title' | 'domain' | 'custom';
 export type NamingRule = 'date_index' | 'original' | 'title';
 
 /** How the app resolves light/dark: follow the system, or force one. */
@@ -43,7 +43,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  subfolderTemplate: 'title',
+  subfolderTemplate: 'none',
   subfolderCustom: '',
   namingRule: 'date_index',
   autoFillClipboard: true,
@@ -63,6 +63,9 @@ export function computeSubfolder(
   article: { title: string; url: string },
   settings: AppSettings,
 ): string {
+  // 'none' => all download into the app's base folder, no per-article
+  // subfolder (avoids polluting the gallery with one album per article).
+  if (settings.subfolderTemplate === 'none') return '';
   let raw: string;
   switch (settings.subfolderTemplate) {
     case 'domain':
@@ -89,8 +92,8 @@ export function computeRelativePath(
   settings: AppSettings,
 ): string {
   const subfolder = computeSubfolder(article, settings);
-  const root = settings.storageType === 'downloads' ? 'Download' : 'Pictures';
-  return `${root}/${APP_FOLDER_NAME}/${subfolder}`;
+  const base = computeBaseRelativePath(settings);
+  return subfolder ? `${base}/${subfolder}` : base;
 }
 
 /** Compute the default fixed top-level directory under MediaStore. */
@@ -115,7 +118,8 @@ export async function loadSettings(): Promise<AppSettings> {
       subfolderTemplate:
         parsed.subfolderTemplate === 'custom' ||
         parsed.subfolderTemplate === 'domain' ||
-        parsed.subfolderTemplate === 'title'
+        parsed.subfolderTemplate === 'title' ||
+        parsed.subfolderTemplate === 'none'
           ? parsed.subfolderTemplate
           : DEFAULT_SETTINGS.subfolderTemplate,
       subfolderCustom:

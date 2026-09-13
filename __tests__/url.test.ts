@@ -146,6 +146,11 @@ describe('utils/url', () => {
       expect(extractWebUrls('not a url at all')).toEqual([]);
       expect(extractWebUrls('')).toEqual([]);
     });
+    it('extractWebUrls does not mistake dotted numbers for a link', () => {
+      expect(extractWebUrls('3.14')).toEqual([]);
+      expect(extractWebUrls('v1.2')).toEqual([]);
+      expect(extractWebUrls('1.2.3')).toEqual([]);
+    });
     it('extractWebUrls strips invisible chars copied from chat apps', () => {
       expect(extractWebUrls('https://telegra.ph/abc\u200bdef')).toEqual([
         'https://telegra.ph/abcdef',

@@ -1,10 +1,22 @@
-import type {TelegraphArticle, TelegraphImage} from '../types/telegraph';
-import type {DownloadStatus, DownloadTask} from '../types/download';
+import type { TelegraphArticle, TelegraphImage } from '../types/telegraph';
+import type { DownloadStatus, DownloadTask } from '../types/download';
 
 /** Shape held in React state by the DownloadScreen via DownloadProvider. */
 export interface DownloadState {
   article: TelegraphArticle;
+  /** Full MediaStore RELATIVE_PATH shown in history / used for display. */
   subfolder: string;
+  /**
+   * The leaf subfolder actually handed to the native saver (empty string =
+   * save directly under the app's base folder). Kept separate from
+   * {@link subfolder} because the native module prepends its own base path.
+   */
+  subfolderLeaf: string;
+  /**
+   * Per-batch token (local HHMMSS) embedded in filenames so that downloads
+   * landing in one shared folder never collide across batches.
+   */
+  batchToken: string;
   tasks: Record<string, DownloadTask>;
   taskOrder: string[];
   isPaused: boolean;
@@ -15,22 +27,34 @@ export interface DownloadState {
 }
 
 export type DownloadAction =
-  | {type: 'init'; article: TelegraphArticle; images: TelegraphImage[]; subfolder: string}
-  | {type: 'task/started'; id: string; startedAt: number}
-  | {type: 'task/progress'; id: string; downloadedBytes: number; totalBytes: number}
-  | {type: 'task/success'; id: string; localPath: string}
-  | {type: 'task/skipped'; id: string; reason: string}
-  | {type: 'task/retrying'; id: string; attempt: number; nextDelayMs: number}
-  | {type: 'task/failed'; id: string; errorCode: string; errorMessage: string}
-  | {type: 'task/cancelled'; id: string}
-  | {type: 'queue/paused'}
-  | {type: 'queue/resumed'}
-  | {type: 'queue/stopped'};
+  | {
+      type: 'init';
+      article: TelegraphArticle;
+      images: TelegraphImage[];
+      subfolder: string;
+      subfolderLeaf: string;
+    }
+  | { type: 'task/started'; id: string; startedAt: number }
+  | {
+      type: 'task/progress';
+      id: string;
+      downloadedBytes: number;
+      totalBytes: number;
+    }
+  | { type: 'task/success'; id: string; localPath: string }
+  | { type: 'task/skipped'; id: string; reason: string }
+  | { type: 'task/retrying'; id: string; attempt: number; nextDelayMs: number }
+  | { type: 'task/failed'; id: string; errorCode: string; errorMessage: string }
+  | { type: 'task/cancelled'; id: string }
+  | { type: 'queue/paused' }
+  | { type: 'queue/resumed' }
+  | { type: 'queue/stopped' };
 
 export function initDownloadState(
   article: TelegraphArticle,
   images: TelegraphImage[],
   subfolder: string,
+  subfolderLeaf = '',
 ): DownloadState {
   const taskOrder: string[] = [];
   const tasks: Record<string, DownloadTask> = {};
@@ -48,6 +72,8 @@ export function initDownloadState(
   return {
     article,
     subfolder,
+    subfolderLeaf,
+    batchToken: batchTokenNow(),
     tasks,
     taskOrder,
     isPaused: false,
@@ -56,13 +82,24 @@ export function initDownloadState(
   };
 }
 
+/** Local-time HHMMSS used to keep filenames unique across download batches. */
+export function batchTokenNow(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
 export function downloadReducer(
   state: DownloadState,
   action: DownloadAction,
 ): DownloadState {
   switch (action.type) {
     case 'init':
-      return initDownloadState(action.article, action.images, action.subfolder);
+      return initDownloadState(
+        action.article,
+        action.images,
+        action.subfolder,
+        action.subfolderLeaf,
+      );
 
     case 'task/started': {
       const t = state.tasks[action.id];
@@ -71,7 +108,7 @@ export function downloadReducer(
         ...state,
         tasks: {
           ...state.tasks,
-          [action.id]: {...t, status: 'downloading', progress: 0},
+          [action.id]: { ...t, status: 'downloading', progress: 0 },
         },
       });
     }
@@ -81,7 +118,10 @@ export function downloadReducer(
       if (!t) return state;
       const progress =
         action.totalBytes > 0
-          ? Math.max(0, Math.min(100, (action.downloadedBytes / action.totalBytes) * 100))
+          ? Math.max(
+              0,
+              Math.min(100, (action.downloadedBytes / action.totalBytes) * 100),
+            )
           : t.progress;
       return bump(state, {
         ...state,
@@ -171,24 +211,24 @@ export function downloadReducer(
         ...state,
         tasks: {
           ...state.tasks,
-          [action.id]: {...t, status: 'cancelled'},
+          [action.id]: { ...t, status: 'cancelled' },
         },
       });
     }
 
     case 'queue/paused':
-      return bump(state, {...state, isPaused: true});
+      return bump(state, { ...state, isPaused: true });
     case 'queue/resumed':
-      return bump(state, {...state, isPaused: false});
+      return bump(state, { ...state, isPaused: false });
     case 'queue/stopped':
-      return bump(state, {...state, isRunning: false, isPaused: false});
+      return bump(state, { ...state, isRunning: false, isPaused: false });
     default:
       return state;
   }
 }
 
 function bump(state: DownloadState, next: DownloadState): DownloadState {
-  return {...next, rev: state.rev + 1};
+  return { ...next, rev: state.rev + 1 };
 }
 
 export interface DownloadSummary {
@@ -248,9 +288,9 @@ export function computeSummary(state: DownloadState): DownloadSummary {
     }
   }
   const total = state.taskOrder.length;
-  const finished = total > 0 && pending === 0 && downloading === 0 && paused === 0;
-  const progressPercent =
-    total > 0 ? Math.min(100, progressSum / total) : 0;
+  const finished =
+    total > 0 && pending === 0 && downloading === 0 && paused === 0;
+  const progressPercent = total > 0 ? Math.min(100, progressSum / total) : 0;
   return {
     total,
     success,

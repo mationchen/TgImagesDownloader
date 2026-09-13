@@ -1,27 +1,24 @@
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import {APP_CONFIG} from '../constants/config';
-import type {TelegraphImage} from '../types/telegraph';
-import {withRetry} from '../utils/retry';
-import {isSafeImageUrl} from '../utils/url';
-import {inferExtFromUrl, isAllowedImageMime} from '../utils/mime';
+import { APP_CONFIG } from '../constants/config';
+import type { TelegraphImage } from '../types/telegraph';
+import { withRetry } from '../utils/retry';
+import { isSafeImageUrl } from '../utils/url';
+import { inferExtFromUrl, isAllowedImageMime } from '../utils/mime';
 import {
   TelegraphDownloader,
   type SaveResult,
   isDownloaderAvailable,
 } from './nativeDownloader';
-import {sanitizeFilename} from '../utils/filename';
-import {defaultResolverRegistry} from './resolvers/registry';
-import {ERR_BLOCKED_HOST, ERR_BLOCKED_HOST_4KHD} from './resolvers/types';
-import {
-  getSettingsSync,
-  type AppSettings,
-} from './settingsService';
-import {isImageDownloaded, markImageDownloaded} from './historyService';
+import { sanitizeFilename } from '../utils/filename';
+import { defaultResolverRegistry } from './resolvers/registry';
+import { ERR_BLOCKED_HOST, ERR_BLOCKED_HOST_4KHD } from './resolvers/types';
+import { getSettingsSync, type AppSettings } from './settingsService';
+import { isImageDownloaded, markImageDownloaded } from './historyService';
 
 export type DownloadOutcome =
-  | {kind: 'success'; result: SaveResult}
-  | {kind: 'skipped'; reason: string}
-  | {kind: 'failed'; code: string; message: string};
+  | { kind: 'success'; result: SaveResult }
+  | { kind: 'skipped'; reason: string }
+  | { kind: 'failed'; code: string; message: string };
 
 export type DownloadOptions = {
   /** When aborted, the in-flight blob-util fetch is cancelled and any partial
@@ -65,10 +62,10 @@ export const DL_ERR_NATIVE = 'ERR_NATIVE';
 
 /** Probe result for a single image URL (used by the viewer / thumbnails). */
 export type ImageProbe =
-  | {kind: 'ok'}
-  | {kind: 'hotlink'; detail?: string}
-  | {kind: 'http'; status: number}
-  | {kind: 'network'; detail?: string};
+  | { kind: 'ok' }
+  | { kind: 'hotlink'; detail?: string }
+  | { kind: 'http'; status: number }
+  | { kind: 'network'; detail?: string };
 
 /**
  * Lightweight HEAD probe used to tell a hotlink-blocked host apart from a
@@ -86,16 +83,18 @@ export async function probeImageUrl(url: string): Promise<ImageProbe> {
     });
     const status = resp.status;
     if (status >= 200 && status < 300) {
-      const contentType = String(resp.headers.get('content-type') ?? '').toLowerCase();
+      const contentType = String(
+        resp.headers.get('content-type') ?? '',
+      ).toLowerCase();
       if (contentType && /text\/html|text\/plain/.test(contentType)) {
-        return {kind: 'hotlink', detail: contentType};
+        return { kind: 'hotlink', detail: contentType };
       }
-      return {kind: 'ok'};
+      return { kind: 'ok' };
     }
     if (status === 403 || status === 302 || status === 307 || status === 308) {
-      return {kind: 'hotlink', detail: `HTTP ${status}`};
+      return { kind: 'hotlink', detail: `HTTP ${status}` };
     }
-    return {kind: 'http', status};
+    return { kind: 'http', status };
   } catch (err) {
     return {
       kind: 'network',
@@ -122,17 +121,29 @@ export async function probeImageUrl(url: string): Promise<ImageProbe> {
  */
 export async function downloadImageToMediaStore(
   image: TelegraphImage,
-  relativePath: string,
+  /** Leaf subfolder for the native saver ('' = app base folder). */
+  subfolder: string,
   options: DownloadOptions = {},
-  meta?: {articleTitle?: string; indexCounter?: number; customTreeUri?: string},
+  meta?: {
+    articleTitle?: string;
+    indexCounter?: number;
+    batchToken?: string;
+    customTreeUri?: string;
+  },
 ): Promise<DownloadOutcome> {
-  const {signal, onProgress} = options;
+  const { signal, onProgress } = options;
 
-  console.log(`[DL] downloadImageToMediaStore id=${image.id} url=${image.url} relativePath=${relativePath}`);
+  console.log(
+    `[DL] downloadImageToMediaStore id=${image.id} url=${image.url} subfolder=${subfolder}`,
+  );
 
   if (signal?.aborted) {
     console.log(`[DL] aborted before start id=${image.id}`);
-    return {kind: 'failed', code: 'ERR_CANCELLED', message: 'cancelled before start'};
+    return {
+      kind: 'failed',
+      code: 'ERR_CANCELLED',
+      message: 'cancelled before start',
+    };
   }
   if (!isSafeImageUrl(image.url)) {
     console.log(`[DL] unsafe url id=${image.id} url=${image.url}`);
@@ -148,13 +159,17 @@ export async function downloadImageToMediaStore(
   try {
     const already = await isImageDownloaded(image.url);
     if (already) {
-      console.log(`[DL] already downloaded, skip id=${image.id} url=${image.url}`);
-      return {kind: 'skipped', reason: 'already downloaded'};
+      console.log(
+        `[DL] already downloaded, skip id=${image.id} url=${image.url}`,
+      );
+      return { kind: 'skipped', reason: 'already downloaded' };
     }
   } catch (e) {
     // Ledger read is best-effort; if the DB is unavailable, proceed with the
     // download rather than failing the whole image.
-    console.log(`[DL] ledger check failed, proceeding id=${image.id} err=${String(e)}`);
+    console.log(
+      `[DL] ledger check failed, proceeding id=${image.id} err=${String(e)}`,
+    );
   }
 
   // Resolve the source URL through the resolver chain. A known-protected host
@@ -178,6 +193,7 @@ export async function downloadImageToMediaStore(
     meta?.articleTitle,
     settings,
     meta?.indexCounter,
+    meta?.batchToken,
   );
   const ext = inferExtFromUrl(image.url) || inferExtFromUrl(filename) || '.jpg';
   const tempPath = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/${TEMP_PREFIX}${image.id}${ext}`;
@@ -186,12 +202,24 @@ export async function downloadImageToMediaStore(
   let downloadedPath: string | null = null;
   try {
     console.log(`[DL] streamToCache start id=${image.id} url=${downloadUrl}`);
-    downloadedPath = await streamToCache(downloadUrl, tempPath, ext, signal, onProgress);
-    console.log(`[DL] streamToCache done id=${image.id} path=${downloadedPath}`);
+    downloadedPath = await streamToCache(
+      downloadUrl,
+      tempPath,
+      ext,
+      signal,
+      onProgress,
+    );
+    console.log(
+      `[DL] streamToCache done id=${image.id} path=${downloadedPath}`,
+    );
   } catch (err) {
     console.log(`[DL] streamToCache error id=${image.id} err=${String(err)}`);
     if (signal?.aborted) {
-      return {kind: 'failed', code: 'ERR_CANCELLED', message: 'cancelled mid-download'};
+      return {
+        kind: 'failed',
+        code: 'ERR_CANCELLED',
+        message: 'cancelled mid-download',
+      };
     }
     if (err instanceof HotlinkBlockedError) {
       return fail(
@@ -199,8 +227,7 @@ export async function downloadImageToMediaStore(
         'Source image host blocks direct access (anti-hotlink)',
       );
     }
-    const status =
-      err instanceof HttpStatusError ? err.status : undefined;
+    const status = err instanceof HttpStatusError ? err.status : undefined;
     return fail(
       status ? `HTTP_${status}` : DL_ERR_NETWORK,
       err instanceof Error ? err.message : String(err),
@@ -215,12 +242,14 @@ export async function downloadImageToMediaStore(
       return fail('ERR_EMPTY', 'Downloaded file is empty');
     }
 
-    console.log(`[DL] saveImageToMediaStore id=${image.id} relativePath=${relativePath} filename=${filename}`);
+    console.log(
+      `[DL] saveImageToMediaStore id=${image.id} subfolder=${subfolder} filename=${filename}`,
+    );
     const result = await withRetry(
       () =>
         TelegraphDownloader!.saveImageToMediaStore(
           downloadedPath!,
-          sanitizeFilename(relativePath, 200),
+          subfolder,
           filename,
           meta?.customTreeUri ?? '',
         ),
@@ -239,20 +268,25 @@ export async function downloadImageToMediaStore(
     } catch (e) {
       // Best-effort; a failed ledger write should not mark a successful save
       // as failed.
-      console.log(`[DL] mark downloaded failed id=${image.id} err=${String(e)}`);
+      console.log(
+        `[DL] mark downloaded failed id=${image.id} err=${String(e)}`,
+      );
     }
 
-    return {kind: 'success', result};
+    return { kind: 'success', result };
   } catch (err) {
     if (signal?.aborted) {
-      return {kind: 'failed', code: 'ERR_CANCELLED', message: 'cancelled before save'};
+      return {
+        kind: 'failed',
+        code: 'ERR_CANCELLED',
+        message: 'cancelled before save',
+      };
     }
     const code =
       typeof err === 'object' && err && 'code' in err
-        ? String((err as {code?: unknown}).code ?? 'ERR_NATIVE')
+        ? String((err as { code?: unknown }).code ?? 'ERR_NATIVE')
         : 'ERR_NATIVE';
-    const message =
-      err instanceof Error ? err.message : String(err);
+    const message = err instanceof Error ? err.message : String(err);
     return fail(code, message);
   } finally {
     if (downloadedPath) {
@@ -299,7 +333,7 @@ async function downloadViaFetch(
   if (extAbort?.aborted) {
     controller.abort();
   } else if (extAbort) {
-    extAbort.addEventListener('abort', onOuterAbort, {once: true});
+    extAbort.addEventListener('abort', onOuterAbort, { once: true });
   }
   try {
     const started = Date.now();
@@ -316,7 +350,9 @@ async function downloadViaFetch(
     }
     const status = Number(fetchResp.status ?? 0);
     console.log(
-      `[DL] fetch status=${status} ok=${fetchResp.ok} elapsed=${Date.now() - started}ms url=${url}`,
+      `[DL] fetch status=${status} ok=${fetchResp.ok} elapsed=${
+        Date.now() - started
+      }ms url=${url}`,
     );
     if (!status || status < 200 || status >= 300) {
       throw new HttpStatusError(status);
@@ -325,7 +361,9 @@ async function downloadViaFetch(
       fetchResp.headers.get('content-type') ?? '',
     ).toLowerCase();
     if (/text\/html|text\/plain/.test(contentType)) {
-      console.log(`[DL] fetch hotlink blocked url=${url} contentType=${contentType}`);
+      console.log(
+        `[DL] fetch hotlink blocked url=${url} contentType=${contentType}`,
+      );
       throw new HotlinkBlockedError(`host returned ${contentType}`);
     }
     if (contentType && !isAllowedImageMime(contentType.split(';')[0])) {
@@ -340,7 +378,11 @@ async function downloadViaFetch(
       onProgress(0, contentLength);
     }
     const blob = await fetchResp.blob();
-    if (onProgress && Number.isFinite(Number(blob.size)) && Number(blob.size) > 0) {
+    if (
+      onProgress &&
+      Number.isFinite(Number(blob.size)) &&
+      Number(blob.size) > 0
+    ) {
       onProgress(Number(blob.size) || 0, Number(blob.size) || 0);
     }
     const base64: string = await new Promise((resolve, reject) => {
@@ -356,7 +398,9 @@ async function downloadViaFetch(
     await ReactNativeBlobUtil.fs.writeFile(targetPath, base64, 'base64');
     const stat = await ReactNativeBlobUtil.fs.stat(targetPath);
     console.log(
-      `[DL] fetch success url=${url} size=${stat.size} elapsed=${Date.now() - started}ms path=${targetPath}`,
+      `[DL] fetch success url=${url} size=${stat.size} elapsed=${
+        Date.now() - started
+      }ms path=${targetPath}`,
     );
     return targetPath;
   } finally {
@@ -411,7 +455,7 @@ async function streamToCache(
     if (signal.aborted) {
       onAbort();
     } else {
-      signal.addEventListener('abort', onAbort, {once: true});
+      signal.addEventListener('abort', onAbort, { once: true });
     }
   }
 
@@ -425,12 +469,18 @@ async function streamToCache(
 
     const info = resp.info();
     const status = Number(info.status ?? 0);
-    console.log(`[DL] streamToCache resp url=${url} status=${status} elapsed=${Date.now() - started}ms`);
+    console.log(
+      `[DL] streamToCache resp url=${url} status=${status} elapsed=${
+        Date.now() - started
+      }ms`,
+    );
     if (!status || status < 200 || status >= 300) {
       throw new HttpStatusError(status);
     }
 
-    const contentType = String(info.headers['Content-Type'] ?? '').toLowerCase();
+    const contentType = String(
+      info.headers['Content-Type'] ?? '',
+    ).toLowerCase();
     if (/text\/html|text\/plain/.test(contentType)) {
       console.log(`[DL] hotlink blocked url=${url} contentType=${contentType}`);
       throw new HotlinkBlockedError(`host returned ${contentType}`);
@@ -445,7 +495,9 @@ async function streamToCache(
     }
     if (onProgress) {
       const stat = await ReactNativeBlobUtil.fs.stat(finalPath);
-      console.log(`[DL] streamToCache success url=${url} size=${stat.size} path=${finalPath}`);
+      console.log(
+        `[DL] streamToCache success url=${url} size=${stat.size} path=${finalPath}`,
+      );
       onProgress(Number(stat.size) || 0, Number(stat.size) || 0);
     }
     return finalPath;
@@ -461,8 +513,11 @@ async function streamToCache(
     //   2. "Download interrupted."  (server sends a Content-Length then resets the
     //      connection after one buffer — anti-bot CDN fingerprinting). RN fetch uses
     //      a different OkHttp client with browser-like defaults, so it succeeds.
-    if (/Use of own trust manager/i.test(msg) || /Download interrupted\.?/i.test(msg) ||
-        /reset|closed|unexpected end of stream|connection reset/i.test(msg)) {
+    if (
+      /Use of own trust manager/i.test(msg) ||
+      /Download interrupted\.?/i.test(msg) ||
+      /reset|closed|unexpected end of stream|connection reset/i.test(msg)
+    ) {
       blobUtilResetHosts.add(host);
       console.log(`[DL] fallback to fetch for url=${url} host=${host}`);
       return downloadViaFetch(url, targetPath, onProgress, signal);
@@ -476,7 +531,7 @@ async function streamToCache(
 }
 
 function fail(code: string, message: string): DownloadOutcome {
-  return {kind: 'failed', code, message};
+  return { kind: 'failed', code, message };
 }
 
 /**
@@ -489,30 +544,38 @@ export function buildFilename(
   articleTitle: string | undefined,
   settings: AppSettings,
   indexCounter?: number,
+  batchToken?: string,
 ): string {
+  const n = indexCounter ?? image.index;
+  // Per-batch token (local HHMMSS). When present, filenames are globally
+  // unique even though every article may share one folder. Absent only in
+  // legacy/tests, which keep the original format.
+  const token = (batchToken ?? '').trim();
   switch (settings.namingRule) {
     case 'original': {
       // Pull the basename from the URL, stripping the extension.
+      let base = '';
       try {
         const u = new URL(image.url);
         const last = u.pathname.split('/').filter(Boolean).pop();
-        if (last) return sanitizeFilename(stripExtension(last), 80);
+        if (last) base = stripExtension(last);
       } catch {
         // fall through
       }
-      return sanitizeFilename(String(indexCounter ?? image.index), 80);
+      if (!base) base = String(n);
+      const parts = token ? [base, token, pad(n, 4)] : [base];
+      return sanitizeFilename(parts.join('_'), 80);
     }
     case 'title': {
       const tag = articleTitle ? shortTag(articleTitle) : '';
-      const n = indexCounter ?? image.index;
-      const base = tag ? `${pad(n, 6)}_${tag}` : `${pad(n, 6)}`;
-      return sanitizeFilename(base, 80);
+      const parts = token ? [pad(n, 4), tag, token] : [pad(n, 6), tag];
+      return sanitizeFilename(parts.filter(Boolean).join('_'), 80);
     }
     case 'date_index':
     default: {
-      const n = indexCounter ?? image.index;
       const date = ymd(new Date());
-      return sanitizeFilename(`${date}_${pad(n, 6)}`, 80);
+      const parts = token ? [date, token, pad(n, 4)] : [date, pad(n, 6)];
+      return sanitizeFilename(parts.join('_'), 80);
     }
   }
 }
@@ -539,4 +602,4 @@ function pad(n: number, width: number): string {
   return String(n).padStart(width, '0');
 }
 
-export type {SaveResult};
+export type { SaveResult };

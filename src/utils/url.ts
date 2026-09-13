@@ -38,7 +38,9 @@ export function extractWebUrls(input: string): string[] {
   }
   if (result.length > 0) return result;
   // Fallback: the clipboard may hold a bare link without a scheme
-  // (e.g. "telegra.ph/abc" copied from an address bar). Try https://.
+  // (e.g. "telegra.ph/abc" copied from an address bar). Try https:// — but
+  // only when the text really looks like a domain (alphabetic TLD), so plain
+  // text like "3.14" or "v1.2" is not mistaken for a link.
   const trimmed = cleaned.trim();
   if (
     trimmed &&
@@ -46,8 +48,17 @@ export function extractWebUrls(input: string): string[] {
     !/\s/.test(trimmed) &&
     trimmed.includes('.')
   ) {
-    const normalized = normalizeWebUrl(`https://${trimmed}`);
-    if (normalized) return [normalized];
+    try {
+      const host = new URL(`https://${trimmed}`).hostname;
+      const looksLikeDomain =
+        /^[a-z0-9.-]+$/i.test(host) && /\.[a-z]{2,}$/i.test(host);
+      if (looksLikeDomain) {
+        const normalized = normalizeWebUrl(`https://${trimmed}`);
+        if (normalized) return [normalized];
+      }
+    } catch {
+      // Not a parseable domain; fall through and return [] below.
+    }
   }
   return result;
 }

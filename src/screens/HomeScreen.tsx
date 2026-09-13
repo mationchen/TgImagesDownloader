@@ -24,6 +24,7 @@ import { EmptyState } from '../components/EmptyState';
 import { UrlInput } from '../components/UrlInput';
 import { parseArticle, type ParseStage } from '../services/telegraphParser';
 import {
+  findHistoryByUrl,
   initHistoryDatabase,
   listHistory,
   type HistoryRecord,
@@ -64,28 +65,28 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   // AbortController for the in-flight parse so the cancel button / clear
   // can release the network request immediately.
   const parseAbortRef = useRef<AbortController | null>(null);
+  // Guards the async duplicate-check so rapid taps don't stack multiple alerts.
+  const parseCheckRef = useRef(false);
 
   // A stable callback that accepts a shared/clipboard text, extracts the first
-  // http(s) URL (only when autoFillClipboard is on), and fills the input
-  // (but never auto-parses without the user tapping Parse).
-  const applySharedText = useCallback((text: string | null | undefined) => {
-    if (!text) return;
-    const urls = extractWebUrls(text);
-    if (urls.length === 0) return;
-    // Defensive URL validation: reject non-http(s), loopback, etc.
-    const safe = urls.find(u => validateWebUrl(u) === null);
-    if (!safe) return;
-    if (!getSettingsSync().autoFillClipboard) return;
-    // Merge with existing input, deduping.
-    setInput(prev => {
-      const merged = [safe, ...(prev ? extractWebUrls(prev) : [])];
-      const seen = new Set<string>();
-      return merged
-        .filter(u => (seen.has(u) ? false : (seen.add(u), true)))
-        .join('\n');
-    });
-    setErrorCode(undefined);
-  }, []);
+  // http(s) URL, and fills the input (but never auto-parses without the user
+  // tapping Parse). When `fromClipboard` is set the `autoFillClipboard` setting
+  // gates it; explicit share intents are always honoured.
+  const applySharedText = useCallback(
+    (text: string | null | undefined, opts?: { fromClipboard?: boolean }) => {
+      if (!text) return;
+      const urls = extractWebUrls(text);
+      if (urls.length === 0) return;
+      // Defensive URL validation: reject non-http(s), loopback, etc.
+      const safe = urls.find(u => validateWebUrl(u) === null);
+      if (!safe) return;
+      if (opts?.fromClipboard && !getSettingsSync().autoFillClipboard) return;
+      // Single-link mode: the input holds exactly one link.
+      setInput(safe);
+      setErrorCode(undefined);
+    },
+    [],
+  );
 
   const detected = useMemo(() => extractWebUrls(input), [input]);
 
@@ -98,7 +99,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         try {
           await initHistoryDatabase();
           await loadSettings();
-          const items = await listHistory(5);
+          const items = await listHistory(10);
           const pending = await consumePendingShare();
           if (cancelled) return;
           setRecent(items);
@@ -144,7 +145,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     (async () => {
       try {
         const text = await Clipboard.getString();
-        applySharedText(text);
+        applySharedText(text, { fromClipboard: true });
       } catch {
         // Clipboard read can fail on some devices; ignore.
       }
@@ -173,20 +174,19 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         return;
       }
       const urls = extractWebUrls(text);
-      // Take the *last* http(s) URL on the clipboard, per requirement.
-      const candidates = [...urls].reverse();
-      const safe = candidates.find(u => validateWebUrl(u) === null);
-      if (!safe) {
+      // Single-link mode: refuse to paste when the clipboard holds several
+      // links, and ask the user to copy just one.
+      if (urls.length > 1) {
+        Alert.alert(t('home.pasteMultiple'));
+        return;
+      }
+      const safe = urls[0];
+      if (!safe || validateWebUrl(safe) !== null) {
         Alert.alert(t('home.pasteNoUrl'));
         return;
       }
-      setInput(prev => {
-        const merged = [safe, ...(prev ? extractWebUrls(prev) : [])];
-        const seen = new Set<string>();
-        return merged
-          .filter(u => (seen.has(u) ? false : (seen.add(u), true)))
-          .join('\n');
-      });
+      // Replace the input (single-link mode).
+      setInput(safe);
       setErrorCode(undefined);
     } catch {
       Alert.alert(t('home.pasteNoUrl'));
@@ -195,49 +195,80 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     }
   }, [pasting]);
 
-  const handleParse = useCallback(async () => {
-    const target = detected[0];
-    if (!target) {
-      setErrorCode('INVALID_URL');
-      return;
-    }
-    setErrorCode(undefined);
-    setLoading(true);
-    setParseStage('resolving');
-    const ctrl = new AbortController();
-    parseAbortRef.current?.abort();
-    parseAbortRef.current = ctrl;
-    let result;
-    try {
-      result = await parseArticle(target, {
-        signal: ctrl.signal,
-        onStage: stage => setParseStage(stage),
-      });
-    } catch (err) {
-      // Most likely AbortError from cancel — surface as a non-error neutral
-      // result so the user can re-trigger.
-      const name = (err as { name?: string })?.name;
+  const runParse = useCallback(
+    async (target: string) => {
+      setErrorCode(undefined);
+      setLoading(true);
+      setParseStage('resolving');
+      const ctrl = new AbortController();
+      parseAbortRef.current?.abort();
+      parseAbortRef.current = ctrl;
+      let result;
+      try {
+        result = await parseArticle(target, {
+          signal: ctrl.signal,
+          onStage: stage => setParseStage(stage),
+        });
+      } catch (err) {
+        // Most likely AbortError from cancel — surface as a non-error neutral
+        // result so the user can re-trigger.
+        const name = (err as { name?: string })?.name;
+        setLoading(false);
+        setParseStage(null);
+        if (parseAbortRef.current === ctrl) {
+          parseAbortRef.current = null;
+        }
+        if (name === 'AbortError') return;
+        setErrorCode('UNKNOWN');
+        return;
+      }
       setLoading(false);
       setParseStage(null);
       if (parseAbortRef.current === ctrl) {
         parseAbortRef.current = null;
       }
-      if (name === 'AbortError') return;
-      setErrorCode('UNKNOWN');
+      if (ctrl.signal.aborted) return;
+      if (result.ok && result.article) {
+        navigation.navigate('Preview', { article: result.article });
+        return;
+      }
+      setErrorCode(result.error?.code);
+    },
+    [navigation],
+  );
+
+  const handleParse = useCallback(async () => {
+    // Single-link mode: parsing only handles one link at a time.
+    if (detected.length > 1) {
+      Alert.alert(t('home.multipleUrls'));
       return;
     }
-    setLoading(false);
-    setParseStage(null);
-    if (parseAbortRef.current === ctrl) {
-      parseAbortRef.current = null;
-    }
-    if (ctrl.signal.aborted) return;
-    if (result.ok && result.article) {
-      navigation.navigate('Preview', { article: result.article });
+    const target = detected[0];
+    if (!target) {
+      setErrorCode('INVALID_URL');
       return;
     }
-    setErrorCode(result.error?.code);
-  }, [detected, navigation]);
+    if (parseCheckRef.current) return;
+    parseCheckRef.current = true;
+    try {
+      // Warn before re-parsing an article that already has a history row.
+      const existing = await findHistoryByUrl(target);
+      if (existing) {
+        const proceed = await confirmDialog(
+          t('home.duplicateTitle'),
+          t('home.duplicateBody'),
+          t('home.duplicateContinue'),
+          t('home.duplicateCancel'),
+        );
+        if (!proceed) return;
+      }
+    } catch {
+      // DB lookup failure must not block parsing; fall through.
+    } finally {
+      parseCheckRef.current = false;
+    }
+    await runParse(target);
+  }, [detected, runParse]);
 
   const handleCancelParse = useCallback(() => {
     parseAbortRef.current?.abort();
@@ -568,4 +599,27 @@ function stageLabel(stage: ParseStage): string {
     default:
       return t('common.loading');
   }
+}
+
+/**
+ * Promise wrapper around Alert.alert so callers can `await` the user's choice.
+ * Resolves true when the confirm button is pressed, false on cancel/dismiss.
+ */
+function confirmDialog(
+  title: string,
+  message: string,
+  confirmLabel: string,
+  cancelLabel: string,
+): Promise<boolean> {
+  return new Promise(resolve => {
+    Alert.alert(
+      title,
+      message,
+      [
+        { text: cancelLabel, style: 'cancel', onPress: () => resolve(false) },
+        { text: confirmLabel, onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    );
+  });
 }

@@ -51,7 +51,9 @@ export const UrlInput: React.FC<Props> = ({
   const detectedCount = detected.length;
   const firstUrl = detected[0];
   const firstValid = firstUrl ? validateWebUrl(firstUrl) === null : false;
-  const canParse = !loading && firstValid;
+  // Single-link mode: parsing is only allowed when exactly one link is present.
+  const hasMultiple = detectedCount > 1;
+  const canParse = !loading && firstValid && !hasMultiple;
 
   return (
     <View
@@ -74,8 +76,13 @@ export const UrlInput: React.FC<Props> = ({
         textAlignVertical="top"
       />
       <View style={styles.metaRow}>
-        <Text style={styles.metaText}>
-          {t('home.detectedUrls', { count: detectedCount })}
+        <Text
+          style={[styles.metaText, hasMultiple && styles.metaTextWarning]}
+          numberOfLines={2}
+        >
+          {hasMultiple
+            ? t('home.multipleUrls')
+            : t('home.detectedUrls', { count: detectedCount })}
         </Text>
         <View style={styles.actionGroup}>
           <Pressable
@@ -146,8 +153,14 @@ function createStyles(c: ThemeColors) {
       marginTop: 8,
     },
     metaText: {
+      flex: 1,
+      paddingRight: 8,
       fontSize: 12,
       color: c.textSecondary,
+    },
+    metaTextWarning: {
+      color: c.danger,
+      fontWeight: '500',
     },
     actionGroup: {
       flexDirection: 'row',

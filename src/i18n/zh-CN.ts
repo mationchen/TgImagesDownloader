@@ -2,7 +2,7 @@ export const zhCN = {
   // Home
   'home.title': '网页图片批量下载器',
   'home.subtitle': '粘贴网页链接，批量保存图片到本地',
-  'home.inputPlaceholder': '粘贴网页链接（一行一个，支持多链接）',
+  'home.inputPlaceholder': '粘贴网页链接（一次一个）',
   // Tabs
   'tab.batch': '批量下载',
   'tab.history': '下载记录',
@@ -36,6 +36,22 @@ export const zhCN = {
   'settings.subfolder.customHint': '所有下载放到这个固定的子目录',
   'settings.subfolder.customPlaceholder': '例如 MyDownloads',
   'settings.subfolder.preview': '当前子目录：{value}',
+  'settings.subfolder.noneLabel': '不生成子文件夹',
+  'settings.subfolder.noneHint': '默认：所有图片直接存到同一个文件夹',
+  // Data migration
+  'settings.migrate.title': '图片数据迁移',
+  'settings.migrate.hint':
+    '把以前按文章分文件夹下载的图片，统一移动到 App 根目录，并清理空的子文件夹。不会影响下载记录与去重判断。',
+  'settings.migrate.button': '迁移图片到统一文件夹',
+  'settings.migrate.confirmTitle': '开始迁移',
+  'settings.migrate.confirmBody':
+    '将移动已下载的图片到统一文件夹，可能需要一点时间。确定继续？',
+  'settings.migrate.confirmOk': '开始迁移',
+  'settings.migrate.confirmCancel': '取消',
+  'settings.migrate.running': '正在迁移…',
+  'settings.migrate.doneTitle': '迁移完成',
+  'settings.migrate.doneBody':
+    '已移动 {moved} 张图片，清理空文件夹 {dirs} 个。',
   // Naming rule
   'settings.naming.title': '图片命名规则',
   'settings.naming.dateIndexLabel': '日期 + 六位序号',
@@ -76,6 +92,12 @@ export const zhCN = {
   'home.parseCancel': '取消解析',
   'home.paste': '粘贴',
   'home.pasteNoUrl': '剪贴板中没有找到可用链接',
+  'home.pasteMultiple': '剪贴板中有多个链接，请重新复制一个链接后再粘贴',
+  'home.multipleUrls': '识别到多个链接，请重新粘贴一个链接',
+  'home.duplicateTitle': '该链接已下载过',
+  'home.duplicateBody': '此链接之前已经下载过，是否继续解析？',
+  'home.duplicateContinue': '继续解析',
+  'home.duplicateCancel': '取消',
 
   // Preview (also used inline on HomeScreen result card — same data, same wording)
   'preview.title': '文章标题',

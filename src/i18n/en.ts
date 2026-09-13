@@ -3,8 +3,7 @@ import type { ZhKeys } from './zh-CN';
 export const en: Record<ZhKeys, string> = {
   'home.title': 'Web Image Batch Downloader',
   'home.subtitle': 'Paste web page links to batch-save images to your device',
-  'home.inputPlaceholder':
-    'Paste web page link(s), one per line. Multiple links supported.',
+  'home.inputPlaceholder': 'Paste a web page link (one at a time)',
   // Tabs
   'tab.batch': 'Batch',
   'tab.history': 'History',
@@ -39,6 +38,23 @@ export const en: Record<ZhKeys, string> = {
   'settings.subfolder.customHint': 'All downloads go into one fixed folder',
   'settings.subfolder.customPlaceholder': 'e.g. MyDownloads',
   'settings.subfolder.preview': 'Current subfolder: {value}',
+  'settings.subfolder.noneLabel': 'No subfolder',
+  'settings.subfolder.noneHint':
+    'Default: all images are saved directly into one folder',
+  // Data migration
+  'settings.migrate.title': 'Image data migration',
+  'settings.migrate.hint':
+    'Move images previously downloaded into per-article folders up into the app root folder, then clean up the empty subfolders. Download history and the already-downloaded check are not affected.',
+  'settings.migrate.button': 'Migrate images to one folder',
+  'settings.migrate.confirmTitle': 'Start migration',
+  'settings.migrate.confirmBody':
+    'Downloaded images will be moved into one folder. This may take a moment. Continue?',
+  'settings.migrate.confirmOk': 'Start',
+  'settings.migrate.confirmCancel': 'Cancel',
+  'settings.migrate.running': 'Migrating…',
+  'settings.migrate.doneTitle': 'Migration complete',
+  'settings.migrate.doneBody':
+    'Moved {moved} image(s), cleaned up {dirs} empty folder(s).',
   'settings.naming.title': 'Image naming rule',
   'settings.naming.dateIndexLabel': 'Date + 6-digit index',
   'settings.naming.dateIndexHint':
@@ -80,6 +96,14 @@ export const en: Record<ZhKeys, string> = {
   'home.parseCancel': 'Cancel',
   'home.paste': 'Paste',
   'home.pasteNoUrl': 'No usable link found in the clipboard',
+  'home.pasteMultiple':
+    'Multiple links found in the clipboard. Please copy a single link and paste again.',
+  'home.multipleUrls': 'Multiple links detected. Please paste a single link.',
+  'home.duplicateTitle': 'Link already downloaded',
+  'home.duplicateBody':
+    'This link has been downloaded before. Continue parsing anyway?',
+  'home.duplicateContinue': 'Continue',
+  'home.duplicateCancel': 'Cancel',
 
   'preview.title': 'Article title',
   'preview.imageCount': 'Image count: {count}',
