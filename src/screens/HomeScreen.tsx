@@ -286,23 +286,25 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.title}>{t('home.title')}</Text>
             <Text style={styles.subtitle}>{t('home.subtitle')}</Text>
           </View>
-          <Pressable
-            onPress={() => navigation.navigate('Download' as never)}
-            hitSlop={12}
-            style={({ pressed }) => [
-              styles.downloadIconBtn,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text style={styles.downloadIcon}>⬇</Text>
-            {hasActiveDownload ? (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>
-                  {summary.downloading + summary.pending}
-                </Text>
-              </View>
-            ) : null}
-          </Pressable>
+          <View style={styles.headerRight}>
+            <Pressable
+              onPress={() => navigation.navigate('Download' as never)}
+              hitSlop={12}
+              style={({ pressed }) => [
+                styles.downloadIconBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.downloadIcon}>⬇</Text>
+              {hasActiveDownload ? (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>
+                    {summary.downloading + summary.pending}
+                  </Text>
+                </View>
+              ) : null}
+            </Pressable>
+          </View>
         </View>
         <UrlInput
           value={input}
@@ -408,6 +410,7 @@ function createStyles(c: ThemeColors) {
       paddingBottom: 12,
     },
     headerLeft: { flex: 1, paddingRight: 12 },
+    headerRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
     downloadIconBtn: {
       width: 36,
       height: 36,

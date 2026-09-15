@@ -22,8 +22,8 @@
  */
 
 export type ResolverResult =
-  | {kind: 'direct'; url: string}
-  | {kind: 'blocked'; code: string; message: string};
+  | { kind: 'direct'; url: string }
+  | { kind: 'blocked'; code: string; message: string };
 
 export interface ImageResolver {
   /** Short identifier, e.g. 'telegraph-native', '4khd'. */

@@ -24,6 +24,16 @@ export type TreePickedEvent = {
   uri: string;
 };
 
+/** Result of {@link TelegraphDownloader.pickTextFile}. */
+export type PickedTextFile = {
+  /** The content:// URI returned by the system SAF picker. */
+  uri: string;
+  /** Display name reported by the picker (e.g. `urls.txt`). */
+  name: string;
+  /** UTF-8 text content with any leading BOM stripped. */
+  content: string;
+};
+
 /** Result of {@link TelegraphDownloader.migrateImagesToBase}. */
 export type MigrateResult = {
   /** Number of media rows moved into their app base folder. */
@@ -51,6 +61,7 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
         subfolder: string,
         filename: string,
         customTreeUri?: string,
+        storageType?: string,
       ): Promise<SaveResult>;
       listGalleryImages?(relativePathPrefix: string): Promise<string[]>;
       /**
@@ -62,6 +73,11 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
       migrateImagesToBase?(): Promise<MigrateResult>;
       pickSaveDirectory?(): Promise<boolean>;
       persistPickedTreeUri?(uri: string): Promise<boolean>;
+      /**
+       * Open the system SAF text-file picker. Resolves with the picked file's
+       * `{uri, name, content}` on success, or `null` if the user cancelled.
+       */
+      pickTextFile?(): Promise<PickedTextFile | null>;
     }
   | undefined;
 

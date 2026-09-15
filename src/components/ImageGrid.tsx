@@ -1,4 +1,4 @@
-import React, {useCallback, useMemo} from 'react';
+import React, { useCallback, useMemo } from 'react';
 import {
   FlatList,
   ListRenderItemInfo,
@@ -6,8 +6,8 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import type {TelegraphImage} from '../types/telegraph';
-import {ThumbnailItem} from './ThumbnailItem';
+import type { TelegraphImage } from '../types/telegraph';
+import { ThumbnailItem } from './ThumbnailItem';
 
 type Props = {
   images: TelegraphImage[];
@@ -27,14 +27,14 @@ export const ImageGrid: React.FC<Props> = ({
   onItemToggle,
   columns = 3,
 }) => {
-  const {width} = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const cellSize = useMemo(() => {
     const totalGutters = GUTTER * (columns - 1) + SIDE_PADDING * 2;
     return Math.floor((width - totalGutters) / columns);
   }, [width, columns]);
 
   const renderItem = useCallback(
-    ({item}: ListRenderItemInfo<TelegraphImage>) => {
+    ({ item }: ListRenderItemInfo<TelegraphImage>) => {
       return (
         <ThumbnailItem
           image={item}

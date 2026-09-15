@@ -244,6 +244,60 @@ export interface DownloadSummary {
   progressPercent: number;
 }
 
+/**
+ * Terminal, image-level outcome of one finished run. Unlike the live
+ * {@link DownloadSummary} (which also counts in-flight/pending tasks), this is
+ * only meaningful once the queue has fully drained — it is what the batch
+ * flow uses to tell whether an article actually produced files, instead of
+ * assuming success just because the queue resolved.
+ */
+export interface RunSummary {
+  total: number;
+  success: number;
+  failed: number;
+  skipped: number;
+  cancelled: number;
+  /** First failure text (`code: message`) in task order, or null. */
+  firstError: string | null;
+}
+
+export function summarizeRun(state: DownloadState): RunSummary {
+  let success = 0;
+  let failed = 0;
+  let skipped = 0;
+  let cancelled = 0;
+  let firstError: string | null = null;
+  for (const id of state.taskOrder) {
+    const t = state.tasks[id];
+    if (!t) continue;
+    switch (t.status) {
+      case 'success':
+        success += 1;
+        break;
+      case 'failed':
+        failed += 1;
+        if (firstError == null && t.error) firstError = t.error;
+        break;
+      case 'skipped':
+        skipped += 1;
+        break;
+      case 'cancelled':
+        cancelled += 1;
+        break;
+      default:
+        break;
+    }
+  }
+  return {
+    total: state.taskOrder.length,
+    success,
+    failed,
+    skipped,
+    cancelled,
+    firstError,
+  };
+}
+
 export function computeSummary(state: DownloadState): DownloadSummary {
   let success = 0;
   let failed = 0;

@@ -1,8 +1,15 @@
-import {createQueue} from '../src/store/downloadQueue';
-import {downloadReducer, initDownloadState} from '../src/store/downloadReducer';
-import type {TelegraphImage, TelegraphArticle} from '../src/types/telegraph';
-import type {TaskOutcome, TaskRunner} from '../src/store/downloadQueue';
-import type {DownloadState, DownloadAction} from '../src/store/downloadReducer';
+import { createQueue } from '../src/store/downloadQueue';
+import {
+  downloadReducer,
+  initDownloadState,
+  summarizeRun,
+} from '../src/store/downloadReducer';
+import type { TelegraphImage, TelegraphArticle } from '../src/types/telegraph';
+import type { TaskOutcome, TaskRunner } from '../src/store/downloadQueue';
+import type {
+  DownloadState,
+  DownloadAction,
+} from '../src/store/downloadReducer';
 
 function makeImage(i: number): TelegraphImage {
   return {
@@ -47,7 +54,7 @@ function setupHarness(opts: {
 
   // Wrap state in a holder object so the dispatch mock can mutate the
   // single source of truth that the test (and the queue) read from.
-  const holder: {state: DownloadState} = {
+  const holder: { state: DownloadState } = {
     state: initDownloadState(article, images, 'test'),
   };
   const dispatch = jest.fn<void, [DownloadAction]>();
@@ -63,11 +70,19 @@ function setupHarness(opts: {
   const runner: TaskRunner = async (image, _subfolder, _ctx) => {
     const idx = image.index;
     startedAt.push(idx);
-    activeCounts.push(holder.state.taskOrder.filter(id => holder.state.tasks[id]?.status === 'downloading').length);
+    activeCounts.push(
+      holder.state.taskOrder.filter(
+        id => holder.state.tasks[id]?.status === 'downloading',
+      ).length,
+    );
     try {
       // Yield once so concurrent tasks have a chance to overlap.
       await new Promise<void>(r => setTimeout(() => r(), 5));
-      const out = opts.outcomes[idx - 1]?.(idx) ?? {kind: 'success', localPath: '/x', bytes: 1};
+      const out = opts.outcomes[idx - 1]?.(idx) ?? {
+        kind: 'success',
+        localPath: '/x',
+        bytes: 1,
+      };
       return out;
     } finally {
       finishedAt.push(idx);
@@ -111,7 +126,7 @@ describe('downloadQueue', () => {
     const h = setupHarness({
       count: 10,
       concurrency: 3,
-      outcomes: Array.from({length: 10}, (_, i) => () => ({
+      outcomes: Array.from({ length: 10 }, (_, i) => () => ({
         kind: 'success' as const,
         localPath: `/p/${i + 1}`,
         bytes: 1,
@@ -119,7 +134,9 @@ describe('downloadQueue', () => {
     });
     h.queue.start();
     await flush();
-    expect(h.state.taskOrder.every(id => h.state.tasks[id]?.status === 'success')).toBe(true);
+    expect(
+      h.state.taskOrder.every(id => h.state.tasks[id]?.status === 'success'),
+    ).toBe(true);
     // No more than 3 should ever be in flight concurrently.
     expect(Math.max(...h.activeCounts)).toBeLessThanOrEqual(3);
     expect(Math.max(...h.activeCounts)).toBeGreaterThanOrEqual(2); // sanity: at least 2 ran at once
@@ -133,11 +150,11 @@ describe('downloadQueue', () => {
       outcomes: [
         i => {
           calls.push(i);
-          return {kind: 'success', localPath: '/x', bytes: 1};
+          return { kind: 'success', localPath: '/x', bytes: 1 };
         },
         i => {
           calls.push(i);
-          return {kind: 'success', localPath: '/x', bytes: 1};
+          return { kind: 'success', localPath: '/x', bytes: 1 };
         },
       ],
     });
@@ -156,7 +173,7 @@ describe('downloadQueue', () => {
       outcomes: [
         i => {
           calls.push(i);
-          return {kind: 'failed', code: 'HTTP_500', message: 'oops'};
+          return { kind: 'failed', code: 'HTTP_500', message: 'oops' };
         },
       ],
     });
@@ -175,7 +192,7 @@ describe('downloadQueue', () => {
       outcomes: [
         i => {
           calls.push(i);
-          return {kind: 'failed', code: 'HTTP_404', message: 'gone'};
+          return { kind: 'failed', code: 'HTTP_404', message: 'gone' };
         },
       ],
     });
@@ -188,9 +205,7 @@ describe('downloadQueue', () => {
   it('marks task as skipped when outcome is skipped', async () => {
     const h = setupHarness({
       count: 1,
-      outcomes: [
-        () => ({kind: 'skipped', reason: 'already there'}),
-      ],
+      outcomes: [() => ({ kind: 'skipped', reason: 'already there' })],
     });
     h.queue.start();
     await flush();
@@ -205,17 +220,28 @@ describe('downloadQueue', () => {
     const h = setupHarness({
       count: 5,
       concurrency: 5,
-      outcomes: Array.from({length: 5}, () => () => ({kind: 'success' as const, localPath: '/x', bytes: 1})),
+      outcomes: Array.from({ length: 5 }, () => () => ({
+        kind: 'success' as const,
+        localPath: '/x',
+        bytes: 1,
+      })),
     });
     // Replace runner with one that observes aborts.
     const runner: TaskRunner = async (_img, _sub, ctx) => {
       return new Promise<TaskOutcome>(resolve => {
-        const t = setTimeout(() => resolve({kind: 'success', localPath: '/x', bytes: 1}), 200);
-        ctx.signal.addEventListener('abort', () => {
-          abortedCount += 1;
-          clearTimeout(t);
-          resolve({kind: 'cancelled'});
-        }, {once: true});
+        const t = setTimeout(
+          () => resolve({ kind: 'success', localPath: '/x', bytes: 1 }),
+          200,
+        );
+        ctx.signal.addEventListener(
+          'abort',
+          () => {
+            abortedCount += 1;
+            clearTimeout(t);
+            resolve({ kind: 'cancelled' });
+          },
+          { once: true },
+        );
       });
     };
     const newQueue = createQueue({
@@ -246,7 +272,11 @@ describe('downloadQueue', () => {
     const h = setupHarness({
       count: 6,
       concurrency: 1,
-      outcomes: Array.from({length: 6}, () => () => ({kind: 'success' as const, localPath: '/x', bytes: 1})),
+      outcomes: Array.from({ length: 6 }, () => () => ({
+        kind: 'success' as const,
+        localPath: '/x',
+        bytes: 1,
+      })),
     });
     h.queue.start();
     await new Promise<void>(r => setTimeout(() => r(), 20));
@@ -274,7 +304,11 @@ describe('downloadQueue', () => {
     const h = setupHarness({
       count: 100,
       concurrency: 5,
-      outcomes: Array.from({length: 100}, () => () => ({kind: 'success' as const, localPath: '/x', bytes: 1})),
+      outcomes: Array.from({ length: 100 }, () => () => ({
+        kind: 'success' as const,
+        localPath: '/x',
+        bytes: 1,
+      })),
     });
     h.queue.start();
     await flush();
@@ -283,5 +317,130 @@ describe('downloadQueue', () => {
       .filter(s => s === 'success').length;
     expect(success).toBe(100);
     expect(Math.max(...h.activeCounts)).toBeLessThanOrEqual(5);
+  });
+
+  describe('summarizeRun', () => {
+    it('counts successes / failures / skips and captures the first error', () => {
+      const images = [makeImage(1), makeImage(2), makeImage(3), makeImage(4)];
+      let state = initDownloadState(makeArticle(images), images, 'test');
+      state = downloadReducer(state, {
+        type: 'task/success',
+        id: 'img-1',
+        localPath: '/p/1',
+      });
+      state = downloadReducer(state, {
+        type: 'task/skipped',
+        id: 'img-2',
+        reason: 'already downloaded',
+      });
+      state = downloadReducer(state, {
+        type: 'task/failed',
+        id: 'img-3',
+        errorCode: 'ERR_HOTLINK_BLOCKED',
+        errorMessage: 'host returned text/plain',
+      });
+      state = downloadReducer(state, {
+        type: 'task/failed',
+        id: 'img-4',
+        errorCode: 'HTTP_500',
+        errorMessage: 'oops',
+      });
+
+      const summary = summarizeRun(state);
+      expect(summary.total).toBe(4);
+      expect(summary.success).toBe(1);
+      expect(summary.skipped).toBe(1);
+      expect(summary.failed).toBe(2);
+      expect(summary.cancelled).toBe(0);
+      // First failure in task order, formatted as `${code}: ${message}`.
+      expect(summary.firstError).toBe(
+        'ERR_HOTLINK_BLOCKED: host returned text/plain',
+      );
+    });
+
+    it('reports an all-failed run as failed with a reason', () => {
+      const images = [makeImage(1), makeImage(2)];
+      let state = initDownloadState(makeArticle(images), images, 'test');
+      for (const id of ['img-1', 'img-2']) {
+        state = downloadReducer(state, {
+          type: 'task/failed',
+          id,
+          errorCode: 'ERR_HOTLINK_BLOCKED',
+          errorMessage: 'host returned text/plain',
+        });
+      }
+      const summary = summarizeRun(state);
+      expect(summary.success).toBe(0);
+      expect(summary.skipped).toBe(0);
+      expect(summary.failed).toBe(2);
+      expect(summary.firstError).toBeTruthy();
+    });
+
+    it('reports an all-skipped run as neither success nor failure', () => {
+      const images = [makeImage(1)];
+      let state = initDownloadState(makeArticle(images), images, 'test');
+      state = downloadReducer(state, {
+        type: 'task/skipped',
+        id: 'img-1',
+        reason: 'already downloaded',
+      });
+      const summary = summarizeRun(state);
+      expect(summary).toMatchObject({
+        total: 1,
+        success: 0,
+        failed: 0,
+        skipped: 1,
+        firstError: null,
+      });
+    });
+  });
+
+  describe('cancel() cleanup (regression for setTimeout leak)', () => {
+    it('cancel() drains in-flight tasks and resolves drainPromise', async () => {
+      // Verify that after cancel() the queue stops accepting work and the
+      // in-flight task is properly aborted. The drain loop must exit (no
+      // orphaned promise or polling chain) — this is the regression target.
+      let abortedCount = 0;
+      const harness = setupHarness({
+        count: 3,
+        concurrency: 3,
+        outcomes: Array.from({ length: 3 }, () => () => ({
+          kind: 'success' as const,
+          localPath: '/x',
+          bytes: 1,
+        })),
+      });
+      const runner: TaskRunner = async (_img, _sub, ctx) =>
+        new Promise<TaskOutcome>(resolve => {
+          ctx.signal.addEventListener(
+            'abort',
+            () => {
+              abortedCount += 1;
+              resolve({ kind: 'cancelled' });
+            },
+            { once: true },
+          );
+        });
+      const q = createQueue({
+        getState: harness.getState,
+        dispatch: harness.dispatch,
+        runTask: runner,
+        getConcurrency: () => 3,
+        maxRetries: 0,
+        retryBaseMs: 1,
+        retryCapMs: 5,
+      });
+      q.start();
+      // Wait long enough for tasks to start and drain to park in waitForRev.
+      // Using real timers because fake-timer semantics for queueMicrotask +
+      // setTimeout chains are inconsistent across Jest versions.
+      await new Promise<void>(r => setTimeout(() => r(), 30));
+      q.cancel();
+      await new Promise<void>(r => setTimeout(() => r(), 30));
+      // All three in-flight tasks must have been aborted by cancel().
+      expect(abortedCount).toBe(3);
+      // Queue must be inactive and not scheduling new work.
+      expect(q.isActive()).toBe(false);
+    });
   });
 });

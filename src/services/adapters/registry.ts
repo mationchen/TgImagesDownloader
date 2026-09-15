@@ -1,14 +1,19 @@
-import {genericAdapter} from './genericAdapter';
-import {telegraphAdapter} from './telegraphAdapter';
-import {wordPressAdapter} from './wordPressAdapter';
-import type {SiteAdapter} from './types';
+import { genericAdapter } from './genericAdapter';
+import { telegraphAdapter } from './telegraphAdapter';
+import { TuzacAdapter } from './tuzacAdapter';
+import { wordPressAdapter } from './wordPressAdapter';
+import type { SiteAdapter } from './types';
 
 export class AdapterRegistry {
   private adapters: SiteAdapter[];
 
   constructor(adapters?: SiteAdapter[]) {
-    this.adapters =
-      adapters ?? [telegraphAdapter, wordPressAdapter, genericAdapter];
+    this.adapters = adapters ?? [
+      telegraphAdapter,
+      new TuzacAdapter(),
+      wordPressAdapter,
+      genericAdapter,
+    ];
   }
 
   /**
@@ -31,4 +36,4 @@ export class AdapterRegistry {
 
 export const defaultAdapterRegistry = new AdapterRegistry();
 
-export type {SiteAdapter} from './types';
+export type { SiteAdapter } from './types';

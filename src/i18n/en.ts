@@ -5,7 +5,8 @@ export const en: Record<ZhKeys, string> = {
   'home.subtitle': 'Paste web page links to batch-save images to your device',
   'home.inputPlaceholder': 'Paste a web page link (one at a time)',
   // Tabs
-  'tab.batch': 'Batch',
+  'tab.batch': 'Home',
+  'tab.urlList': 'URL list',
   'tab.history': 'History',
   'tab.settings': 'Settings',
   // Settings
@@ -252,6 +253,37 @@ export const en: Record<ZhKeys, string> = {
 
   'common.cancel': 'Cancel',
   'common.retry': 'Retry',
-  'common.loading': 'Loading…',
+  'common.loading': 'Loading...',
   'common.back': 'Back',
+  // Batch URL list
+  'batch.title': 'Batch download',
+  'batch.intro':
+    'Pick a url.txt file (one URL per line). URLs will be processed one by one. Tap a row to preview the images parsed from that link.',
+  'batch.pickFile': 'Choose url.txt',
+  'batch.repickFile': 'Choose again',
+  'batch.empty': 'No URLs yet. Tap the button below to pick a url.txt file.',
+  'batch.start': 'Start',
+  'batch.pause': 'Pause',
+  'batch.resume': 'Resume',
+  'batch.skipCurrent': 'Skip current',
+  'batch.cancelAll': 'Cancel all',
+  'batch.progress': 'Progress {cur} / {total}    OK {done}    Failed {failed}',
+  'batch.status.pending': 'Waiting',
+  'batch.status.parsing': 'Parsing...',
+  'batch.status.downloading': 'Downloading {cur}/{total}',
+  'batch.status.done': 'Done',
+  'batch.status.counts': 'OK {success} · skipped {skipped} · failed {failed}',
+  'batch.status.failed': 'Failed',
+  'batch.status.skipped': 'Skipped',
+  'batch.status.alreadyDownloaded': 'Already downloaded ({count})',
+  'batch.requeueOne': 'Re-queue',
+  'batch.longPressRequeue': 'Long-press to re-queue',
+  'batch.requeueAllMissing': 'Re-queue missing',
+  'batch.skipExistingHint':
+    'Already-downloaded links are skipped by default; long-press a row to re-queue it.',
+  'batch.previewFailTitle': 'Cannot preview',
+  'batch.previewNoImages': 'No images found on this page.',
+  'batch.summaryTitle': 'Batch finished',
+  'batch.summaryBody':
+    '{done} succeeded, {skipped} skipped, {failed} failed. Total {total}.',
 };

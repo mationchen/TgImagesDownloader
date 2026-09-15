@@ -2,6 +2,8 @@ package com.acstd.tgimagesdownloader
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
@@ -44,6 +46,31 @@ class MainActivity : ReactActivity() {
         )
         module?.handlePickedTreeUri(uri.toString())
       } catch (_: Throwable) {
+      }
+      return
+    }
+    if (requestCode == 0x7745) {
+      val module = com.acstd.tgimagesdownloader.downloader.TelegraphDownloaderModule.getInstance()
+      if (module == null) return
+      val promise = module.consumePickTextPromise()
+      if (promise == null) return
+      if (resultCode != Activity.RESULT_OK || data?.data == null) {
+        module.resolvePickText(promise, null, null, null)
+        return
+      }
+      val uri: Uri = data.data!!
+      try {
+        val name = contentResolver
+          .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+          ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+          ?: uri.lastPathSegment ?: "urls.txt"
+        val content = module.readPickedText(uri)
+        module.resolvePickText(promise, uri.toString(), name, content)
+      } catch (e: Throwable) {
+        try {
+          module.resolvePickText(promise, null, null, null)
+        } catch (_: Throwable) {
+        }
       }
     }
   }

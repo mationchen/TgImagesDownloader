@@ -10,7 +10,9 @@ import React, {
 import {
   computeSummary,
   downloadReducer,
+  summarizeRun,
   type DownloadState,
+  type RunSummary,
   initDownloadState,
 } from './downloadReducer';
 import {
@@ -21,6 +23,7 @@ import {
 } from './downloadQueue';
 import type { TelegraphArticle, TelegraphImage } from '../types/telegraph';
 import { downloadImageToMediaStore } from '../services/imageDownloader';
+import { recordHistoryFromState } from '../services/historyService';
 import {
   ensureNotificationPermission,
   isNotifierSupported,
@@ -41,6 +44,20 @@ interface DownloadContextValue {
   state: DownloadState;
   summary: ReturnType<typeof computeSummary>;
   start: (article: TelegraphArticle, images: TelegraphImage[]) => void;
+  /**
+   * Programmatic batch-mode entry. Sets state, runs the queue, and resolves
+   * with the per-image {@link RunSummary} when the queue's drain loop exits on
+   * its own (all tasks finished or skipped). Rejects on external
+   * `signal.abort` so a batch caller can wire its "取消全部" button to a
+   * single AbortController.
+   */
+  runDownload: (
+    article: TelegraphArticle,
+    opts?: {
+      signal?: AbortSignal;
+      onProgress?: (cur: number, total: number) => void;
+    },
+  ) => Promise<RunSummary>;
   pause: () => void;
   resume: () => void;
   cancel: () => void;
@@ -152,93 +169,174 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
 
   const start = useCallback(
     (article: TelegraphArticle, images: TelegraphImage[]) => {
-      const settings = getSettingsSync();
-      const relativePath = computeRelativePath(article, settings);
-      // Native saver prepends its own base path, so it must only receive the
-      // leaf subfolder ('' = save straight into the app base folder).
-      const subfolderLeaf = computeSubfolder(article, settings);
-      console.log(
-        `[DL] start title="${article.title}" images=${images.length} relativePath=${relativePath} subfolderLeaf=${subfolderLeaf} storageType=${settings.storageType}`,
-      );
-      // Legacy Android (< Q) needs WRITE_EXTERNAL_STORAGE for File API path;
-      // Q+ uses MediaStore and needs no runtime permission.
-      if (Platform.OS === 'android' && Platform.Version < 29) {
-        PermissionsAndroid.check(
-          PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
-        ).then(granted => {
-          if (!granted) {
-            PermissionsAndroid.request(
-              PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
-            ).then(result => {
-              console.log(
-                `[DL] WRITE_EXTERNAL_STORAGE request result=${result}`,
-              );
-            });
-          } else {
-            console.log('[DL] WRITE_EXTERNAL_STORAGE already granted');
-          }
-        });
-      } else {
-        console.log(
-          `[DL] storage permission not needed (Q+ MediaStore) SDK=${Platform.Version}`,
-        );
-      }
-      const initState = initDownloadState(
-        article,
-        images,
-        relativePath,
-        subfolderLeaf,
-      );
-      dispatch({
-        type: 'init',
-        article,
-        images,
-        subfolder: relativePath,
-        subfolderLeaf,
-      });
+      const { kickoffQueue } = setupQueue(article, images, undefined);
+      kickoffQueue();
+    },
+    // `setupQueue` closes over `buildRunner` and `getSettingsSync` via module
+    // state; since this callback is recreated only when buildRunner changes
+    // (buildRunner is `useCallback([])`), the consumer side stays stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [buildRunner],
+  );
 
-      // Kick off a foreground service + progress notification (spec §20/§21).
-      if (isNotifierSupported() && images.length > 0) {
-        notifyStartedForRef.current = {
-          title: article.title,
-          total: images.length,
+  /**
+   * Programmatic batch-mode entry. Identical to `start` but returns a
+   * Promise that resolves when the queue's drain loop exits on its own
+   * (all tasks finished or skipped) and rejects on external `signal.abort`.
+   * Used by the batch URL-download flow so the scheduler can advance to the
+   * next URL without a manual "done" tap.
+   */
+  const runDownload = useCallback(
+    (
+      article: TelegraphArticle,
+      opts?: {
+        signal?: AbortSignal;
+        onProgress?: (cur: number, total: number) => void;
+      },
+    ): Promise<RunSummary> => {
+      return new Promise<RunSummary>((resolve, reject) => {
+        const externalSignal = opts?.signal;
+        if (externalSignal?.aborted) {
+          reject(new Error('aborted before start'));
+          return;
+        }
+        const onFinished = (finalState: DownloadState) => {
+          // Persist one history row per URL. This path is batch-only
+          // (Home/DownloadScreen uses `start`, not `runDownload`), so the
+          // batch URL flow shows up in 下载记录 just like the Home flow.
+          recordHistoryFromState(finalState).catch(() => undefined);
+          resolve(summarizeRun(finalState));
         };
-        ensureNotificationPermission().then(granted => {
-          if (granted) {
-            notifyDownloadStart(article.title, images.length);
-            lastNotifyRef.current = Date.now();
-          }
-        });
-      }
-
-      // Use a synchronous queueState so drain's live/cap check sees the
-      // effect of `task/started` immediately, without waiting for React to
-      // flush. This fixes the "0/48 → all 48 started at once → 17 parallel
-      // → all interrupted" storm seen in the logs.
-      queueRef.current?.cancel();
-      let queueState: DownloadState = initState;
-      const q = createQueue({
-        getState: () => queueState,
-        dispatch: a => {
-          queueState = downloadReducer(queueState, a);
-          console.log(
-            `[DL] dispatch ${a.type} id=${
-              (a as { id?: string }).id ?? ''
-            } rev=${queueState.rev} live=${
-              Object.values(queueState.tasks).filter(
-                t => t.status === 'downloading',
-              ).length
-            }`,
+        if (externalSignal) {
+          externalSignal.addEventListener(
+            'abort',
+            () => {
+              // cancel() aborts in-flight tasks and exits drain. The Promise
+              // rejects so the batch scheduler treats this URL as "cancelled".
+              queueRef.current?.cancel();
+              reject(new Error('batch cancelled'));
+            },
+            { once: true },
           );
-          dispatch(a);
-        },
-        runTask: buildRunner(),
-        getConcurrency: () => concurrencyRef.current,
+        }
+        const { kickoffQueue } = setupQueue(
+          article,
+          article.images,
+          onFinished,
+        );
+        kickoffQueue();
       });
-      queueRef.current = q;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [buildRunner],
+  );
+
+  /**
+   * Internal: build init state + dispatch + queue + set up cancel hooks,
+   * returning a `kickoffQueue` to actually start it (kept separate so
+   * `runDownload` can defer until after wiring up its `onQueueFinished`
+   * observer via `setupQueue`'s third arg).
+   */
+  function setupQueue(
+    article: TelegraphArticle,
+    images: TelegraphImage[],
+    onQueueFinished: ((state: DownloadState) => void) | undefined,
+  ): { queue: QueueController; kickoffQueue: () => void } {
+    const settings = getSettingsSync();
+    const relativePath = computeRelativePath(article, settings);
+    // Native saver prepends its own base path, so it must only receive the
+    // leaf subfolder ('' = save straight into the app base folder).
+    const subfolderLeaf = computeSubfolder(article, settings);
+    console.log(
+      `[DL] start title="${article.title}" images=${images.length} relativePath=${relativePath} subfolderLeaf=${subfolderLeaf} storageType=${settings.storageType}`,
+    );
+    // Legacy Android (< Q) needs WRITE_EXTERNAL_STORAGE for File API path;
+    // Q+ uses MediaStore and needs no runtime permission.
+    if (Platform.OS === 'android' && Platform.Version < 29) {
+      PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
+      ).then(granted => {
+        if (!granted) {
+          PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
+          ).then(result => {
+            console.log(`[DL] WRITE_EXTERNAL_STORAGE request result=${result}`);
+          });
+        } else {
+          console.log('[DL] WRITE_EXTERNAL_STORAGE already granted');
+        }
+      });
+    } else {
       console.log(
-        `[DL] queue created total=${initState.taskOrder.length} concurrency=${concurrencyRef.current}`,
+        `[DL] storage permission not needed (Q+ MediaStore) SDK=${Platform.Version}`,
       );
+    }
+    const initState = initDownloadState(
+      article,
+      images,
+      relativePath,
+      subfolderLeaf,
+    );
+    dispatch({
+      type: 'init',
+      article,
+      images,
+      subfolder: relativePath,
+      subfolderLeaf,
+    });
+
+    // Kick off a foreground service + progress notification (spec §20/§21).
+    if (isNotifierSupported() && images.length > 0) {
+      notifyStartedForRef.current = {
+        title: article.title,
+        total: images.length,
+      };
+      ensureNotificationPermission().then(granted => {
+        if (granted) {
+          notifyDownloadStart(article.title, images.length);
+          lastNotifyRef.current = Date.now();
+        }
+      });
+    }
+
+    // Use a synchronous queueState so drain's live/cap check sees the
+    // effect of `task/started` immediately, without waiting for React to
+    // flush. This fixes the "0/48 → all 48 started at once → 17 parallel
+    // → all interrupted" storm seen in the logs.
+    //
+    // Cancel any leftover "auto-stop notification 5s after finish" timer
+    // from a previous batch — otherwise stacked timers from multiple
+    // completed batches race each other to stop the foreground service.
+    if (stopTimerRef.current) {
+      clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = null;
+    }
+    queueRef.current?.cancel();
+    let queueState: DownloadState = initState;
+    const q = createQueue({
+      getState: () => queueState,
+      dispatch: a => {
+        queueState = downloadReducer(queueState, a);
+        console.log(
+          `[DL] dispatch ${a.type} id=${(a as { id?: string }).id ?? ''} rev=${
+            queueState.rev
+          } live=${
+            Object.values(queueState.tasks).filter(
+              t => t.status === 'downloading',
+            ).length
+          }`,
+        );
+        dispatch(a);
+      },
+      runTask: buildRunner(),
+      getConcurrency: () => concurrencyRef.current,
+      onQueueFinished,
+    });
+    queueRef.current = q;
+    console.log(
+      `[DL] queue created total=${initState.taskOrder.length} concurrency=${concurrencyRef.current}`,
+    );
+    const kickoffQueue = () => {
       // Keep stateRef in sync for consumers that read React state (Home badge etc.)
       // The queue's own state is synchronous; React state will catch up via dispatch.
       setTimeout(() => {
@@ -248,9 +346,9 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
         q.start();
         console.log(`[DL] queue start called isActive=${q.isActive()}`);
       }, 16);
-    },
-    [buildRunner],
-  );
+    };
+    return { queue: q, kickoffQueue };
+  }
 
   const pause = useCallback(() => queueRef.current?.pause(), []);
   const resume = useCallback(() => queueRef.current?.resume(), []);
@@ -332,6 +430,7 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
       state,
       summary,
       start,
+      runDownload,
       pause,
       resume,
       cancel,
@@ -339,7 +438,17 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
       setConcurrency,
       concurrency: concurrencyRef.current,
     }),
-    [state, summary, start, pause, resume, cancel, retryFailed, setConcurrency],
+    [
+      state,
+      summary,
+      start,
+      runDownload,
+      pause,
+      resume,
+      cancel,
+      retryFailed,
+      setConcurrency,
+    ],
   );
 
   return (

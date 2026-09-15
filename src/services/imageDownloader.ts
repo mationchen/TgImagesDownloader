@@ -31,6 +31,33 @@ export type DownloadOptions = {
 
 const TEMP_PREFIX = 'tg-img-';
 
+/**
+ * Build the headers used to fetch an image.
+ *
+ * The `Referer` is the image's OWN origin rather than a hardcoded third-party
+ * one: several CDNs (e.g. Cloudflare-fronted `image.tuzac.com`) answer a
+ * foreign Referer with `403 text/plain`, which the pipeline would otherwise
+ * misclassify as an anti-hotlink block and fail every image of that host.
+ * A same-origin Referer satisfies referer checks while staying valid for
+ * every host (and is exactly what the previous hardcoded value was for
+ * `image.acg.lol`). Non-absolute URLs get no Referer instead of a wrong one.
+ */
+function buildImageHeaders(url: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'User-Agent': APP_CONFIG.telegraph.userAgent,
+    Accept: 'image/*,*/*;q=0.8',
+  };
+  try {
+    const { origin } = new URL(url);
+    if (/^https?:\/\//i.test(origin)) {
+      headers.Referer = `${origin}/`;
+    }
+  } catch {
+    // Relative / unparseable URL: omit Referer rather than send a wrong one.
+  }
+  return headers;
+}
+
 class HttpStatusError extends Error {
   status: number;
   constructor(status: number) {
@@ -243,7 +270,7 @@ export async function downloadImageToMediaStore(
     }
 
     console.log(
-      `[DL] saveImageToMediaStore id=${image.id} subfolder=${subfolder} filename=${filename}`,
+      `[DL] saveImageToMediaStore id=${image.id} subfolder=${subfolder} filename=${filename} storageType=${settings.storageType}`,
     );
     const result = await withRetry(
       () =>
@@ -252,6 +279,7 @@ export async function downloadImageToMediaStore(
           subfolder,
           filename,
           meta?.customTreeUri ?? '',
+          settings.storageType,
         ),
       {
         maxRetries: 1,
@@ -264,7 +292,9 @@ export async function downloadImageToMediaStore(
     console.log(`[DL] save success id=${image.id} uri=${result.uri}`);
 
     try {
-      await markImageDownloaded(image.url);
+      // Persist the saved URI too so a later all-skipped re-run can still
+      // render this image in 下载记录.
+      await markImageDownloaded(image.url, result.uri);
     } catch (e) {
       // Best-effort; a failed ledger write should not mark a successful save
       // as failed.
@@ -339,11 +369,7 @@ async function downloadViaFetch(
     const started = Date.now();
     const fetchResp = await fetch(url, {
       signal: controller.signal,
-      headers: {
-        'User-Agent': APP_CONFIG.telegraph.userAgent,
-        Accept: 'image/*,*/*;q=0.8',
-        Referer: 'https://image.acg.lol/',
-      },
+      headers: buildImageHeaders(url),
     });
     if (timedOut) {
       throw new Error('timed out while downloading (fetch)');
@@ -428,11 +454,7 @@ async function streamToCache(
     overwrite: true,
     timeout: APP_CONFIG.telegraph.readTimeoutMs,
     fileCache: true,
-  }).fetch('GET', url, {
-    'User-Agent': APP_CONFIG.telegraph.userAgent,
-    Accept: 'image/*,*/*;q=0.8',
-    Referer: 'https://image.acg.lol/',
-  });
+  }).fetch('GET', url, buildImageHeaders(url));
 
   // Subscribe to progress (bytes received so far) before awaiting.
   if (onProgress) {

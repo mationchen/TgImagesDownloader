@@ -56,6 +56,15 @@ export interface CreateQueueOptions {
   retryCapMs?: number;
   /** Optional external signal — when fired, the whole queue cancels. */
   externalSignal?: AbortSignal;
+  /**
+   * Fired exactly once when the drain loop exits on its own (all tasks
+   * drained, `live === 0` and nothing more to start). NOT fired by
+   * `cancel()`; cancel uses `drainAbort` to short-circuit waiters but does
+   * not invoke this callback. Useful for batch-mode callers that need to
+   * know when a per-article run completed naturally. Receives the final
+   * state so the caller can inspect the per-image outcomes.
+   */
+  onQueueFinished?: (state: DownloadState) => void;
 }
 
 export interface QueueController {
@@ -91,11 +100,17 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
     retryBaseMs = 500,
     retryCapMs = 15_000,
     externalSignal,
+    onQueueFinished,
   } = opts;
 
   // Controllers for in-flight tasks, keyed by image id. Used to abort them
   // when the queue is cancelled.
   const inFlight = new Map<string, AbortController>();
+
+  // Per-queue cancellation token. All `waitForRev` pollers inside `drain()`
+  // subscribe to this so that `cancel()` immediately stops their setTimeout
+  // chain instead of leaving orphaned 16ms pollers to leak CPU/memory.
+  const drainAbort = new AbortController();
 
   let active = false;
   let drainPromise: Promise<void> | null = null;
@@ -121,14 +136,21 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
   }
 
   function cancel(): void {
-    if (!active) return;
+    // Note: do NOT early-return on `!active` — once a queue has been
+    // cancelled, every pending `waitForRev` Promise must still resolve so
+    // its setTimeout chain is cleared. `drainAbort.abort()` is idempotent.
+    if (drainAbort.signal.aborted) {
+      // Already cancelled; nothing more to do.
+      return;
+    }
+    drainAbort.abort();
+    active = false;
     // Abort all in-flight tasks; pending ones won't be picked up because
     // active flips off and the drain loop exits.
     for (const [, ctrl] of inFlight) {
       ctrl.abort();
     }
     inFlight.clear();
-    active = false;
     dispatch({ type: 'queue/stopped' });
     // Mark any remaining pending as cancelled.
     const s = getState();
@@ -156,7 +178,7 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
         if (state.isPaused) {
           console.log('[DL] drain paused');
           // Wait for the resume action to bump state.rev.
-          await waitForRev(state.rev, getState);
+          await waitForRev(state.rev, getState, drainAbort.signal);
           continue;
         }
         const cap = getConcurrency();
@@ -164,7 +186,7 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
         if (live >= cap) {
           console.log(`[DL] drain at cap live=${live} cap=${cap}`);
           // Wait for any task to finish (rev bump) before pulling more.
-          await waitForRev(state.rev, getState);
+          await waitForRev(state.rev, getState, drainAbort.signal);
           continue;
         }
         const next = pickNextPending(state, inFlight.keys());
@@ -179,9 +201,10 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
             console.log('[DL] drain no more work, stopping');
             active = false;
             dispatch({ type: 'queue/stopped' });
+            onQueueFinished?.(getState());
             return;
           }
-          await waitForRev(state.rev, getState);
+          await waitForRev(state.rev, getState, drainAbort.signal);
           continue;
         }
         // Dispatch started and kick off runTask. We do NOT await here — we
@@ -376,17 +399,35 @@ function pickNextPending(
 function waitForRev(
   current: number,
   getState: () => DownloadState,
+  signal: AbortSignal,
 ): Promise<void> {
-  return new Promise(resolve => {
+  return new Promise<void>(resolve => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onAbort = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      resolve();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
     const tick = () => {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
       const s = getState();
       if (s.rev !== current) {
-        resolve();
+        onAbort();
         return;
       }
       // Poll lightly; the rev bumps on every reducer dispatch so the gap is
       // usually < 16ms in practice.
-      setTimeout(tick, 16);
+      timer = setTimeout(tick, 16);
     };
     tick();
   });

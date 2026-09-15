@@ -5,7 +5,7 @@ import { DownloadProgress } from '../components/DownloadProgress';
 import { DownloadItem } from '../components/DownloadItem';
 import { useDownload } from '../store/DownloadContext';
 import type { DownloadState } from '../store/downloadReducer';
-import { upsertHistory, type HistoryStatus } from '../services/historyService';
+import { recordHistoryFromState } from '../services/historyService';
 
 import type { RootStackScreenProps } from '../navigation/types';
 import { t, useI18n } from '../i18n';
@@ -28,81 +28,45 @@ export const DownloadScreen: React.FC<Props> = ({ route, navigation }) => {
   const { state, summary, start, pause, resume, cancel, retryFailed } =
     useDownload();
 
-  // Auto-start on mount when launched from Preview with article/images.
+  // Auto-start when launched from Preview with article/images.
   // When opened from Home's download icon (no params), just show existing queue.
+  //
+  // Deps are `[article, images, start]` (NOT `[]`) so that re-entering the
+  // screen via `navigate('Download', {newParams})` — which reuses the same
+  // native-stack instance and only updates params — also re-triggers
+  // `start()`. Without this, the second download silently shows the previous
+  // batch's progress/state because the component is never re-mounted.
   useEffect(() => {
     console.log(
-      `[DL] DownloadScreen mount article=${article?.title ?? 'none'} images=${
+      `[DL] DownloadScreen effect article=${article?.title ?? 'none'} images=${
         images?.length ?? 0
-      } stateTotal=${state.taskOrder.length}`,
+      }`,
     );
     if (article && images && images.length > 0) {
       console.log(`[DL] DownloadScreen start called`);
       start(article, images);
     } else {
-      console.log(
-        `[DL] DownloadScreen no params, showing existing queue total=${state.taskOrder.length}`,
-      );
+      console.log('[DL] DownloadScreen no params, showing existing queue');
     }
-    // We intentionally only run this once per (article,images) identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [article, images, start]);
 
   // Persist a history row once the batch reaches a terminal state.
   // Only fires on the transition into `finished`, not on every render.
+  //
+  // Uses the shared recorder so the Home flow and the batch URL flow
+  // (DownloadContext.runDownload) write identical history rows.
   const wroteHistory = React.useRef(false);
   useEffect(() => {
     if (!summary.finished || wroteHistory.current) return;
-    // When opened via Home icon without params, article is undefined — use state.article
+    // When opened via Home icon without params, article is undefined — the
+    // state still carries the article for the current queue.
     const histArticle = article ?? state.article;
-    const histImages = images ?? state.article.images;
     if (!histArticle?.url) return;
     wroteHistory.current = true;
-    const saveDir = state.subfolder || `Pictures/TelegraphDownloader/untitled`;
-
-    // Build per-image arrays in *download order* (which is the order images
-    // were passed in — i.e. reversed from the article's source order, so the
-    // gallery's time-sorted view matches the article's reading order).
-    const imageUrls: string[] = [];
-    const imagePaths: string[] = [];
-    const savePaths: string[] = [];
-    const order = state.taskOrder ?? [];
-    for (let i = 0; i < histImages.length; i += 1) {
-      const image = histImages[i];
-      if (!image) continue;
-      const taskId = order[i] ?? image.id;
-      const task = state.tasks[taskId];
-      imageUrls.push(image.url);
-      if (task?.localPath) {
-        imagePaths.push(task.localPath);
-        savePaths.push(`${saveDir}/${image.filename}`);
-      }
-    }
-
-    upsertHistory({
-      url: histArticle.url,
-      title: histArticle.title,
-      imageCount: summary.total,
-      successCount: summary.success,
-      failedCount: summary.failed,
-      skippedCount: summary.skipped,
-      saveDir,
-      status: deriveStatus(summary.failed, summary.total),
-      imageUrls,
-      imagePaths,
-      savePaths,
-    }).catch(() => {
+    recordHistoryFromState(state).catch(() => {
       // History persistence is best-effort; never block the UI on it.
     });
-  }, [
-    summary,
-    article,
-    images,
-    state.article,
-    state.taskOrder,
-    state.tasks,
-    state.subfolder,
-  ]);
+  }, [summary, article, state]);
 
   // Reset the "already wrote" guard whenever a new batch starts.
   useEffect(() => {
@@ -120,12 +84,6 @@ export const DownloadScreen: React.FC<Props> = ({ route, navigation }) => {
       )}%`,
     );
   }, [summary]);
-
-  function deriveStatus(failed: number, total: number): HistoryStatus {
-    if (failed === 0) return 'done';
-    if (failed === total) return 'failed';
-    return 'partial';
-  }
 
   const handleClose = useCallback(() => {
     if (!summary.finished) {

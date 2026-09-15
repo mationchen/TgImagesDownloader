@@ -1,8 +1,8 @@
-import {TelegraphNativeResolver} from './telegraphNativeResolver';
-import {ImgBBResolver} from './imgbbResolver';
-import {BlockedHostResolver} from './blockedHostResolver';
-import {GenericResolver} from './genericResolver';
-import type {ImageResolver, ResolverResult} from './types';
+import { TelegraphNativeResolver } from './telegraphNativeResolver';
+import { ImgBBResolver } from './imgbbResolver';
+import { BlockedHostResolver } from './blockedHostResolver';
+import { GenericResolver } from './genericResolver';
+import type { ImageResolver, ResolverResult } from './types';
 
 /**
  * Registry that tries resolvers in priority order for a given URL.
@@ -32,11 +32,11 @@ export class ResolverRegistry {
       }
     }
     // Unreachable given the generic fallback, but keep it safe.
-    return {kind: 'direct', url};
+    return { kind: 'direct', url };
   }
 }
 
 /** Default shared instance. */
 export const defaultResolverRegistry = new ResolverRegistry();
 
-export type {ImageResolver, ResolverResult};
+export type { ImageResolver, ResolverResult };

@@ -1,4 +1,4 @@
-import type {ImageResolver, ResolverResult} from './types';
+import type { ImageResolver, ResolverResult } from './types';
 
 /**
  * ImgBB public image host (i.ibb.co/...). Publicly downloadable.
@@ -16,6 +16,6 @@ export class ImgBBResolver implements ImageResolver {
   }
 
   resolve(url: string): ResolverResult {
-    return {kind: 'direct', url};
+    return { kind: 'direct', url };
   }
 }

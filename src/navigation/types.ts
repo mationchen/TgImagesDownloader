@@ -1,11 +1,15 @@
-import type {CompositeScreenProps, NavigatorScreenParams} from '@react-navigation/native';
-import type {BottomTabScreenProps} from '@react-navigation/bottom-tabs';
-import type {NativeStackScreenProps} from '@react-navigation/native-stack';
-import type {TelegraphArticle, TelegraphImage} from '../types/telegraph';
+import type {
+  CompositeScreenProps,
+  NavigatorScreenParams,
+} from '@react-navigation/native';
+import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import type { TelegraphArticle, TelegraphImage } from '../types/telegraph';
 
-/** Bottom tabs — the main three sections. */
+/** Bottom tabs — the main sections. */
 export type MainTabParamList = {
   Batch: undefined;
+  UrlList: undefined;
   History: undefined;
   Settings: undefined;
 };
@@ -14,10 +18,11 @@ export type MainTabParamList = {
 export type RootStackParamList = {
   Splash: undefined;
   Tabs: NavigatorScreenParams<MainTabParamList> | undefined;
-  Preview: {article: TelegraphArticle};
-  Download: {article: TelegraphArticle; images: TelegraphImage[]} | undefined;
+  Preview: { article: TelegraphArticle };
+  Download: { article: TelegraphArticle; images: TelegraphImage[] } | undefined;
   Privacy: undefined;
-  HistoryDetail: {id: number};
+  HistoryDetail: { id: number };
+  BatchList: undefined;
 };
 
 export type RootStackScreenProps<T extends keyof RootStackParamList> =

@@ -1,8 +1,4 @@
-import {
-  NativeEventEmitter,
-  NativeModules,
-  Platform,
-} from 'react-native';
+import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
 
 /**
  * Bridge for Android "Share -> Telegraph Downloader" intents (spec §7 / §33
@@ -19,9 +15,7 @@ export interface SharePayload {
 }
 
 const native =
-  Platform.OS === 'android'
-    ? NativeModules.TelegraphShare
-    : undefined;
+  Platform.OS === 'android' ? NativeModules.TelegraphShare : undefined;
 
 type ShareModule = {
   getInitialShare: () => Promise<SharePayload>;
@@ -44,12 +38,12 @@ export function isShareSupported(): boolean {
  */
 export async function getInitialShare(): Promise<SharePayload> {
   if (!isModuleAvailable()) {
-    return {url: null, hasUrl: false};
+    return { url: null, hasUrl: false };
   }
   try {
     return await (native as unknown as ShareModule).getInitialShare();
   } catch {
-    return {url: null, hasUrl: false};
+    return { url: null, hasUrl: false };
   }
 }
 
@@ -59,28 +53,30 @@ export async function getInitialShare(): Promise<SharePayload> {
  */
 export async function consumePendingShare(): Promise<SharePayload> {
   if (!isModuleAvailable()) {
-    return {url: null, hasUrl: false};
+    return { url: null, hasUrl: false };
   }
   try {
     return await (native as unknown as ShareModule).consumePendingShare();
   } catch {
-    return {url: null, hasUrl: false};
+    return { url: null, hasUrl: false };
   }
 }
 
 export type ShareListener = (payload: SharePayload) => void;
 
 let emitter: NativeEventEmitter | null = null;
-let sharedListener: {remove: () => void} | null = null;
+let sharedListener: { remove: () => void } | null = null;
 
 function ensureEmitter(): NativeEventEmitter {
   if (!emitter) {
     // The native module exposes addListener/removeListeners (required for
     // NativeEventEmitter); we cast the raw module shape so TS is satisfied.
-    emitter = new NativeEventEmitter(native as unknown as {
-      addListener: (eventName: string) => unknown;
-      removeListeners: (count: number) => void;
-    });
+    emitter = new NativeEventEmitter(
+      native as unknown as {
+        addListener: (eventName: string) => unknown;
+        removeListeners: (count: number) => void;
+      },
+    );
   }
   return emitter;
 }
@@ -98,10 +94,8 @@ export function subscribeToShares(listener: ShareListener): () => void {
   // the native side emits a single WritableMap, which we coerce to our
   // typed SharePayload shape. The `as never` widens our payload type so it
   // satisfies the emitter's broad signature without losing readability.
-  const sub = e.addListener(
-    'TelegraphShare',
-    ((payload: SharePayload) => listener(payload)) as never,
-  );
+  const sub = e.addListener('TelegraphShare', ((payload: SharePayload) =>
+    listener(payload)) as never);
   sharedListener = sub;
   return () => {
     sub.remove();

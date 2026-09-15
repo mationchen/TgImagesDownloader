@@ -1,4 +1,4 @@
-import type {SiteAdapter} from './types';
+import type { SiteAdapter } from './types';
 
 /**
  * Telegraph adapter: telegra.ph pages are single-page with a predictable

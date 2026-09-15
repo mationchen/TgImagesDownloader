@@ -1,4 +1,4 @@
-import type {SiteAdapter} from './types';
+import type { SiteAdapter } from './types';
 
 /**
  * Generic adapter: fallback for any site not matched by a specific adapter.

@@ -1,4 +1,4 @@
-import type {SiteAdapter} from './types';
+import type { SiteAdapter } from './types';
 
 /**
  * WordPress adapter: covers everia.club and other WP-based galleries.

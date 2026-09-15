@@ -1,4 +1,4 @@
-import {NativeModules, PermissionsAndroid, Platform} from 'react-native';
+import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 
 /**
  * JS bridge for download notifications (spec §21).

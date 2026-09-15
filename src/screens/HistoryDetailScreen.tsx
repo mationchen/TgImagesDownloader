@@ -25,6 +25,7 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { ZoomableImage } from '../components/ZoomableImage';
 import type { RootStackScreenProps } from '../navigation/types';
+import { isSharedSaveFolder } from '../utils/saveDir';
 import { t, useI18n } from '../i18n';
 
 type Props = RootStackScreenProps<'HistoryDetail'>;
@@ -44,9 +45,9 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
   const [record, setRecord] = useState<HistoryRecord | null | 'loading'>(
     'loading',
   );
-  // MediaStore content URIs for the record's save folder, used when the row
-  // has no recorded image_paths (older rows / skipped re-runs).
-  const [folderUris, setFolderUris] = useState<string[]>([]);
+  // URIs used when the row has no recorded image_paths (older rows / skipped
+  // re-runs): either that article's own folder, or its source image URLs.
+  const [fallbackUris, setFallbackUris] = useState<string[]>([]);
   // Index of the image tapped in the grid; null = fullscreen viewer closed.
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
@@ -54,31 +55,24 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
     let cancelled = false;
     (async () => {
       const r = await getHistory(id);
-      if (!cancelled) {
-        setRecord(r);
-        // Fallback: if the row never recorded per-image URIs, read them from
-        // MediaStore by matching the save folder. Image files live on disk, so
-        // the thumbnails can still be shown.
-        if (r && (r.imagePaths ?? []).length === 0) {
-          const prefix = r.saveDir || `Pictures/TelegraphDownloader`;
-          if (
-            isDownloaderAvailable() &&
-            TelegraphDownloader?.listGalleryImages
-          ) {
-            try {
-              let uris = await TelegraphDownloader.listGalleryImages(prefix);
-              // The row's saveDir may point at a per-article subfolder that no
-              // longer holds the files (e.g. after "migrate images"). Retry
-              // against the app root before giving up.
-              const base = appRootFromSaveDir(prefix);
-              if (uris.length === 0 && base !== prefix) {
-                uris = await TelegraphDownloader.listGalleryImages(base);
-              }
-              if (!cancelled) setFolderUris(uris);
-            } catch {
-              // best-effort; leave the grid empty if the query fails
-            }
-          }
+      if (cancelled) return;
+      setRecord(r);
+      if (!r || (r.imagePaths ?? []).length > 0) return;
+
+      if (isSharedSaveFolder(r.saveDir)) {
+        // The app defaults to ONE shared folder for every article, so listing
+        // it would surface other records' images (the "same batch" bug). Fall
+        // back to the record's own source URLs instead.
+        if (!cancelled) setFallbackUris(r.imageUrls ?? []);
+        return;
+      }
+      // Per-article subfolder: it holds only this record's files.
+      if (isDownloaderAvailable() && TelegraphDownloader?.listGalleryImages) {
+        try {
+          const uris = await TelegraphDownloader.listGalleryImages(r.saveDir);
+          if (!cancelled) setFallbackUris(uris);
+        } catch {
+          // best-effort; leave the grid empty if the query fails
         }
       }
     })();
@@ -111,7 +105,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
   }
 
   const imageUris =
-    record.imagePaths.length > 0 ? record.imagePaths : folderUris;
+    record.imagePaths.length > 0 ? record.imagePaths : fallbackUris;
   const urisEmpty = imageUris.length === 0;
   const size = tileSize();
 
@@ -385,16 +379,6 @@ const ImageViewerPage: React.FC<{
     </View>
   );
 };
-
-/**
- * Derive the app's root MediaStore folder from a stored saveDir
- * (e.g. "Pictures/TelegraphDownloader/<title>" -> "Pictures/TelegraphDownloader").
- * Defaults to the Pictures root when the value is unexpected.
- */
-function appRootFromSaveDir(saveDir: string): string {
-  const match = /^(Pictures|Download)\/TelegraphDownloader/.exec(saveDir);
-  return match ? match[0] : 'Pictures/TelegraphDownloader';
-}
 
 function formatLocal(utcMs: number): string {
   const d = new Date(utcMs);

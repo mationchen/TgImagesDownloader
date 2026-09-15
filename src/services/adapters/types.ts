@@ -1,4 +1,4 @@
-import type {TelegraphImage} from '../../types/telegraph';
+import type { TelegraphImage } from '../../types/telegraph';
 
 /**
  * SiteAdapter — per-site page parsing strategy.
@@ -26,7 +26,7 @@ export interface SiteAdapter {
     html: string,
     baseUrl: string,
     seen: Set<string>,
-    opts?: {skipRelatedCards?: boolean},
+    opts?: { skipRelatedCards?: boolean },
   ): TelegraphImage[] | string[];
 }
 

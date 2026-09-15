@@ -2,6 +2,7 @@ import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StyleSheet, Text } from 'react-native';
 import { HomeScreen } from '../screens/HomeScreen';
+import { BatchListScreen } from '../screens/BatchListScreen';
 import { HistoryScreen } from '../screens/HistoryScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { t, useI18n } from '../i18n';
@@ -12,7 +13,8 @@ const Tab = createBottomTabNavigator<MainTabParamList>();
 
 const TAB_ICONS: Record<keyof MainTabParamList, string> = {
   Batch: '⬇',
-  History: '📋',
+  UrlList: '📋',
+  History: '🕘',
   Settings: '⚙',
 };
 
@@ -59,6 +61,11 @@ export const MainTabs: React.FC = () => {
         name="Batch"
         component={HomeScreen}
         options={{ tabBarLabel: t('tab.batch') }}
+      />
+      <Tab.Screen
+        name="UrlList"
+        component={BatchListScreen}
+        options={{ tabBarLabel: t('tab.urlList') }}
       />
       <Tab.Screen
         name="History"

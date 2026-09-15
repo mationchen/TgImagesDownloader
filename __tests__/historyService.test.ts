@@ -1,13 +1,17 @@
-import {open} from '@op-engineering/op-sqlite';
+import { open } from '@op-engineering/op-sqlite';
 import {
   closeHistoryDatabase,
   deleteSetting,
+  deriveHistoryStatus,
+  getDownloadedImagePaths,
   getHistory,
   getLatestSchemaVersion,
   getSetting,
   isImageDownloaded,
   listHistory,
+  listHistoryByUrls,
   markImageDownloaded,
+  recordHistoryFromState,
   removeHistory,
   runMigrations,
   setSetting,
@@ -15,6 +19,11 @@ import {
   _testMigrations,
   type DB,
 } from '../src/services/historyService';
+import {
+  downloadReducer,
+  initDownloadState,
+} from '../src/store/downloadReducer';
+import type { TelegraphArticle, TelegraphImage } from '../src/types/telegraph';
 
 // A minimal in-memory stand-in for an op-sqlite DB so we can exercise the
 // migration + CRUD logic without the native JSI layer.
@@ -47,64 +56,106 @@ function makeFakeDb(): FakeDb {
 
   const run = (sql: string, params?: any[]): any => {
     if (/PRAGMA user_version\s*=\s*(\d+)/i.test(sql)) {
-      store.userVersion = Number(sql.match(/PRAGMA user_version\s*=\s*(\d+)/i)![1]);
-      return {rows: [], insertId: 0, rowsAffected: 0};
+      store.userVersion = Number(
+        sql.match(/PRAGMA user_version\s*=\s*(\d+)/i)![1],
+      );
+      return { rows: [], insertId: 0, rowsAffected: 0 };
     }
     if (/PRAGMA user_version/i.test(sql)) {
-      return {rows: [{user_version: store.userVersion}], insertId: 0, rowsAffected: 0};
+      return {
+        rows: [{ user_version: store.userVersion }],
+        insertId: 0,
+        rowsAffected: 0,
+      };
     }
     if (/^BEGIN/i.test(sql)) {
       store.transactionDepth += 1;
-      return {rows: [], insertId: 0, rowsAffected: 0};
+      return { rows: [], insertId: 0, rowsAffected: 0 };
     }
     if (/^COMMIT/i.test(sql)) {
       store.transactionDepth -= 1;
-      return {rows: [], insertId: 0, rowsAffected: 0};
+      return { rows: [], insertId: 0, rowsAffected: 0 };
     }
     if (/^ROLLBACK/i.test(sql)) {
       store.transactionDepth -= 1;
-      return {rows: [], insertId: 0, rowsAffected: 0};
+      return { rows: [], insertId: 0, rowsAffected: 0 };
     }
     const create = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/i);
     if (create) {
-      if (!store.tables[create[1]!.toLowerCase()]) store.tables[create[1]!.toLowerCase()] = [];
-      return {rows: [], insertId: 0, rowsAffected: 0};
+      if (!store.tables[create[1]!.toLowerCase()])
+        store.tables[create[1]!.toLowerCase()] = [];
+      return { rows: [], insertId: 0, rowsAffected: 0 };
     }
-    const createIdx = sql.match(/CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)/i);
+    const createIdx = sql.match(
+      /CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)/i,
+    );
     if (createIdx) {
-      return {rows: [], insertId: 0, rowsAffected: 0};
+      return { rows: [], insertId: 0, rowsAffected: 0 };
     }
-    const insert = sql.match(/^INSERT INTO (\w+)/i);
+    const insert = sql.match(/^INSERT INTO (\w+)\s*\(([^)]+)\)/i);
     if (insert) {
       const table = insert[1]!.toLowerCase();
       if (!store.tables[table]) store.tables[table] = [];
-      // simplistic: treat params as ordered values
+      // Parse column names from the INSERT statement so rows are stored
+      // with proper keys (e.g. `url`, `title`) instead of `c0, c1, ...`.
+      const cols = insert[2]!
+        .split(',')
+        .map(s => s.trim().toLowerCase())
+        .filter(Boolean);
       const row: Row = {};
       (params ?? []).forEach((v, i) => {
-        row[`c${i}`] = v;
+        const key = cols[i] ?? `c${i}`;
+        row[key] = v;
       });
       store.tables[table].push(row);
-      return {rows: [], insertId: store.tables[table].length, rowsAffected: 1};
+      return {
+        rows: [],
+        insertId: store.tables[table].length,
+        rowsAffected: 1,
+      };
     }
     const sel = sql.match(/^SELECT/i);
     if (sel) {
-      // SELECT from history
+      // SELECT from a table. Support basic WHERE col = ? filtering so
+      // listHistoryByUrls (which does one SELECT per URL) works correctly.
       const from = sql.match(/FROM (\w+)/i);
       if (from) {
-        const rows = store.tables[from[1]!.toLowerCase()] ?? [];
-        // map c0..cn back to a pseudo-record (tests only check status fields we
-        // can't fully round-trip without a real engine, so we return the stored
-        // params via a best-effort mapping).
-        return {rows: rows as Row[], insertId: 0, rowsAffected: rows.length};
+        let rows = (store.tables[from[1]!.toLowerCase()] ?? []) as Row[];
+        // Parse WHERE col = ? — simple equality filter.
+        const whereM = sql.match(/WHERE\s+(\w+)\s*=\s*\?/i);
+        if (whereM && params && params.length > 0) {
+          const col = whereM[1]!;
+          const val = params[0];
+          rows = rows.filter(r => r[col] === val);
+        }
+        // Parse ORDER BY col DESC — simple single-column sort.
+        const orderM = sql.match(/ORDER\s+BY\s+(\w+)\s+(ASC|DESC)/i);
+        if (orderM) {
+          const col = orderM[1]!;
+          const desc = orderM[2]!.toUpperCase() === 'DESC';
+          rows = [...rows].sort((a, b) => {
+            const av = a[col] ?? 0;
+            const bv = b[col] ?? 0;
+            return desc
+              ? (bv as number) - (av as number)
+              : (av as number) - (bv as number);
+          });
+        }
+        // Parse LIMIT N — take first N rows.
+        const limitM = sql.match(/LIMIT\s+(\d+)/i);
+        if (limitM && rows.length > Number(limitM[1])) {
+          rows = rows.slice(0, Number(limitM[1]));
+        }
+        return { rows, insertId: 0, rowsAffected: rows.length };
       }
-      return {rows: [], insertId: 0, rowsAffected: 0};
+      return { rows: [], insertId: 0, rowsAffected: 0 };
     }
     if (/^DELETE FROM/i.test(sql)) {
       const from = sql.match(/DELETE FROM (\w+)/i);
       if (from) store.tables[from[1]!.toLowerCase()] = [];
-      return {rows: [], insertId: 0, rowsAffected: 0};
+      return { rows: [], insertId: 0, rowsAffected: 0 };
     }
-    return {rows: [], insertId: 0, rowsAffected: 0};
+    return { rows: [], insertId: 0, rowsAffected: 0 };
   };
 
   const db = {
@@ -134,7 +185,7 @@ function makeFakeDb(): FakeDb {
       }
     },
     close: async () => undefined,
-    executeBatch: async () => ({rows: [], insertId: 0, rowsAffected: 0}),
+    executeBatch: async () => ({ rows: [], insertId: 0, rowsAffected: 0 }),
     executeSync2: execSync,
   } as unknown as DB;
 
@@ -174,7 +225,9 @@ describe('historyService migrations', () => {
     await runMigrations(fake.db);
     // No migration DDL should have run (version already latest).
     expect(fake.tables.history).toBeUndefined();
-    expect(fake.sqlLog.some(s => /CREATE TABLE IF NOT EXISTS history/i.test(s))).toBe(false);
+    expect(
+      fake.sqlLog.some(s => /CREATE TABLE IF NOT EXISTS history/i.test(s)),
+    ).toBe(false);
   });
 
   it('rolls back a failed migration and keeps the old version', async () => {
@@ -233,6 +286,97 @@ describe('historyService CRUD', () => {
     expect(Array.isArray(list)).toBe(true);
     expect(list.length).toBe(0);
   });
+
+  describe('listHistoryByUrls (batch dedup lookup)', () => {
+    beforeEach(async () => {
+      (open as unknown as jest.Mock).mockReturnValue(makeFakeDb().db);
+      await closeHistoryDatabase();
+    });
+
+    it('returns the latest history per URL', async () => {
+      // Two batches for url-A, the second one newer. listHistoryByUrls
+      // should return only the newer one.
+      await upsertHistory({
+        url: 'https://a.test/x',
+        title: 'first A',
+        imageCount: 5,
+        successCount: 5,
+        failedCount: 0,
+        skippedCount: 0,
+        saveDir: 'Pictures/TgDownloader/a',
+        imageUrls: ['https://img/u1.jpg'],
+        imagePaths: ['content://x/1'],
+        savePaths: ['Pictures/a/1.jpg'],
+        status: 'done',
+      });
+      // tiny time gap so updated_at is strictly greater
+      await new Promise<void>(resolve => setTimeout(resolve, 5));
+      await upsertHistory({
+        url: 'https://a.test/x',
+        title: 'second A',
+        imageCount: 6,
+        successCount: 6,
+        failedCount: 0,
+        skippedCount: 0,
+        saveDir: 'Pictures/TgDownloader/a',
+        imageUrls: [],
+        imagePaths: [],
+        savePaths: [],
+        status: 'done',
+      });
+      await upsertHistory({
+        url: 'https://b.test/y',
+        title: 'B',
+        imageCount: 3,
+        successCount: 3,
+        failedCount: 0,
+        skippedCount: 0,
+        saveDir: 'Pictures/TgDownloader/b',
+        imageUrls: [],
+        imagePaths: [],
+        savePaths: [],
+        status: 'done',
+      });
+
+      const map = await listHistoryByUrls([
+        'https://a.test/x',
+        'https://b.test/y',
+        'https://c.test/z', // not in history → omitted
+      ]);
+      expect(map.size).toBe(2);
+      expect(map.get('https://a.test/x')?.title).toBe('second A');
+      expect(map.get('https://a.test/x')?.imageCount).toBe(6);
+      expect(map.get('https://b.test/y')?.title).toBe('B');
+      expect(map.has('https://c.test/z')).toBe(false);
+    });
+
+    it('returns an empty map for an empty input list', async () => {
+      const map = await listHistoryByUrls([]);
+      expect(map.size).toBe(0);
+    });
+
+    it('dedupes duplicate inputs in the lookup list', async () => {
+      await upsertHistory({
+        url: 'https://a.test/x',
+        title: 'A',
+        imageCount: 5,
+        successCount: 5,
+        failedCount: 0,
+        skippedCount: 0,
+        saveDir: 'Pictures/TgDownloader/a',
+        imageUrls: [],
+        imagePaths: [],
+        savePaths: [],
+        status: 'done',
+      });
+      const map = await listHistoryByUrls([
+        'https://a.test/x',
+        'https://a.test/x',
+        '  https://a.test/x  ',
+      ]);
+      expect(map.size).toBe(1);
+    });
+  });
 });
 
 describe('historyService v2 migration (per-image detail + settings KV)', () => {
@@ -285,7 +429,10 @@ describe('historyService v2 migration (per-image detail + settings KV)', () => {
         'https://telegra.ph/file/a.jpg',
         'https://telegra.ph/file/b.jpg',
       ],
-      imagePaths: ['content://media/external/images/1', 'content://media/external/images/2'],
+      imagePaths: [
+        'content://media/external/images/1',
+        'content://media/external/images/2',
+      ],
       savePaths: ['v2/001.jpg', 'v2/002.jpg'],
     });
     // Find the history insert (it's stored under the lowercase table; our fake
@@ -371,6 +518,197 @@ describe('historyService v3 migration (downloaded-image URL ledger)', () => {
     expect(ddl).toMatch(/CREATE TABLE IF NOT EXISTS downloaded_images/i);
     expect(fake.tables.downloaded_images).toBeDefined();
     expect(fake.userVersion).toBe(getLatestSchemaVersion());
+  });
+
+  it('recordHistoryFromState persists a finished run (batch flow)', async () => {
+    const fake = makeFakeDb();
+    fake.tables.history = [];
+    (open as unknown as jest.Mock).mockReturnValue(fake.db);
+
+    const images: TelegraphImage[] = [
+      {
+        id: 'img-1',
+        index: 1,
+        url: 'https://img.test/1.jpg',
+        filename: '001.jpg',
+        selected: true,
+      },
+      {
+        id: 'img-2',
+        index: 2,
+        url: 'https://img.test/2.jpg',
+        filename: '002.jpg',
+        selected: true,
+      },
+    ];
+    const article: TelegraphArticle = {
+      url: 'https://telegra.ph/batch-row',
+      title: 'Batch row',
+      images,
+      parsedAt: 0,
+    };
+    let state = initDownloadState(
+      article,
+      images,
+      'Pictures/TelegraphDownloader/batch-row',
+    );
+    state = downloadReducer(state, {
+      type: 'task/success',
+      id: 'img-1',
+      localPath: 'content://media/external/images/1',
+    });
+    state = downloadReducer(state, {
+      type: 'task/failed',
+      id: 'img-2',
+      errorCode: 'HTTP_403',
+      errorMessage: 'forbidden',
+    });
+
+    await recordHistoryFromState(state);
+
+    const row = fake.tables.history?.[0];
+    expect(row).toBeDefined();
+    expect(row!.url).toBe('https://telegra.ph/batch-row');
+    expect(row!.title).toBe('Batch row');
+    expect(row!.image_count).toBe(2);
+    expect(row!.success_count).toBe(1);
+    expect(row!.failed_count).toBe(1);
+    expect(JSON.parse(String(row!.image_paths))).toEqual([
+      'content://media/external/images/1',
+    ]);
+    expect(JSON.parse(String(row!.save_paths))).toEqual([
+      'Pictures/TelegraphDownloader/batch-row/001.jpg',
+    ]);
+    expect(JSON.parse(String(row!.image_urls))).toEqual([
+      'https://img.test/1.jpg',
+      'https://img.test/2.jpg',
+    ]);
+  });
+
+  it('recordHistoryFromState is a no-op without an article URL', async () => {
+    const fake = makeFakeDb();
+    fake.tables.history = [];
+    (open as unknown as jest.Mock).mockReturnValue(fake.db);
+
+    const images: TelegraphImage[] = [
+      {
+        id: 'img-1',
+        index: 1,
+        url: 'https://img.test/1.jpg',
+        filename: '001.jpg',
+        selected: true,
+      },
+    ];
+    const article: TelegraphArticle = {
+      url: '',
+      title: 'No url',
+      images,
+      parsedAt: 0,
+    };
+    const state = initDownloadState(article, images, 'x');
+    await recordHistoryFromState(state);
+    expect(fake.tables.history ?? []).toHaveLength(0);
+  });
+
+  it('deriveHistoryStatus maps failure ratios to history status', () => {
+    expect(deriveHistoryStatus(0, 5)).toBe('done');
+    expect(deriveHistoryStatus(2, 5)).toBe('partial');
+    expect(deriveHistoryStatus(5, 5)).toBe('failed');
+  });
+
+  describe('v4 ledger local_path (link skipped re-runs to their files)', () => {
+    it('declares v4 in the manifest', () => {
+      const v4 = _testMigrations().find(m => m.version === 4);
+      expect(v4).toBeDefined();
+      expect(v4!.description).toMatch(/path|uri/i);
+    });
+
+    it('adds the local_path column when a v3 user upgrades', async () => {
+      const fake = makeFakeDb();
+      fake.userVersion = 3;
+      await runMigrations(fake.db);
+      expect(fake.sqlLog.join('\n')).toMatch(
+        /ALTER TABLE downloaded_images ADD COLUMN local_path/i,
+      );
+      expect(fake.userVersion).toBe(getLatestSchemaVersion());
+    });
+
+    it('markImageDownloaded stores the path; getDownloadedImagePaths returns it', async () => {
+      const fake = makeFakeDb();
+      fake.tables.downloaded_images = [];
+      (open as unknown as jest.Mock).mockReturnValue(fake.db);
+
+      await markImageDownloaded('https://x/1.jpg', 'content://media/1');
+      await markImageDownloaded('https://x/2.jpg'); // no path recorded
+
+      const map = await getDownloadedImagePaths([
+        'https://x/1.jpg',
+        'https://x/2.jpg',
+        'https://x/3.jpg',
+      ]);
+      expect(map.get('https://x/1.jpg')).toBe('content://media/1');
+      expect(map.has('https://x/2.jpg')).toBe(false);
+      expect(map.has('https://x/3.jpg')).toBe(false);
+    });
+
+    it('recordHistoryFromState links skipped images to their ledger path', async () => {
+      const fake = makeFakeDb();
+      fake.tables.downloaded_images = [];
+      fake.tables.history = [];
+      (open as unknown as jest.Mock).mockReturnValue(fake.db);
+
+      const images: TelegraphImage[] = [
+        {
+          id: 'img-1',
+          index: 1,
+          url: 'https://img.test/1.jpg',
+          filename: '001.jpg',
+          selected: true,
+        },
+        {
+          id: 'img-2',
+          index: 2,
+          url: 'https://img.test/2.jpg',
+          filename: '002.jpg',
+          selected: true,
+        },
+      ];
+      const article: TelegraphArticle = {
+        url: 'https://telegra.ph/skipped-rerun',
+        title: 'Skipped rerun',
+        images,
+        parsedAt: 0,
+      };
+      // Both were saved by an earlier run.
+      await markImageDownloaded('https://img.test/1.jpg', 'content://media/11');
+      await markImageDownloaded('https://img.test/2.jpg', 'content://media/22');
+
+      let state = initDownloadState(
+        article,
+        images,
+        'Pictures/TelegraphDownloader',
+      );
+      state = downloadReducer(state, {
+        type: 'task/skipped',
+        id: 'img-1',
+        reason: 'already downloaded',
+      });
+      state = downloadReducer(state, {
+        type: 'task/skipped',
+        id: 'img-2',
+        reason: 'already downloaded',
+      });
+
+      await recordHistoryFromState(state);
+
+      const row = fake.tables.history?.[0];
+      expect(row).toBeDefined();
+      expect(row!.skipped_count).toBe(2);
+      expect(JSON.parse(String(row!.image_paths))).toEqual([
+        'content://media/11',
+        'content://media/22',
+      ]);
+    });
   });
 
   it('isImageDownloaded / markImageDownloaded roundtrip', async () => {

@@ -1,6 +1,6 @@
-import type {ParseErrorCode} from '../types/telegraph';
-import type {StringKey} from '../i18n';
-import {t} from '../i18n';
+import type { ParseErrorCode } from '../types/telegraph';
+import type { StringKey } from '../i18n';
+import { t } from '../i18n';
 
 const ERROR_KEY_BY_CODE: Record<ParseErrorCode, StringKey> = {
   INVALID_URL: 'error.invalidUrl',

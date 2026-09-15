@@ -1,5 +1,7 @@
 import { open, type DB } from '@op-engineering/op-sqlite';
 import type { Scalar } from '@op-engineering/op-sqlite';
+import { computeSummary, type DownloadState } from '../store/downloadReducer';
+import { APP_CONFIG } from '../constants/config';
 
 /**
  * Local SQLite history for Telegraph download batches.
@@ -92,7 +94,7 @@ interface Migration {
   up: (db: DB) => Promise<void>;
 }
 
-export const LATEST_SCHEMA_VERSION = 3;
+export const LATEST_SCHEMA_VERSION = 4;
 
 /**
  * Migration manifest (AGENTS.md §4). Add a new entry here for every future
@@ -173,6 +175,20 @@ const MIGRATIONS: Migration[] = [
           url TEXT PRIMARY KEY,
           saved_at INTEGER NOT NULL
         );`,
+      );
+    },
+  },
+  {
+    version: 4,
+    description:
+      'downloaded_images: store the saved local URI so an all-skipped re-run can still link its images',
+    up: async db => {
+      // A re-run of an already-downloaded article produces a history row whose
+      // tasks are all "skipped". Without the saved URI those rows cannot show
+      // their images (the shared save folder holds every article's files).
+      // Default '' so existing ledger rows survive the migration (AGENTS.md §4).
+      await db.execute(
+        `ALTER TABLE downloaded_images ADD COLUMN local_path TEXT NOT NULL DEFAULT '';`,
       );
     },
   },
@@ -488,6 +504,47 @@ export async function findHistoryByUrl(
   return row ? rowToRecord(row) : null;
 }
 
+/**
+ * Bulk variant: for each URL, find the most-recent history row (if any).
+ * URLs that are not in the history are omitted from the returned map. Used
+ * by the batch URL-download screen to skip URLs that were already
+ * downloaded in a previous session.
+ *
+ * Implementation: one `SELECT ... WHERE url = ? ORDER BY … LIMIT 1` per
+ * URL. This is O(N) roundtrips but the typical batch is 10–500 URLs and
+ * each query is a primary-key lookup, so the total wall time is
+ * acceptable (and much simpler than a JOIN-based approach).
+ */
+export async function listHistoryByUrls(
+  urls: readonly string[],
+): Promise<Map<string, HistoryRecord>> {
+  const cleaned = Array.from(
+    new Set(urls.map(s => (s ?? '').trim()).filter(Boolean)),
+  );
+  if (cleaned.length === 0) return new Map();
+  await initHistoryDatabase();
+  const d = getDb();
+  const out = new Map<string, HistoryRecord>();
+  for (const url of cleaned) {
+    const res = await d.execute(
+      `SELECT id, url, title, image_count, success_count, failed_count,
+              skipped_count, save_dir, status, image_urls, image_paths,
+              save_paths, created_at, updated_at
+         FROM history
+        WHERE url = ?
+        ORDER BY created_at DESC
+        LIMIT 1;`,
+      [url],
+    );
+    const row = (res.rows ?? [])[0];
+    if (row) {
+      const rec = rowToRecord(row);
+      if (rec) out.set(rec.url, rec);
+    }
+  }
+  return out;
+}
+
 /** Delete a single history row (does NOT touch downloaded files). */
 export async function removeHistory(id: number): Promise<void> {
   await initHistoryDatabase();
@@ -551,15 +608,26 @@ function decodeJsonArray(value: unknown): string[] {
 /**
  * Record that {@code url} was successfully saved. Used so re-downloading the
  * same source URL can be skipped (AGENTS.md duplicate policy).
+ *
+ * {@code localPath} is the saved content/MediaStore URI. It is what lets an
+ * all-skipped re-run still display its images in 下载记录 (v4).
  */
-export async function markImageDownloaded(url: string): Promise<void> {
+export async function markImageDownloaded(
+  url: string,
+  localPath?: string,
+): Promise<void> {
   await initHistoryDatabase();
   const d = getDb();
   await d.execute(
-    `INSERT INTO downloaded_images (url, saved_at)
-     VALUES (?, ?)
-     ON CONFLICT(url) DO NOTHING;`,
-    [url, Date.now()],
+    `INSERT INTO downloaded_images (url, saved_at, local_path)
+     VALUES (?, ?, ?)
+     ON CONFLICT(url) DO UPDATE SET
+       saved_at = excluded.saved_at,
+       local_path = CASE
+         WHEN excluded.local_path = '' THEN downloaded_images.local_path
+         ELSE excluded.local_path
+       END;`,
+    [url, Date.now(), localPath ?? ''],
   );
 }
 
@@ -572,6 +640,126 @@ export async function isImageDownloaded(url: string): Promise<boolean> {
     [url],
   );
   return (res.rows ?? []).length > 0;
+}
+
+/**
+ * Look up the saved local URI for each already-downloaded URL.
+ *
+ * Used when recording an all-skipped history row: those tasks carry no
+ * `localPath` (nothing was saved this run), but the ledger still remembers
+ * where the bytes were written last time. Only non-empty paths are returned.
+ */
+export async function getDownloadedImagePaths(
+  urls: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (urls.length === 0) return out;
+  await initHistoryDatabase();
+  const d = getDb();
+  for (const url of urls) {
+    try {
+      const res = await d.execute(
+        `SELECT local_path FROM downloaded_images WHERE url = ? LIMIT 1;`,
+        [url],
+      );
+      const row = (res.rows ?? [])[0] as { local_path?: unknown } | undefined;
+      const path = row?.local_path;
+      if (typeof path === 'string' && path.length > 0) out.set(url, path);
+    } catch {
+      // Best-effort: a missing path simply leaves that image out of the grid.
+    }
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Persist a finished download run                                      */
+/* ------------------------------------------------------------------ */
+
+/** Map a run's failure ratio to the history status shown in 下载记录. */
+export function deriveHistoryStatus(
+  failed: number,
+  total: number,
+): HistoryStatus {
+  if (failed === 0) return 'done';
+  if (failed === total) return 'failed';
+  return 'partial';
+}
+
+/**
+ * Persist one finished download run as a history row.
+ *
+ * Shared by the Home (DownloadScreen) and batch (BatchListScreen via
+ * DownloadContext.runDownload) flows so a URL downloaded through either path
+ * appears in 下载记录 with identical fields. Builds the per-image arrays in
+ * download order (taskOrder) and only records a path for tasks that actually
+ * produced a local file.
+ *
+ * Best-effort: callers should swallow/normalise failures rather than surface
+ * them, since history persistence must never block the download UI.
+ */
+export async function recordHistoryFromState(
+  state: DownloadState,
+): Promise<void> {
+  const article = state.article;
+  if (!article?.url) return;
+  const saveDir =
+    state.subfolder || `${APP_CONFIG.download.defaultSaveDir}/untitled`;
+  const order = state.taskOrder ?? [];
+  const images = article.images ?? [];
+
+  // Photos skipped this run carry no `localPath` (nothing was written now),
+  // but the ledger remembers where they were saved last time. Look those up so
+  // an all-skipped re-run still gets a usable detail view.
+  const skippedWithoutPath: string[] = [];
+  for (let i = 0; i < images.length; i += 1) {
+    const image = images[i];
+    if (!image) continue;
+    const task = state.tasks[order[i] ?? image.id];
+    if (!task?.localPath && task?.status === 'skipped') {
+      skippedWithoutPath.push(image.url);
+    }
+  }
+  let ledgerPaths = new Map<string, string>();
+  if (skippedWithoutPath.length > 0) {
+    try {
+      ledgerPaths = await getDownloadedImagePaths(skippedWithoutPath);
+    } catch {
+      ledgerPaths = new Map();
+    }
+  }
+
+  const imageUrls: string[] = [];
+  const imagePaths: string[] = [];
+  const savePaths: string[] = [];
+  for (let i = 0; i < images.length; i += 1) {
+    const image = images[i];
+    if (!image) continue;
+    const task = state.tasks[order[i] ?? image.id];
+    imageUrls.push(image.url);
+    const localPath = task?.localPath ?? ledgerPaths.get(image.url);
+    if (localPath) {
+      imagePaths.push(localPath);
+      // Only record a save path when *this* run wrote the file; a
+      // ledger-resolved path belongs to an earlier run whose generated
+      // filename (it embeds a batch token) we can't reproduce.
+      if (task?.localPath) savePaths.push(`${saveDir}/${image.filename}`);
+    }
+  }
+  const summary = computeSummary(state);
+  await upsertHistory({
+    url: article.url,
+    title: article.title,
+    imageCount: summary.total,
+    successCount: summary.success,
+    failedCount: summary.failed,
+    skippedCount: summary.skipped,
+    saveDir,
+    status: deriveHistoryStatus(summary.failed, summary.total),
+    imageUrls,
+    imagePaths,
+    savePaths,
+  });
 }
 
 /* ------------------------------------------------------------------ */

@@ -1,4 +1,4 @@
-import type {ImageResolver, ResolverResult} from './types';
+import type { ImageResolver, ResolverResult } from './types';
 
 /**
  * Fallback for any other http(s) host we don't special-case. Tries a direct
@@ -17,6 +17,6 @@ export class GenericResolver implements ImageResolver {
   }
 
   resolve(url: string): ResolverResult {
-    return {kind: 'direct', url};
+    return { kind: 'direct', url };
   }
 }

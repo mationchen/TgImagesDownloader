@@ -6,11 +6,7 @@
  *   attempt is 1-based (1 = before the first retry).
  */
 
-export function delayMs(
-  attempt: number,
-  baseMs = 500,
-  capMs = 15_000,
-): number {
+export function delayMs(attempt: number, baseMs = 500, capMs = 15_000): number {
   if (attempt <= 0) return 0;
   const exp = Math.min(capMs, baseMs * Math.pow(2, attempt - 1));
   const jitter = Math.random() * exp * 0.25; // up to 25% extra

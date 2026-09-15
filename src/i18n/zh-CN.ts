@@ -4,7 +4,8 @@ export const zhCN = {
   'home.subtitle': '粘贴网页链接，批量保存图片到本地',
   'home.inputPlaceholder': '粘贴网页链接（一次一个）',
   // Tabs
-  'tab.batch': '批量下载',
+  'tab.batch': '首页',
+  'tab.urlList': 'URL 列表',
   'tab.history': '下载记录',
   'tab.settings': '设置',
   // Settings
@@ -251,8 +252,38 @@ export const zhCN = {
   // Common
   'common.cancel': '取消',
   'common.retry': '重试',
-  'common.loading': '加载中…',
+  'common.loading': '加载中。',
   'common.back': '返回',
+  // Batch URL list
+  'batch.title': '批量下载',
+  'batch.intro':
+    '选择一个 url.txt，每行一个 URL，逐个依次下载。点击某一行可预览该链接解析出的图片。',
+  'batch.pickFile': '选择 url.txt 文件',
+  'batch.repickFile': '重新选择',
+  'batch.empty': '还没有 URL。点击下方按钮选择 url.txt。',
+  'batch.start': '开始',
+  'batch.pause': '暂停',
+  'batch.resume': '继续',
+  'batch.skipCurrent': '跳过当前',
+  'batch.cancelAll': '取消全部',
+  'batch.progress': '进度 {cur} / {total} 条    成功 {done}    失败 {failed}',
+  'batch.status.pending': '等待',
+  'batch.status.parsing': '解析中…',
+  'batch.status.downloading': '下载中 {cur}/{total}',
+  'batch.status.done': '完成',
+  'batch.status.counts': '成功 {success} · 跳过 {skipped} · 失败 {failed}',
+  'batch.status.failed': '失败',
+  'batch.status.skipped': '跳过',
+  'batch.status.alreadyDownloaded': '已下载（{count} 张）',
+  'batch.requeueOne': '加入待办',
+  'batch.longPressRequeue': '长按加入待办',
+  'batch.requeueAllMissing': '重新下载缺失项',
+  'batch.skipExistingHint': '已下载的链接默认跳过；长按行可加入待办。',
+  'batch.previewFailTitle': '无法预览',
+  'batch.previewNoImages': '该链接未解析到图片。',
+  'batch.summaryTitle': '批量下载完成',
+  'batch.summaryBody':
+    '成功 {done} 条，跳过 {skipped} 条，失败 {failed} 条。共 {total} 条。',
 } as const;
 
 export type ZhKeys = keyof typeof zhCN;

@@ -1,4 +1,4 @@
-import type {ImageResolver, ResolverResult} from './types';
+import type { ImageResolver, ResolverResult } from './types';
 
 /**
  * Telegraph official image hosting (telegra.ph/file/...). These are public
@@ -17,6 +17,6 @@ export class TelegraphNativeResolver implements ImageResolver {
   }
 
   resolve(url: string): ResolverResult {
-    return {kind: 'direct', url};
+    return { kind: 'direct', url };
   }
 }

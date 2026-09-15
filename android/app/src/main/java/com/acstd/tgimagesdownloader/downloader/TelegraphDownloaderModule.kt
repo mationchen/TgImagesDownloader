@@ -30,7 +30,29 @@ import java.io.OutputStream
 class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
+  // Main-thread handler used to schedule the text-picker self-healing
+  // timeout. Declared before `init` so the init block can reference it.
+  private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+  init {
+    // Hold a static reference so MainActivity (and any other lifecycle
+    // hook) can resolve the module directly without traversing
+    // `application as ReactApplication` (which is fragile in bridgeless
+    // mode when `reactHost.currentReactContext` may not be ready).
+    instance = this
+  }
+
   override fun getName(): String = NAME
+
+  override fun invalidate() {
+    super.invalidate()
+    // React Native tears the module down on JS reload. Clear any pending
+    // state so a re-instantiated module starts clean.
+    pendingPickTextTimeout?.let { mainHandler.removeCallbacks(it) }
+    pendingPickTextTimeout = null
+    pendingPickTextPromise = null
+    if (instance === this) instance = null
+  }
 
   @ReactMethod
   fun saveImageToMediaStore(
@@ -38,6 +60,7 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       subfolder: String,
       filename: String,
       customTreeUri: String,
+      storageType: String,
       promise: Promise,
   ) {
     try {
@@ -60,11 +83,15 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
 
       val mimeType = inferMimeType(safeFilename, source)
 
+      // Compute the correct base path based on storageType so that images
+      // land in the directory the JS side expects (Pictures vs Download).
+      val basePath = if (storageType == "downloads") BASE_RELATIVE_PATH_DOWNLOAD else BASE_RELATIVE_PATH
+
       val resultUri: Uri =
           when {
             customTreeUri.isNotEmpty() -> saveToCustomTree(source, safeSubfolder, safeFilename, mimeType, customTreeUri)
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> saveOnAndroidQ(source, safeSubfolder, safeFilename, mimeType)
-            else -> saveOnAndroidLegacy(source, safeSubfolder, safeFilename, mimeType)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> saveOnAndroidQ(source, safeSubfolder, safeFilename, mimeType, basePath)
+            else -> saveOnAndroidLegacy(source, safeSubfolder, safeFilename, mimeType, basePath)
           }
 
       val response = WritableNativeMap()
@@ -105,6 +132,115 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     } catch (e: Throwable) {
       promise.reject(ERR_UNKNOWN, e.message ?: "Failed to launch picker", e)
     }
+  }
+
+  // Pending promise that holds the resolution for the text-file picker.
+  // MainActivity.onActivityResult calls consumePickTextPromise() and, if
+  // non-null, resolves it with the picked file's content (or null on cancel).
+  private var pendingPickTextPromise: Promise? = null
+  // Timer handle for the picker self-healing timeout (see pickTextFile).
+  private var pendingPickTextTimeout: Runnable? = null
+
+  /**
+   * Open the system SAF text-file picker. Returns the picked file as
+   * `{uri, name, content}` (UTF-8 with BOM stripped), or `null` if the user
+   * cancelled the picker.
+   */
+  @ReactMethod
+  fun pickTextFile(promise: Promise) {
+    try {
+      val current = getCurrentActivity()
+      if (current == null) {
+        promise.reject(ERR_NO_ACTIVITY, "No current activity to launch picker")
+        return
+      }
+      if (pendingPickTextPromise != null) {
+        promise.reject(ERR_UNKNOWN, "Another text-file picker is already open")
+        return
+      }
+      // Set BOTH `type` and `EXTRA_MIME_TYPES`: the Android documents UI
+      // honours the EXTRA_MIME_TYPES array, while some OEM pickers (MIUI's
+      // "文件管理") only honour `type`. Together they cover both.
+      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        type = "*/*"
+        putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/plain", "text/*"))
+      }
+      pendingPickTextPromise = promise
+      try {
+        current.startActivityForResult(intent, REQ_PICK_TEXT)
+      } catch (e: Throwable) {
+        // Couldn't even start the picker (e.g. no app to handle the
+        // intent). Clear the pending promise so the next attempt isn't
+        // blocked.
+        pendingPickTextPromise = null
+        promise.reject(ERR_UNKNOWN, e.message ?: "Failed to launch picker", e)
+        return
+      }
+      // Self-healing timeout: if the activity result never arrives
+      // (MIUI sometimes dismisses the picker without firing onActivityResult,
+      // or the user kills the picker task), clear the pending promise so
+      // a subsequent `pickTextFile` call doesn't see it as "still open".
+      pendingPickTextTimeout = Runnable {
+        if (pendingPickTextPromise != null) {
+          pendingPickTextPromise = null
+        }
+        pendingPickTextTimeout = null
+      }
+      mainHandler.postDelayed(pendingPickTextTimeout!!, PICK_TIMEOUT_MS)
+    } catch (e: Throwable) {
+      pendingPickTextPromise = null
+      promise.reject(ERR_UNKNOWN, e.message ?: "Failed to launch picker", e)
+    }
+  }
+
+  /**
+   * Called from MainActivity.onActivityResult when the SAF text-file picker
+   * returns. Reads the file content (UTF-8, BOM stripped) and resolves the
+   * pending Promise. Returns `null` if there is no pending promise (e.g. the
+   * caller cancelled before the picker returned).
+   */
+  fun consumePickTextPromise(): Promise? {
+    val p = pendingPickTextPromise
+    pendingPickTextPromise = null
+    // Cancel the self-healing timeout — we're settling the promise now.
+    pendingPickTextTimeout?.let { mainHandler.removeCallbacks(it) }
+    pendingPickTextTimeout = null
+    return p
+  }
+
+  /**
+   * Read the given content URI as UTF-8 text, stripping a leading BOM if
+   * present. Public so MainActivity can call it after resolving the SAF
+   * picker result.
+   */
+  fun readPickedText(uri: Uri): String {
+    val cr = reactApplicationContext.contentResolver
+    return cr.openInputStream(uri)?.use { input ->
+      val raw = input.readBytes()
+      val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+      val start = if (raw.size >= 3 &&
+          raw[0] == bom[0] && raw[1] == bom[1] && raw[2] == bom[2]) 3 else 0
+      String(raw, start, raw.size - start, Charsets.UTF_8)
+    } ?: ""
+  }
+
+  /** Resolve the supplied text-file Promise with `{uri, name, content}` or null. */
+  fun resolvePickText(
+      promise: Promise,
+      uriString: String?,
+      name: String?,
+      content: String?,
+  ) {
+    if (uriString == null) {
+      promise.resolve(null)
+      return
+    }
+    val out = WritableNativeMap()
+    out.putString("uri", uriString)
+    out.putString("name", name ?: "")
+    out.putString("content", content ?: "")
+    promise.resolve(out)
   }
 
   @ReactMethod
@@ -434,12 +570,13 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       subfolder: String,
       filename: String,
       mimeType: String,
+      basePath: String,
   ): Uri {
     val resolver: ContentResolver = reactApplicationContext.contentResolver
 
     val relativePath =
-        if (subfolder.isEmpty()) BASE_RELATIVE_PATH
-        else "$BASE_RELATIVE_PATH/$subfolder"
+        if (subfolder.isEmpty()) basePath
+        else "$basePath/$subfolder"
 
     val mediaDetails = ContentValues().apply {
       put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
@@ -478,12 +615,16 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       subfolder: String,
       filename: String,
       mimeType: String,
+      basePath: String,
   ): Uri {
-    val picturesDir =
-        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+    // basePath is "Pictures/TelegraphDownloader" or "Download/TelegraphDownloader";
+    // derive the Environment directory and the folder name from it.
+    val rootDirName = basePath.substringBefore('/')  // "Pictures" or "Download"
+    val folderName = basePath.substringAfter('/')     // "TelegraphDownloader"
+    val rootDir = Environment.getExternalStoragePublicDirectory(rootDirName)
     val targetDir =
-        if (subfolder.isEmpty()) File(picturesDir, BASE_FOLDER)
-        else File(picturesDir, "$BASE_FOLDER/$subfolder")
+        if (subfolder.isEmpty()) File(rootDir, folderName)
+        else File(rootDir, "$folderName/$subfolder")
 
     if (!targetDir.exists() && !targetDir.mkdirs()) {
       throw IOException("Failed to create directory: ${targetDir.absolutePath}")
@@ -621,6 +762,7 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
 
     private const val BASE_FOLDER = "TelegraphDownloader"
     private const val BASE_RELATIVE_PATH = "Pictures/$BASE_FOLDER"
+    private const val BASE_RELATIVE_PATH_DOWNLOAD = "Download/$BASE_FOLDER"
     private val BASE_RELATIVE_PATHS =
         listOf("Pictures/$BASE_FOLDER", "Download/$BASE_FOLDER")
 
@@ -633,6 +775,22 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     const val ERR_UNKNOWN = "ERR_UNKNOWN"
 
     const val REQ_PICK_TREE = 0x7744
+    const val REQ_PICK_TEXT = 0x7745
     const val EVENT_TREE_PICKED = "TelegraphDownloader:treePicked"
+
+    // Maximum time to wait for the text-file picker to return before the
+    // pending promise is considered stale and silently dropped.
+    private const val PICK_TIMEOUT_MS = 120_000L
+
+    // Static reference to the most-recently-instantiated module, populated
+    // in `init`. Used by MainActivity (and any other lifecycle hook) to
+    // resolve the module without going through `application as ReactApplication`
+    // (which can fail when `reactHost.currentReactContext` is transiently
+    // null in bridgeless mode). Cleared in `invalidate`.
+    @Volatile
+    private var instance: TelegraphDownloaderModule? = null
+
+    /** Returns the current module instance, or null if none. */
+    fun getInstance(): TelegraphDownloaderModule? = instance
   }
 }

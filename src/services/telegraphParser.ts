@@ -321,7 +321,8 @@ function getPageNumber(urlStr: string): number {
     const qp =
       u.searchParams.get('page') ||
       u.searchParams.get('paged') ||
-      u.searchParams.get('p');
+      u.searchParams.get('p') ||
+      u.searchParams.get('at');
     if (qp && /^\d+$/.test(qp)) return parseInt(qp, 10);
     return Number.MAX_SAFE_INTEGER;
   } catch {
@@ -362,7 +363,8 @@ function isPaginationCandidate(
       const qp =
         cand.searchParams.get('page') ||
         cand.searchParams.get('paged') ||
-        cand.searchParams.get('p');
+        cand.searchParams.get('p') ||
+        cand.searchParams.get('at');
       if (qp && /^\d+$/.test(qp) && parseInt(qp, 10) > 1) return true;
     }
     return false;
@@ -776,7 +778,16 @@ function extractWithAdapter(
     if (custom.length > 0 && typeof custom[0] === 'object') {
       return custom as TelegraphImage[];
     }
-    // If adapter returned string[] (URLs), they have been added to seen; fall through to generic to pick up the rest
+    // If adapter returned an empty array (or a string[] that is empty),
+    // the site has no *new* content images on this page. Site-specific
+    // adapters are expected to fully own extraction on the sites they
+    // handle — do NOT fall through to the generic `<img>` extractor here,
+    // because that extractor would pollute `seen` with decorative
+    // thumbnails, related-card covers, and chrome icons that the final
+    // `Array.from(seen)` pass would then treat as content URLs to download.
+    if (custom.length === 0) {
+      return [];
+    }
   }
   return extractImages(html, baseUrl, seen, opts);
 }

@@ -34,7 +34,8 @@ export function inferExtFromUrl(url: string): string {
   // Strip query / hash
   const cleanPath = url.split('?')[0].split('#')[0];
   const lastSlash = cleanPath.lastIndexOf('/');
-  const lastSegment = lastSlash >= 0 ? cleanPath.slice(lastSlash + 1) : cleanPath;
+  const lastSegment =
+    lastSlash >= 0 ? cleanPath.slice(lastSlash + 1) : cleanPath;
   const dot = lastSegment.lastIndexOf('.');
   if (dot <= 0) return DEFAULT_EXT; // no extension or hidden file like ".bashrc"
   const ext = lastSegment.slice(dot).toLowerCase();
