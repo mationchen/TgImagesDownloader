@@ -56,6 +56,13 @@ export const en: Record<ZhKeys, string> = {
   'settings.migrate.doneTitle': 'Migration complete',
   'settings.migrate.doneBody':
     'Moved {moved} image(s), cleaned up {dirs} empty folder(s).',
+  'settings.about.title': 'About',
+  'settings.about.appName': 'App name',
+  'settings.about.appNameValue': 'Web Image Batch Downloader',
+  'settings.about.version': 'Version',
+  'settings.about.studio': 'Studio',
+  'settings.about.website': 'Website',
+  'settings.about.contact': 'Contact',
   'settings.naming.title': 'Image naming rule',
   'settings.naming.dateIndexLabel': 'Date + 6-digit index',
   'settings.naming.dateIndexHint':

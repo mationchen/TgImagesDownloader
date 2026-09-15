@@ -53,6 +53,14 @@ export const zhCN = {
   'settings.migrate.doneTitle': '迁移完成',
   'settings.migrate.doneBody':
     '已移动 {moved} 张图片，清理空文件夹 {dirs} 个。',
+  // About
+  'settings.about.title': '关于',
+  'settings.about.appName': '应用名称',
+  'settings.about.appNameValue': '网页图片批量下载器',
+  'settings.about.version': '版本',
+  'settings.about.studio': '工作室',
+  'settings.about.website': '网站',
+  'settings.about.contact': '联系方式',
   // Naming rule
   'settings.naming.title': '图片命名规则',
   'settings.naming.dateIndexLabel': '日期 + 六位序号',

@@ -31,6 +31,15 @@ export const APP_CONFIG = {
     fetchTimeoutMs: 90_000,
   },
 
+  // 关于 (About) section on the Settings tab. Studio / website / contact are
+  // proper nouns and intentionally NOT localized.
+  about: {
+    studio: 'Alexandia Chen Studio',
+    websiteLabel: 'acstd.com',
+    websiteUrl: 'https://acstd.com',
+    contactEmail: 'alexandiachen@gmail.com',
+  },
+
   i18n: {
     defaultLocale: 'zh-CN' as const,
     supportedLocales: ['zh-CN', 'en'] as const,

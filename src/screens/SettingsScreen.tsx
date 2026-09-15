@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -11,6 +12,8 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { APP_CONFIG } from '../constants/config';
+import { getAppInfo, type AppInfo } from '../services/appInfo';
 import {
   computeBaseRelativePath,
   DEFAULT_SETTINGS,
@@ -45,6 +48,7 @@ export const SettingsScreen: React.FC = () => {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [migrating, setMigrating] = useState(false);
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -54,6 +58,19 @@ export const SettingsScreen: React.FC = () => {
         setSettings(s);
         setLoaded(true);
       }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Read the real app version from the OS (Android PackageManager / iOS
+  // NSBundle). Best-effort: shows a placeholder until it resolves.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const info = await getAppInfo();
+      if (!cancelled) setAppInfo(info);
     })();
     return () => {
       cancelled = true;
@@ -186,6 +203,7 @@ export const SettingsScreen: React.FC = () => {
   }, [migrating]);
 
   const currentSavePath = computeBaseRelativePath(settings);
+  const versionText = formatVersion(appInfo);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
@@ -377,6 +395,39 @@ export const SettingsScreen: React.FC = () => {
           </View>
         </Section>
 
+        <Section title={t('settings.about.title')}>
+          <AboutRow
+            label={t('settings.about.appName')}
+            value={t('settings.about.appNameValue')}
+          />
+          <AboutRow
+            label={t('settings.about.version')}
+            value={versionText || '—'}
+          />
+          <AboutRow
+            label={t('settings.about.studio')}
+            value={APP_CONFIG.about.studio}
+          />
+          <AboutRow
+            label={t('settings.about.website')}
+            value={APP_CONFIG.about.websiteLabel}
+            onPress={() =>
+              Linking.openURL(APP_CONFIG.about.websiteUrl).catch(
+                () => undefined,
+              )
+            }
+          />
+          <AboutRow
+            label={t('settings.about.contact')}
+            value={APP_CONFIG.about.contactEmail}
+            onPress={() =>
+              Linking.openURL(`mailto:${APP_CONFIG.about.contactEmail}`).catch(
+                () => undefined,
+              )
+            }
+          />
+        </Section>
+
         <View style={styles.statusRow}>
           <Text style={styles.statusText}>
             {loaded
@@ -432,6 +483,46 @@ const RadioRow: React.FC<{
   );
 };
 
+/** Right-aligned label/value row used by the 关于 (About) section. */
+const AboutRow: React.FC<{
+  label: string;
+  value: string;
+  onPress?: () => void;
+}> = ({ label, value, onPress }) => {
+  const styles = useThemedStyles(createStyles);
+  const inner = (
+    <>
+      <Text style={styles.rowLabel}>{label}</Text>
+      <Text
+        style={[styles.aboutValue, onPress ? styles.aboutLink : null]}
+        numberOfLines={1}
+      >
+        {value}
+      </Text>
+    </>
+  );
+  if (!onPress) {
+    return <View style={styles.aboutRow}>{inner}</View>;
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.aboutRow, pressed && styles.rowPressed]}
+    >
+      {inner}
+    </Pressable>
+  );
+};
+
+/** "1.0.2 (2)" — marketing version with an optional build number. */
+function formatVersion(info: AppInfo | null): string {
+  if (!info) return '';
+  if (info.version && info.buildNumber) {
+    return `${info.version} (${info.buildNumber})`;
+  }
+  return info.version || '';
+}
+
 function createStyles(c: ThemeColors) {
   return StyleSheet.create({
     safe: { flex: 1, backgroundColor: c.background },
@@ -459,6 +550,21 @@ function createStyles(c: ThemeColors) {
       paddingVertical: 12,
     },
     rowPressed: { backgroundColor: c.surfaceStrong },
+    aboutRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 12,
+      paddingVertical: 12,
+      gap: 12,
+    },
+    aboutValue: {
+      flexShrink: 1,
+      fontSize: 14,
+      color: c.textSecondary,
+      textAlign: 'right',
+    },
+    aboutLink: { color: c.primary, fontWeight: '500' },
     rowMain: { flex: 1, paddingRight: 12 },
     rowLabel: { fontSize: 15, color: c.textPrimary, fontWeight: '500' },
     rowHint: { marginTop: 2, fontSize: 12, color: c.textSecondary },
