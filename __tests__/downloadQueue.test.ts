@@ -319,6 +319,82 @@ describe('downloadQueue', () => {
     expect(Math.max(...h.activeCounts)).toBeLessThanOrEqual(5);
   });
 
+  describe('onTaskComplete', () => {
+    it('fires once per task that reaches a terminal state, in completion order', async () => {
+      const images = [makeImage(1), makeImage(2), makeImage(3)];
+      const article = makeArticle(images);
+      const holder = { state: initDownloadState(article, images, 'test') };
+      const dispatch = jest
+        .fn<void, [DownloadAction]>()
+        .mockImplementation(a => {
+          holder.state = downloadReducer(holder.state, a);
+        });
+      const completed: string[] = [];
+      const queue = createQueue({
+        getState: () => holder.state,
+        dispatch,
+        runTask: async img => {
+          await new Promise<void>(r => setTimeout(() => r(), 5));
+          return {
+            kind: 'success',
+            localPath: `/p/${img.index}`,
+            bytes: 1,
+          };
+        },
+        getConcurrency: () => 3,
+        retryBaseMs: 1,
+        retryCapMs: 5,
+        onTaskComplete: (state, imageId) => {
+          completed.push(imageId);
+          // The state passed to the callback already reflects the terminal
+          // dispatch (the queue updates its local copy synchronously before
+          // firing).
+          expect(state.tasks[imageId]?.status).toBe('success');
+        },
+      });
+      queue.start();
+      await flush();
+      expect(completed).toHaveLength(3);
+      expect(
+        completed.every(id => holder.state.tasks[id]?.status === 'success'),
+      ).toBe(true);
+    });
+
+    it('fires exactly once even after retryable failures (not per retry)', async () => {
+      const images = [makeImage(1)];
+      const article = makeArticle(images);
+      const holder = { state: initDownloadState(article, images, 'test') };
+      const dispatch = jest
+        .fn<void, [DownloadAction]>()
+        .mockImplementation(a => {
+          holder.state = downloadReducer(holder.state, a);
+        });
+      const completed: string[] = [];
+      const queue = createQueue({
+        getState: () => holder.state,
+        dispatch,
+        runTask: async () => ({
+          // HTTP_503 is retryable; the queue retries internally and only
+          // fires onTaskComplete after the FINAL failed dispatch.
+          kind: 'failed',
+          code: 'HTTP_503',
+          message: 'try later',
+        }),
+        getConcurrency: () => 1,
+        maxRetries: 2,
+        retryBaseMs: 1,
+        retryCapMs: 5,
+        onTaskComplete: (_state, imageId) => {
+          completed.push(imageId);
+        },
+      });
+      queue.start();
+      await flush();
+      expect(completed).toEqual(['img-1']);
+      expect(holder.state.tasks['img-1']?.status).toBe('failed');
+    });
+  });
+
   describe('summarizeRun', () => {
     it('counts successes / failures / skips and captures the first error', () => {
       const images = [makeImage(1), makeImage(2), makeImage(3), makeImage(4)];

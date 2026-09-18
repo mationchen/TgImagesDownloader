@@ -169,7 +169,12 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
 
   const start = useCallback(
     (article: TelegraphArticle, images: TelegraphImage[]) => {
-      const { kickoffQueue } = setupQueue(article, images, undefined);
+      const { kickoffQueue } = setupQueue(
+        article,
+        images,
+        undefined,
+        undefined,
+      );
       kickoffQueue();
     },
     // `setupQueue` closes over `buildRunner` and `getSettingsSync` via module
@@ -219,10 +224,21 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
             { once: true },
           );
         }
+        const total = article.images.length;
+        let completed = 0;
+        // The queue fires `onTaskComplete` once per task that reaches a
+        // terminal state; we translate that into a live "completed / total"
+        // counter so the batch screen updates in real time instead of
+        // jumping at the end of the URL.
+        const onTaskComplete = () => {
+          completed += 1;
+          opts?.onProgress?.(completed, total);
+        };
         const { kickoffQueue } = setupQueue(
           article,
           article.images,
           onFinished,
+          onTaskComplete,
         );
         kickoffQueue();
       });
@@ -241,6 +257,9 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
     article: TelegraphArticle,
     images: TelegraphImage[],
     onQueueFinished: ((state: DownloadState) => void) | undefined,
+    onTaskComplete:
+      | ((state: DownloadState, imageId: string) => void)
+      | undefined,
   ): { queue: QueueController; kickoffQueue: () => void } {
     const settings = getSettingsSync();
     const relativePath = computeRelativePath(article, settings);
@@ -331,6 +350,7 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
       runTask: buildRunner(),
       getConcurrency: () => concurrencyRef.current,
       onQueueFinished,
+      onTaskComplete,
     });
     queueRef.current = q;
     console.log(

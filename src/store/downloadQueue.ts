@@ -65,6 +65,14 @@ export interface CreateQueueOptions {
    * state so the caller can inspect the per-image outcomes.
    */
   onQueueFinished?: (state: DownloadState) => void;
+  /**
+   * Fired once per task that reaches a terminal state (success / skipped /
+   * failed-without-retry / cancelled). The state passed in already reflects
+   * the terminal dispatch. Useful for callers that want to surface a live
+   * "completed / total" counter as each image finishes (e.g. the batch URL
+   * download screen). NOT fired for intermediate retryable failures.
+   */
+  onTaskComplete?: (state: DownloadState, imageId: string) => void;
 }
 
 export interface QueueController {
@@ -101,6 +109,7 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
     retryCapMs = 15_000,
     externalSignal,
     onQueueFinished,
+    onTaskComplete,
   } = opts;
 
   // Controllers for in-flight tasks, keyed by image id. Used to abort them
@@ -300,14 +309,17 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
       console.log(`[DL] runOne outcome id=${id} kind=${outcome.kind}`);
       if (outcome.kind === 'cancelled') {
         dispatch({ type: 'task/cancelled', id });
+        onTaskComplete?.(getState(), id);
         return;
       }
       if (outcome.kind === 'success') {
         dispatch({ type: 'task/success', id, localPath: outcome.localPath });
+        onTaskComplete?.(getState(), id);
         return;
       }
       if (outcome.kind === 'skipped') {
         dispatch({ type: 'task/skipped', id, reason: outcome.reason });
+        onTaskComplete?.(getState(), id);
         return;
       }
       // failed — maybe retry
@@ -322,6 +334,7 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
           errorCode: outcome.code,
           errorMessage: outcome.message,
         });
+        onTaskComplete?.(getState(), id);
         return;
       }
       attempt += 1;
