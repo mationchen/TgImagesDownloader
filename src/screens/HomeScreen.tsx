@@ -252,15 +252,22 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     parseCheckRef.current = true;
     try {
       // Warn before re-parsing an article that already has a history row.
+      // The user gets a third option to jump straight to that record's
+      // detail page instead of re-parsing.
       const existing = await findHistoryByUrl(target);
       if (existing) {
-        const proceed = await confirmDialog(
+        const choice = await duplicateDialog(
           t('home.duplicateTitle'),
           t('home.duplicateBody'),
+          t('home.duplicateView'),
           t('home.duplicateContinue'),
           t('home.duplicateCancel'),
         );
-        if (!proceed) return;
+        if (choice === 'view') {
+          navigation.navigate('HistoryDetail', { id: existing.id });
+          return;
+        }
+        if (choice !== 'continue') return;
       }
     } catch {
       // DB lookup failure must not block parsing; fall through.
@@ -268,7 +275,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       parseCheckRef.current = false;
     }
     await runParse(target);
-  }, [detected, runParse]);
+  }, [detected, runParse, navigation]);
 
   const handleCancelParse = useCallback(() => {
     parseAbortRef.current?.abort();
@@ -605,24 +612,33 @@ function stageLabel(stage: ParseStage): string {
 }
 
 /**
- * Promise wrapper around Alert.alert so callers can `await` the user's choice.
- * Resolves true when the confirm button is pressed, false on cancel/dismiss.
+ * Three-way dialog shown when a link was already downloaded. Resolves with the
+ * button the user picked ('view' = open its 下载记录 detail, 'continue' =
+ * re-parse anyway, 'cancel' = do nothing).
+ *
+ * Android's Alert supports at most three buttons, so this stays at three.
  */
-function confirmDialog(
+function duplicateDialog(
   title: string,
   message: string,
-  confirmLabel: string,
+  viewLabel: string,
+  continueLabel: string,
   cancelLabel: string,
-): Promise<boolean> {
+): Promise<'view' | 'continue' | 'cancel'> {
   return new Promise(resolve => {
     Alert.alert(
       title,
       message,
       [
-        { text: cancelLabel, style: 'cancel', onPress: () => resolve(false) },
-        { text: confirmLabel, onPress: () => resolve(true) },
+        {
+          text: cancelLabel,
+          style: 'cancel',
+          onPress: () => resolve('cancel'),
+        },
+        { text: viewLabel, onPress: () => resolve('view') },
+        { text: continueLabel, onPress: () => resolve('continue') },
       ],
-      { cancelable: true, onDismiss: () => resolve(false) },
+      { cancelable: true, onDismiss: () => resolve('cancel') },
     );
   });
 }

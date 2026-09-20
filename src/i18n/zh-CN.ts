@@ -105,6 +105,7 @@ export const zhCN = {
   'home.multipleUrls': '识别到多个链接，请重新粘贴一个链接',
   'home.duplicateTitle': '该链接已下载过',
   'home.duplicateBody': '此链接之前已经下载过，是否继续解析？',
+  'home.duplicateView': '查看下载记录',
   'home.duplicateContinue': '继续解析',
   'home.duplicateCancel': '取消',
 
@@ -170,6 +171,10 @@ export const zhCN = {
   'history.yesterday': '昨天',
   'history.groupFormat': '{date}',
   'history.itemCount': '{count} 张',
+  'history.status.done': '完成',
+  'history.status.partial': '部分失败',
+  'history.status.failed': '失败',
+  'history.status.cancelled': '已取消',
   'history.viewAll': '查看全部历史',
   'history.reparse': '重新解析',
   'history.delete': '删除记录',

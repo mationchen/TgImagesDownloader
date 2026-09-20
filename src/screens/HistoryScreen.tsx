@@ -31,6 +31,11 @@ import { parseTelegraphArticle } from '../services/telegraphParser';
 import type { MainTabScreenProps } from '../navigation/types';
 import { t, useI18n } from '../i18n';
 import { useTheme, useThemedStyles, type ThemeColors } from '../theme';
+import {
+  HISTORY_STATUS_LABEL_KEY,
+  historyStatusVisual,
+  type HistoryStatusTone,
+} from '../utils/historyStatus';
 
 type Props = MainTabScreenProps<'History'>;
 
@@ -183,6 +188,10 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     () => groupByLocalDate(records),
     [records],
   );
+
+  // Ordered ids of the currently loaded records, handed to the detail screen so
+  // it can swipe between neighbours without re-querying.
+  const recordIds = useMemo(() => records.map(r => r.id), [records]);
 
   const showFab = records.length > PAGE_SIZE;
   const showPagination = records.length >= PAGE_BATCH || offset > 0;
@@ -399,7 +408,10 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
             <HistoryRow
               record={item}
               onPress={() =>
-                navigation.navigate('HistoryDetail', { id: item.id })
+                navigation.navigate('HistoryDetail', {
+                  id: item.id,
+                  ids: recordIds,
+                })
               }
               onLongPress={() => handleLongPress(item)}
             />
@@ -460,6 +472,10 @@ const HistoryRow: React.FC<{
   // Subscribe so item labels re-render in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
+  const { colors } = useTheme();
+  const visual = historyStatusVisual(record.status);
+  const badge = statusBadgeColors(colors, visual.tone);
+  const statusLabel = t(HISTORY_STATUS_LABEL_KEY[record.status]);
   return (
     <Pressable
       onPress={onPress}
@@ -468,21 +484,43 @@ const HistoryRow: React.FC<{
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <View style={styles.rowMain}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {record.title}
-        </Text>
+        {/* Full title, wrapping over as many lines as needed (no truncation). */}
+        <Text style={styles.rowTitle}>{record.title}</Text>
         <Text style={styles.rowMeta} numberOfLines={1}>
           {t('history.itemCount', { count: record.imageCount })} ·{' '}
           {formatLocalTime(record.createdAt)}
         </Text>
       </View>
-      <View style={styles.rowBadge}>
-        <Text style={styles.rowBadgeText}>{record.status}</Text>
+      <View
+        style={[styles.rowBadge, { backgroundColor: badge.bg }]}
+        accessibilityRole="image"
+        accessibilityLabel={statusLabel}
+      >
+        <Text style={[styles.rowBadgeText, { color: badge.color }]}>
+          {visual.icon}
+        </Text>
       </View>
     </Pressable>
   );
 });
 HistoryRow.displayName = 'HistoryRow';
+
+/** Map a status tone to its badge foreground + soft background colours. */
+function statusBadgeColors(
+  c: ThemeColors,
+  tone: HistoryStatusTone,
+): { color: string; bg: string } {
+  switch (tone) {
+    case 'success':
+      return { color: c.success, bg: c.successBg };
+    case 'warning':
+      return { color: c.warning, bg: c.warningBg };
+    case 'danger':
+      return { color: c.danger, bg: c.dangerBg };
+    default:
+      return { color: c.textHint, bg: c.surfaceStrong };
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* HistoryCalendar — custom month grid with per-day record counts       */
@@ -872,16 +910,16 @@ function createStyles(c: ThemeColors) {
     rowTitle: { fontSize: 15, fontWeight: '500', color: c.textPrimary },
     rowMeta: { marginTop: 3, fontSize: 12, color: c.textHint },
     rowBadge: {
-      paddingHorizontal: 8,
-      paddingVertical: 3,
-      borderRadius: 6,
-      backgroundColor: c.primarySoft,
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     rowBadgeText: {
-      fontSize: 11,
-      color: c.primarySoftText,
-      fontWeight: '600',
-      textTransform: 'uppercase',
+      fontSize: 14,
+      fontWeight: '700',
+      lineHeight: 18,
     },
     footerWrap: { paddingVertical: 16, alignItems: 'center' },
     footerStatus: { flexDirection: 'row', alignItems: 'center' },

@@ -110,6 +110,7 @@ export const en: Record<ZhKeys, string> = {
   'home.duplicateTitle': 'Link already downloaded',
   'home.duplicateBody':
     'This link has been downloaded before. Continue parsing anyway?',
+  'home.duplicateView': 'View record',
   'home.duplicateContinue': 'Continue',
   'home.duplicateCancel': 'Cancel',
 
@@ -172,6 +173,10 @@ export const en: Record<ZhKeys, string> = {
   'history.yesterday': 'Yesterday',
   'history.groupFormat': '{date}',
   'history.itemCount': '{count} images',
+  'history.status.done': 'Done',
+  'history.status.partial': 'Partial',
+  'history.status.failed': 'Failed',
+  'history.status.cancelled': 'Cancelled',
   'history.viewAll': 'View all history',
   'history.reparse': 'Re-parse',
   'history.delete': 'Delete record',

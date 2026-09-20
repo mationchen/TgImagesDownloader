@@ -34,6 +34,7 @@ export interface ThemeColors {
   danger: string;
   dangerBg: string;
   success: string;
+  successBg: string;
   warning: string;
   warningBg: string;
   tabInactive: string;
@@ -60,6 +61,7 @@ const light: ThemeColors = {
   danger: '#c33',
   dangerBg: '#fde0e0',
   success: '#1b7a3a',
+  successBg: '#e3f7e8',
   warning: '#f0a020',
   warningBg: '#fff7e0',
   tabInactive: '#8a8a8a',
@@ -84,6 +86,7 @@ const dark: ThemeColors = {
   danger: '#ef6a6a',
   dangerBg: 'rgba(239,106,106,0.15)',
   success: '#57c477',
+  successBg: 'rgba(87,196,119,0.15)',
   warning: '#f0a020',
   warningBg: 'rgba(240,160,32,0.15)',
   tabInactive: '#7b838e',

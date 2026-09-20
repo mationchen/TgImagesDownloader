@@ -21,7 +21,13 @@ export type RootStackParamList = {
   Preview: { article: TelegraphArticle };
   Download: { article: TelegraphArticle; images: TelegraphImage[] } | undefined;
   Privacy: undefined;
-  HistoryDetail: { id: number };
+  /**
+   * `ids` is the ordered list the user came from (so the detail screen can be
+   * swiped left/right between neighbouring records). Optional: callers that
+   * only have a single id (e.g. the Home duplicate-link alert) omit it and the
+   * screen shows a single, non-swipeable page.
+   */
+  HistoryDetail: { id: number; ids?: number[] };
   BatchList: undefined;
 };
 

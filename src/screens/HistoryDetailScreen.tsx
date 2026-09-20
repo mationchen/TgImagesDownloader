@@ -1,6 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
-  Dimensions,
   FlatList,
   Image,
   Linking,
@@ -26,6 +31,10 @@ import { EmptyState } from '../components/EmptyState';
 import { ZoomableImage } from '../components/ZoomableImage';
 import type { RootStackScreenProps } from '../navigation/types';
 import { isSharedSaveFolder } from '../utils/saveDir';
+import {
+  HISTORY_STATUS_LABEL_KEY,
+  historyStatusVisual,
+} from '../utils/historyStatus';
 import { t, useI18n } from '../i18n';
 
 type Props = RootStackScreenProps<'HistoryDetail'>;
@@ -33,118 +42,174 @@ type Props = RootStackScreenProps<'HistoryDetail'>;
 const COLS = 3;
 const GAP = 2;
 
-function tileSize(): number {
-  return Math.floor((Dimensions.get('window').width - (COLS + 1) * GAP) / COLS);
+/** Width of one grid tile for a page that is {@code width} px wide. */
+function tileSizeFor(width: number): number {
+  return Math.floor((width - (COLS + 1) * GAP) / COLS);
 }
 
+/**
+ * 下载记录详情，横向分页：左右滑动可切换到上一条 / 下一条记录。
+ *
+ * The surrounding ordered id list is passed in `route.params.ids` by the
+ * History list; callers that only know a single id (e.g. the Home
+ * duplicate-link alert) omit it and get a single, non-swipeable page.
+ */
 export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
-  const { id } = route.params;
-  // Subscribe so header/meta strings re-render in the active language.
-  useI18n();
+  const { id, ids } = route.params;
   const styles = useThemedStyles(createStyles);
-  const [record, setRecord] = useState<HistoryRecord | null | 'loading'>(
-    'loading',
-  );
-  // URIs used when the row has no recorded image_paths (older rows / skipped
-  // re-runs): either that article's own folder, or its source image URLs.
-  const [fallbackUris, setFallbackUris] = useState<string[]>([]);
-  // Index of the image tapped in the grid; null = fullscreen viewer closed.
-  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const { width } = useWindowDimensions();
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const r = await getHistory(id);
-      if (cancelled) return;
-      setRecord(r);
-      if (!r || (r.imagePaths ?? []).length > 0) return;
+  // Ordered ids for the pager. Always contains the record we were opened with,
+  // even if the caller's list doesn't (e.g. it was created after the list load).
+  const pageIds = useMemo(() => {
+    const list = (ids ?? []).filter(n => Number.isFinite(n));
+    return list.includes(id) ? list : [id, ...list];
+  }, [ids, id]);
 
-      if (isSharedSaveFolder(r.saveDir)) {
-        // The app defaults to ONE shared folder for every article, so listing
-        // it would surface other records' images (the "same batch" bug). Fall
-        // back to the record's own source URLs instead.
-        if (!cancelled) setFallbackUris(r.imageUrls ?? []);
-        return;
-      }
-      // Per-article subfolder: it holds only this record's files.
-      if (isDownloaderAvailable() && TelegraphDownloader?.listGalleryImages) {
-        try {
-          const uris = await TelegraphDownloader.listGalleryImages(r.saveDir);
-          if (!cancelled) setFallbackUris(uris);
-        } catch {
-          // best-effort; leave the grid empty if the query fails
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-
-  const onThumbPress = useCallback((idx: number) => {
-    setViewerIndex(idx);
-  }, []);
-  const closeViewer = useCallback(() => setViewerIndex(null), []);
-
-  if (record === 'loading') {
-    return (
-      <SafeAreaView style={styles.safe} edges={['left', 'right']}>
-        <View style={styles.center}>
-          <Text style={styles.loadingText}>{t('common.loading')}</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (!record) {
-    return (
-      <SafeAreaView style={styles.safe} edges={['left', 'right']}>
-        <EmptyState title={t('history.detail.notFound')} />
-      </SafeAreaView>
-    );
-  }
-
-  const imageUris =
-    record.imagePaths.length > 0 ? record.imagePaths : fallbackUris;
-  const urisEmpty = imageUris.length === 0;
-  const size = tileSize();
+  const initialIndex = Math.max(0, pageIds.indexOf(id));
 
   return (
     <SafeAreaView style={styles.safe} edges={['left', 'right']}>
       <FlatList
-        data={imageUris}
-        keyExtractor={(uri, idx) => `${idx}-${uri}`}
-        numColumns={COLS}
-        renderItem={({ item, index }) => (
-          <DetailThumb
-            uri={item}
-            size={size}
-            onPress={() => onThumbPress(index)}
-          />
-        )}
-        ListHeaderComponent={<Header record={record} />}
-        ListEmptyComponent={
-          <View style={styles.emptyBlock}>
-            <Text style={styles.emptyText}>{t('history.detail.noDetail')}</Text>
-            <Text style={styles.emptyHint}>
-              {t('history.detail.noDetailHint')}
-            </Text>
-          </View>
-        }
-        contentContainerStyle={styles.list}
-        // Keep an empty list renderable so ListEmptyComponent still fires.
-        extraData={urisEmpty ? undefined : imageUris}
-      />
-
-      <ImageViewer
-        visible={viewerIndex !== null}
-        uris={imageUris}
-        initialIndex={viewerIndex ?? 0}
-        onClose={closeViewer}
+        style={styles.pager}
+        data={pageIds}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        initialScrollIndex={initialIndex}
+        getItemLayout={(_, index) => ({
+          length: width,
+          offset: width * index,
+          index,
+        })}
+        keyExtractor={pageId => String(pageId)}
+        extraData={width}
+        renderItem={({ item }) => <RecordPage id={item} width={width} />}
       />
     </SafeAreaView>
   );
 };
+
+/**
+ * A single page of the detail pager: one history record rendered as a header
+ * plus a 3-column image grid. Each page owns its own data load, so swiping to a
+ * neighbour only fetches that record.
+ */
+const RecordPage: React.FC<{ id: number; width: number }> = React.memo(
+  ({ id, width }) => {
+    // Subscribe so this page re-renders in the active language.
+    useI18n();
+    const styles = useThemedStyles(createStyles);
+    const [record, setRecord] = useState<HistoryRecord | null | 'loading'>(
+      'loading',
+    );
+    // URIs used when the row has no recorded image_paths (older rows / skipped
+    // re-runs): either that article's own folder, or its source image URLs.
+    const [fallbackUris, setFallbackUris] = useState<string[]>([]);
+    // Index of the image tapped in the grid; null = fullscreen viewer closed.
+    const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+
+    useEffect(() => {
+      let cancelled = false;
+      setRecord('loading');
+      setFallbackUris([]);
+      (async () => {
+        const r = await getHistory(id);
+        if (cancelled) return;
+        setRecord(r);
+        if (!r || (r.imagePaths ?? []).length > 0) return;
+
+        if (isSharedSaveFolder(r.saveDir)) {
+          // The app defaults to ONE shared folder for every article, so listing
+          // it would surface other records' images (the "same batch" bug). Fall
+          // back to the record's own source URLs instead.
+          if (!cancelled) setFallbackUris(r.imageUrls ?? []);
+          return;
+        }
+        // Per-article subfolder: it holds only this record's files.
+        if (isDownloaderAvailable() && TelegraphDownloader?.listGalleryImages) {
+          try {
+            const uris = await TelegraphDownloader.listGalleryImages(r.saveDir);
+            if (!cancelled) setFallbackUris(uris);
+          } catch {
+            // best-effort; leave the grid empty if the query fails
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [id]);
+
+    const onThumbPress = useCallback((idx: number) => {
+      setViewerIndex(idx);
+    }, []);
+    const closeViewer = useCallback(() => setViewerIndex(null), []);
+
+    if (record === 'loading') {
+      return (
+        <View style={{ width }}>
+          <View style={styles.center}>
+            <Text style={styles.loadingText}>{t('common.loading')}</Text>
+          </View>
+        </View>
+      );
+    }
+
+    if (!record) {
+      return (
+        <View style={{ width }}>
+          <EmptyState title={t('history.detail.notFound')} />
+        </View>
+      );
+    }
+
+    const imageUris =
+      record.imagePaths.length > 0 ? record.imagePaths : fallbackUris;
+    const urisEmpty = imageUris.length === 0;
+    const size = tileSizeFor(width);
+
+    return (
+      <View style={{ width }}>
+        <FlatList
+          style={styles.pageScroll}
+          data={imageUris}
+          keyExtractor={(uri, idx) => `${idx}-${uri}`}
+          numColumns={COLS}
+          renderItem={({ item, index }) => (
+            <DetailThumb
+              uri={item}
+              size={size}
+              onPress={() => onThumbPress(index)}
+            />
+          )}
+          ListHeaderComponent={<Header record={record} />}
+          ListEmptyComponent={
+            <View style={styles.emptyBlock}>
+              <Text style={styles.emptyText}>
+                {t('history.detail.noDetail')}
+              </Text>
+              <Text style={styles.emptyHint}>
+                {t('history.detail.noDetailHint')}
+              </Text>
+            </View>
+          }
+          contentContainerStyle={styles.list}
+          // Keep an empty list renderable so ListEmptyComponent still fires.
+          extraData={urisEmpty ? undefined : imageUris}
+        />
+
+        <ImageViewer
+          visible={viewerIndex !== null}
+          uris={imageUris}
+          initialIndex={viewerIndex ?? 0}
+          onClose={closeViewer}
+        />
+      </View>
+    );
+  },
+);
+RecordPage.displayName = 'RecordPage';
 
 const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
   // Subscribe so meta labels re-render in the active language.
@@ -179,7 +244,11 @@ const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
         <MetaChip
           label={t('history.detail.failed', { count: record.failedCount })}
         />
-        <MetaChip label={record.status} />
+        <MetaChip
+          label={`${historyStatusVisual(record.status).icon} ${t(
+            HISTORY_STATUS_LABEL_KEY[record.status],
+          )}`}
+        />
       </View>
       <Text style={styles.saveDir}>{record.saveDir}</Text>
       <View style={{ height: GAP }} />
@@ -394,6 +463,10 @@ function pad(n: number): string {
 function createStyles(c: ThemeColors) {
   return StyleSheet.create({
     safe: { flex: 1, backgroundColor: c.background },
+    // Horizontal pager: flex so each page stretches to the viewport height.
+    pager: { flex: 1 },
+    // Inner (vertical) grid inside one page.
+    pageScroll: { flex: 1 },
     center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
     loadingText: { color: c.textHint, fontSize: 13 },
     list: { paddingBottom: 24 },
