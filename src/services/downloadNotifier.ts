@@ -1,4 +1,9 @@
-import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import {
+  NativeEventEmitter,
+  NativeModules,
+  PermissionsAndroid,
+  Platform,
+} from 'react-native';
 
 /**
  * JS bridge for download notifications (spec §21).
@@ -73,6 +78,39 @@ export async function requestIgnoreBatteryOptimizations(): Promise<void> {
     await m.requestIgnoreBatteryOptimizations();
   } catch {
     // best-effort: the user can still whitelist manually in system settings
+  }
+}
+
+/** Native event emitted every couple of seconds while the service runs. */
+const EVENT_KEEP_ALIVE = 'TgDownloader:keepAlive';
+
+/**
+ * Subscribe to the native keep-alive tick emitted by the download foreground
+ * service.
+ *
+ * Why this exists: on aggressive OEM builds (MIUI/HyperOS, EMUI, ColorOS) the
+ * system freezes a backgrounded app's JS thread even though a foreground
+ * service and a wake lock are held — so the `setTimeout` chain that drives the
+ * download queue stops firing until the app returns to the foreground. Each
+ * native event delivery wakes the JS thread, and the queue picks up where it
+ * left off. Returns an unsubscribe function; a no-op on iOS/unavailable.
+ */
+export function subscribeDownloadKeepAlive(onTick: () => void): () => void {
+  if (!isNotifierSupported()) return () => undefined;
+  try {
+    const emitter = new NativeEventEmitter(
+      native as ConstructorParameters<typeof NativeEventEmitter>[0],
+    );
+    const sub = emitter.addListener(EVENT_KEEP_ALIVE, onTick);
+    return () => {
+      try {
+        sub.remove();
+      } catch {
+        // best-effort
+      }
+    };
+  } catch {
+    return () => undefined;
   }
 }
 

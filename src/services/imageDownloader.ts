@@ -341,6 +341,73 @@ function hostOf(url: string): string {
 }
 
 /**
+ * Primary transfer path: hand the download to native OkHttp
+ * (`TelegraphDownloader.downloadToCache`) so bytes keep flowing while Android
+ * freezes the JS thread in the background.
+ *
+ * Observed before this: a `fetch` issued while backgrounded completed only
+ * ~170s later, right after the app was resumed — the JS continuation, not the
+ * network, was what stalled.
+ *
+ * Returns the target path on success, or `null` when the native module is
+ * unavailable or the call failed at transport level (caller then falls back to
+ * the JS paths). HTTP-level failures are classified like the other paths and
+ * thrown, never swallowed.
+ */
+async function downloadViaNative(
+  url: string,
+  targetPath: string,
+  onProgress?: (downloaded: number, total: number) => void,
+): Promise<string | null> {
+  const native = TelegraphDownloader;
+  if (!native?.downloadToCache) return null;
+  const started = Date.now();
+  try {
+    const res = await native.downloadToCache(
+      url,
+      targetPath,
+      buildImageHeaders(url),
+      APP_CONFIG.download.fetchTimeoutMs,
+    );
+    const status = Number(res?.status ?? 0);
+    console.log(
+      `[DL] native status=${status} bytes=${res?.bytes ?? 0} elapsed=${
+        Date.now() - started
+      }ms url=${url}`,
+    );
+    if (!status || status < 200 || status >= 300) {
+      throw new HttpStatusError(status);
+    }
+    const contentType = String(res?.contentType ?? '').toLowerCase();
+    if (/text\/html|text\/plain/.test(contentType)) {
+      console.log(
+        `[DL] native hotlink blocked url=${url} contentType=${contentType}`,
+      );
+      throw new HotlinkBlockedError(`host returned ${contentType}`);
+    }
+    if (contentType && !isAllowedImageMime(contentType.split(';')[0])) {
+      throw new Error(`Refusing non-image Content-Type: ${contentType}`);
+    }
+    const bytes = Number(res?.bytes ?? 0);
+    if (onProgress && bytes > 0) onProgress(bytes, bytes);
+    return targetPath;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Classified HTTP failures must propagate so the queue can report the
+    // right error code instead of silently retrying another transport.
+    if (
+      e instanceof HttpStatusError ||
+      e instanceof HotlinkBlockedError ||
+      /Refusing non-image/.test(msg)
+    ) {
+      throw e;
+    }
+    console.log(`[DL] native download failed url=${url} err=${msg}`);
+    return null;
+  }
+}
+
+/**
  * Download {@code url} into {@code targetPath} using RN's built-in fetch
  * (no blob-util), with a hard timeout so a stalled response cannot block the
  * download queue forever. Used both as the primary path for hosts known to
@@ -442,6 +509,13 @@ async function streamToCache(
   signal?: AbortSignal,
   onProgress?: (downloaded: number, total: number) => void,
 ): Promise<string> {
+  // 0) Native OkHttp first: it keeps downloading while Android freezes the JS
+  //    thread in the background (see downloadViaNative). Falls through to the
+  //    JS paths below only when the native module is unavailable or the
+  //    transfer failed at transport level.
+  const nativePath = await downloadViaNative(url, targetPath, onProgress);
+  if (nativePath) return nativePath;
+
   // Hosts previously observed resetting blob-util go straight to the fetch path.
   const host = hostOf(url);
   if (blobUtilResetHosts.has(host)) {

@@ -48,7 +48,13 @@ export type DownloadAction =
   | { type: 'task/cancelled'; id: string }
   | { type: 'queue/paused' }
   | { type: 'queue/resumed' }
-  | { type: 'queue/stopped' };
+  | { type: 'queue/stopped' }
+  /**
+   * Keep-alive nudge from the native foreground-service tick. Carries no state
+   * change beyond bumping `rev`, which wakes any parked drain-loop poller
+   * after the JS thread was frozen in the background.
+   */
+  | { type: 'queue/nudged' };
 
 export function initDownloadState(
   article: TelegraphArticle,
@@ -222,6 +228,9 @@ export function downloadReducer(
       return bump(state, { ...state, isPaused: false });
     case 'queue/stopped':
       return bump(state, { ...state, isRunning: false, isPaused: false });
+    case 'queue/nudged':
+      // No state change: bumping rev is the whole point (see the action KDoc).
+      return { ...state, rev: state.rev + 1 };
     default:
       return state;
   }

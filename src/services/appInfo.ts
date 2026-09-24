@@ -21,7 +21,11 @@ const EMPTY: AppInfo = {
 
 type AppInfoNativeModule = {
   getAppInfo?: () => Promise<Partial<AppInfo> | null | undefined>;
+  getNetworkType?: () => Promise<string | null | undefined>;
 };
+
+/** Transport carrying the user's internet traffic. */
+export type NetworkType = 'wifi' | 'cellular' | 'ethernet' | 'none' | 'unknown';
 
 /** The native `AppInfo` module, or undefined when it isn't linked. */
 function nativeModule(): AppInfoNativeModule | undefined {
@@ -59,5 +63,31 @@ export async function getAppInfo(): Promise<AppInfo> {
     return normalizeAppInfo(await mod.getAppInfo());
   } catch {
     return { ...EMPTY };
+  }
+}
+
+/**
+ * Report the transport carrying the user's internet traffic.
+ *
+ * Resolves 'unknown' when the native module isn't linked (e.g. a platform that
+ * hasn't been rebuilt yet) or the query fails, so callers can treat it as
+ * "cannot tell" and never block a download on it.
+ */
+export async function getNetworkType(): Promise<NetworkType> {
+  const mod = nativeModule();
+  if (typeof mod?.getNetworkType !== 'function') return 'unknown';
+  try {
+    const raw = await mod.getNetworkType();
+    switch (raw) {
+      case 'wifi':
+      case 'cellular':
+      case 'ethernet':
+      case 'none':
+        return raw;
+      default:
+        return 'unknown';
+    }
+  } catch {
+    return 'unknown';
   }
 }

@@ -15,13 +15,19 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.bridge.WritableNativeMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.util.concurrent.TimeUnit
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 /**
  * Native bridge that copies a local image file into MediaStore so it shows
@@ -43,6 +49,23 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
   }
 
   override fun getName(): String = NAME
+
+  /**
+   * Shared OkHttp client for [downloadToCache].
+   *
+   * A fresh client per request would open a new connection (and a new TLS
+   * handshake) for every image; the anti-bot CDN in front of some hosts
+   * answers that pattern with an HTTP/2 RST_STREAM ("stream was reset:
+   * CANCEL"). `newBuilder()` below reuses this client's connection pool and
+   * dispatcher while still allowing a per-call timeout override.
+   */
+  private val httpClient: OkHttpClient by lazy {
+    OkHttpClient.Builder()
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+        .build()
+  }
 
   override fun invalidate() {
     super.invalidate()
@@ -262,6 +285,82 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Int) {}
+
+  /**
+   * Download [url] straight to [targetPath] with OkHttp on a background thread
+   * — the transfer never touches the JS thread.
+   *
+   * Why native: aggressive OEM power managers (MIUI/HyperOS, EMUI, ColorOS)
+   * freeze a backgrounded app's JS thread even while a foreground service and
+   * a wake lock are held. The JS `fetch`-based path then stalls until the app
+   * returns to the foreground (observed: a request issued in the background
+   * completed only 170s later, right after the app was resumed). Keeping the
+   * transfer here lets bytes keep flowing while JS is frozen; JS just gets the
+   * completion callback on its next wake-up.
+   *
+   * Resolves with `{status, bytes, contentType}`; rejects on HTTP/network/IO
+   * errors. `headers` carries the same Referer/UA used by the JS path.
+   */
+  @ReactMethod
+  fun downloadToCache(
+      url: String,
+      targetPath: String,
+      headers: ReadableMap?,
+      timeoutMs: Double,
+      promise: Promise,
+  ) {
+    val timeout = if (timeoutMs.isFinite() && timeoutMs > 0) timeoutMs.toLong() else 60_000L
+    Thread {
+          try {
+            val client =
+                httpClient
+                    .newBuilder()
+                    .connectTimeout(timeout, TimeUnit.MILLISECONDS)
+                    .readTimeout(timeout, TimeUnit.MILLISECONDS)
+                    .callTimeout(timeout, TimeUnit.MILLISECONDS)
+                    .build()
+            val builder = Request.Builder().url(url).get()
+            headers?.let { map ->
+              val keys = map.keySetIterator()
+              while (keys.hasNextKey()) {
+                val key = keys.nextKey()
+                val value = map.getString(key)
+                if (!value.isNullOrEmpty()) builder.header(key, value)
+              }
+            }
+            client.newCall(builder.build()).execute().use { resp ->
+              // Always resolve with the status so JS can classify HTTP errors
+              // (hotlink block vs. plain 404) exactly like the fetch path.
+              if (!resp.isSuccessful) {
+                val err = Arguments.createMap()
+                err.putInt("status", resp.code)
+                err.putDouble("bytes", 0.0)
+                err.putString("contentType", resp.body?.contentType()?.toString() ?: "")
+                promise.resolve(err)
+                return@use
+              }
+              val body = resp.body
+              if (body == null) {
+                promise.reject(ERR_UNKNOWN, "empty response body")
+                return@use
+              }
+              val target = File(targetPath)
+              target.parentFile?.mkdirs()
+              body.byteStream().use { input ->
+                FileOutputStream(target).use { output -> input.copyTo(output) }
+              }
+              val out = Arguments.createMap()
+              out.putInt("status", resp.code)
+              out.putDouble("bytes", target.length().toDouble())
+              out.putString("contentType", body.contentType()?.toString() ?: "")
+              promise.resolve(out)
+            }
+          } catch (e: Throwable) {
+            promise.reject(ERR_UNKNOWN, e.message ?: "download failed", e)
+          }
+        }
+        .start()
+  }
 
   /**
    * List content:// URIs of images that live under a MediaStore RELATIVE_PATH
@@ -773,6 +872,7 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     const val ERR_PERMISSION = "ERR_PERMISSION"
     const val ERR_NO_ACTIVITY = "ERR_NO_ACTIVITY"
     const val ERR_UNKNOWN = "ERR_UNKNOWN"
+    const val ERR_HTTP = "ERR_HTTP"
 
     const val REQ_PICK_TREE = 0x7744
     const val REQ_PICK_TEXT = 0x7745

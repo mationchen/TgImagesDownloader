@@ -82,6 +82,14 @@ export interface QueueController {
   cancel: () => void;
   /** True iff a `start()` was called and the loop hasn't drained yet. */
   isActive: () => boolean;
+  /**
+   * Wake the drain loop by bumping state.rev. Used by the native keep-alive
+   * tick: on aggressive OEM builds the JS thread is frozen in the background,
+   * which stops the drain loop's `setTimeout` pollers. A native event wakes
+   * the thread, and calling this makes any parked `waitForRev` observe the rev
+   * change immediately so the loop resumes pulling tasks.
+   */
+  nudge: () => void;
 }
 
 /**
@@ -173,6 +181,15 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
 
   function isActive(): boolean {
     return active;
+  }
+
+  /**
+   * Wake a parked drain loop (see {@link QueueController.nudge}). Safe to call
+   * at any time; a no-op when the queue never started or already drained.
+   */
+  function nudge(): void {
+    if (!active) return;
+    dispatch({ type: 'queue/nudged' });
   }
 
   async function drain(): Promise<void> {
@@ -360,7 +377,7 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
     }
   }
 
-  return { start, pause, resume, cancel, isActive };
+  return { start, pause, resume, cancel, isActive, nudge };
 }
 
 /* ------------------------------------------------------------------ */

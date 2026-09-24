@@ -33,6 +33,7 @@ import {
 } from '../services/downloadNotifier';
 import { listHistoryByUrls } from '../services/historyService';
 import { dedupeUrls } from '../utils/batchScheduler';
+import { confirmDownloadWithoutWifi } from '../utils/downloadNetworkGuard';
 import type { BatchItem, BatchItemStatus } from '../types/batch';
 
 /**
@@ -336,7 +337,13 @@ export const BatchListScreen: React.FC = () => {
   }, [items, running, updateItem, waitIfPaused, downloadContext]);
 
   const handleStart = useCallback(() => {
-    runBatch().catch(() => undefined);
+    // A batch can move hundreds of megabytes: confirm first when the phone is
+    // on mobile data. If the check itself fails, never block the download.
+    confirmDownloadWithoutWifi()
+      .catch(() => true)
+      .then(ok => {
+        if (ok) runBatch().catch(() => undefined);
+      });
   }, [runBatch]);
 
   const handlePauseToggle = useCallback(() => {

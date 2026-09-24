@@ -26,6 +26,9 @@
     <!-- Partial wake lock held by the download foreground service so the JS
          queue keeps running while the screen is off -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- High-performance Wi-Fi lock: keeps the Wi-Fi radio out of power-save
+         mode so background downloads don't drop to a crawl -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <!-- Lets the batch flow offer a one-tap "ignore battery optimizations"
          request so long downloads survive Doze/vendor power management -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />

@@ -8,10 +8,14 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import com.facebook.react.modules.core.DeviceEventManagerModule
 
 /**
  * Foreground service that keeps the app's process alive while a batch download
@@ -32,10 +36,81 @@ import androidx.core.app.NotificationCompat
  * (and therefore the RN JS download queue) keeps running after the screen
  * turns off; without it a backgrounded batch stalls as soon as the device
  * suspends.
+ *
+ * On top of that, aggressive OEM power managers (MIUI/HyperOS, EMUI, ColorOS)
+ * freeze a backgrounded app's JS/v8 thread even while a foreground service and
+ * wake lock are held — the process stays alive, the notification stays put,
+ * but the JS timer that drives the download queue stops firing until the app
+ * returns to the foreground. To defeat that, this service emits a periodic
+ * "tick" over [DeviceEventManagerModule.RCTDeviceEventEmitter]; delivering a
+ * native event wakes the JS thread and lets the queue keep draining.
  */
 class DownloadForegroundService : Service() {
 
   private var wakeLock: PowerManager.WakeLock? = null
+
+  /**
+   * High-performance Wi-Fi lock. A PARTIAL_WAKE_LOCK keeps the CPU awake but
+   * does nothing for the Wi-Fi radio: with the screen off (or the app
+   * backgrounded) the chip drops into power-save mode and throughput can fall
+   * by an order of magnitude, which showed up as background downloads taking
+   * ~30s for an image that took ~1.8s in the foreground.
+   */
+  private var wifiLock: WifiManager.WifiLock? = null
+
+  private fun acquireWifiLock() {
+    if (wifiLock?.isHeld == true) return
+    try {
+      val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+      wifiLock =
+          wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, WAKE_LOCK_TAG).apply {
+            setReferenceCounted(false)
+            acquire()
+          }
+    } catch (_: Throwable) {
+      // Some devices/ROMs refuse the lock; downloads still work, just slower.
+    }
+  }
+
+  private fun releaseWifiLock() {
+    try {
+      wifiLock?.let { if (it.isHeld) it.release() }
+    } catch (_: Throwable) {
+      // ignore
+    }
+    wifiLock = null
+  }
+
+  /** Emits the keep-alive tick to JS so a frozen JS thread gets woken up. */
+  private val jsTick = object : Runnable {
+    override fun run() {
+      emitTick()
+      handler.postDelayed(this, TICK_INTERVAL_MS)
+    }
+  }
+
+  private val handler = Handler(Looper.getMainLooper())
+
+  private fun emitTick() {
+    val reactContext = DownloadNotifierModule.reactContextRef ?: return
+    try {
+      if (!reactContext.hasActiveReactInstance()) return
+      reactContext
+          .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+          .emit(EVENT_JS_TICK, null)
+    } catch (_: Throwable) {
+      // Best-effort: the JS side is gone or shutting down.
+    }
+  }
+
+  private fun startJsTicks() {
+    handler.removeCallbacks(jsTick)
+    handler.postDelayed(jsTick, TICK_INTERVAL_MS)
+  }
+
+  private fun stopJsTicks() {
+    handler.removeCallbacks(jsTick)
+  }
 
   private fun acquireWakeLock() {
     if (wakeLock?.isHeld == true) return
@@ -57,6 +132,10 @@ class DownloadForegroundService : Service() {
     const val CHANNEL_ID = "downloads"
     const val NOTIFICATION_ID = 1001
     const val WAKE_LOCK_TAG = "TgImagesDownloader:DownloadForegroundService"
+
+    /** Native->JS keep-alive event; see the class KDoc. */
+    const val EVENT_JS_TICK = "TgDownloader:keepAlive"
+    const val TICK_INTERVAL_MS = 2000L
 
     /** Live instance so [DownloadNotifierModule] can update notifications. */
     @Volatile
@@ -113,8 +192,12 @@ class DownloadForegroundService : Service() {
           startForeground(NOTIFICATION_ID, notification)
         }
         acquireWakeLock()
+        acquireWifiLock()
+        startJsTicks()
       }
       ACTION_STOP -> {
+        stopJsTicks()
+        releaseWifiLock()
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         active = null
@@ -125,6 +208,8 @@ class DownloadForegroundService : Service() {
   }
 
   override fun onDestroy() {
+    stopJsTicks()
+    releaseWifiLock()
     releaseWakeLock()
     if (active === this) {
       active = null

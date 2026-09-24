@@ -271,6 +271,13 @@ export const zhCN = {
   'common.retry': '重试',
   'common.loading': '加载中。',
   'common.back': '返回',
+  // Network / download confirmation
+  'network.wifiWarning.title': '未连接 Wi-Fi',
+  'network.wifiWarning.body':
+    '当前正在使用移动数据，继续下载会消耗流量。是否继续？',
+  'network.wifiWarning.bodyOffline':
+    '当前没有网络连接，下载可能会失败。是否继续？',
+  'network.wifiWarning.continue': '继续下载',
   // Batch URL list
   'batch.title': '批量下载',
   'batch.fgsTitle': '批量下载中',

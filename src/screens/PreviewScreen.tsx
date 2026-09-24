@@ -7,6 +7,7 @@ import type { RootStackScreenProps } from '../navigation/types';
 import { t, useI18n } from '../i18n';
 import { useThemedStyles, type ThemeColors } from '../theme';
 import type { TelegraphImage } from '../types/telegraph';
+import { confirmDownloadWithoutWifi } from '../utils/downloadNetworkGuard';
 
 type Props = RootStackScreenProps<'Preview'>;
 
@@ -80,13 +81,20 @@ export const PreviewScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const startDownload = useCallback(() => {
     if (selectedImages.length === 0) return;
-    // Download in reverse source order so the saved MediaStore entries show
-    // up in the system gallery in *forward* source order (the last image in
-    // the article appears first because it was inserted last).
-    navigation.navigate('Download', {
-      article,
-      images: [...selectedImages].reverse(),
-    });
+    // Confirm before leaving the preview when the phone is on mobile data.
+    // If the check itself fails, never block the download.
+    confirmDownloadWithoutWifi()
+      .catch(() => true)
+      .then(ok => {
+        if (!ok) return;
+        // Download in reverse source order so the saved MediaStore entries show
+        // up in the system gallery in *forward* source order (the last image in
+        // the article appears first because it was inserted last).
+        navigation.navigate('Download', {
+          article,
+          images: [...selectedImages].reverse(),
+        });
+      });
   }, [article, selectedImages, navigation]);
 
   return (

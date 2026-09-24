@@ -31,6 +31,7 @@ import {
   notifyDownloadProgress,
   notifyDownloadStart,
   notifyDownloadStop,
+  subscribeDownloadKeepAlive,
 } from '../services/downloadNotifier';
 import { APP_CONFIG } from '../constants/config';
 import {
@@ -544,6 +545,26 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
     },
     [],
   );
+
+  /**
+   * Native keep-alive tick (Android, see DownloadForegroundService).
+   *
+   * Aggressive OEM power managers freeze a backgrounded app's JS thread even
+   * with a foreground service + wake lock held, which stops the drain loop's
+   * setTimeout pollers and makes the batch look "paused" until the app returns
+   * to the foreground. The service emits an event every couple of seconds;
+   * each delivery wakes the JS thread, and `nudge()` bumps state.rev so any
+   * parked drain poller immediately sees it and pulls the next task.
+   */
+  useEffect(() => {
+    if (!isNotifierSupported()) return undefined;
+    return subscribeDownloadKeepAlive(() => {
+      const q = queueRef.current;
+      if (q?.isActive() && !stateRef.current.isPaused) {
+        q.nudge();
+      }
+    });
+  }, []);
 
   const value = useMemo<DownloadContextValue>(
     () => ({

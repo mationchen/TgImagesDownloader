@@ -29,6 +29,16 @@ class DownloadNotifierModule(reactContext: ReactApplicationContext) :
 
   override fun getName(): String = NAME
 
+  init {
+    // Expose the live React context so DownloadForegroundService can emit its
+    // keep-alive tick into JS (see EVENT_JS_TICK).
+    reactContextRef = reactContext
+  }
+
+  override fun invalidate() {
+    reactContextRef = null
+    super.invalidate()
+  }
   @ReactMethod
   fun start(title: String, total: Int, promise: Promise?) {
     try {
@@ -65,6 +75,14 @@ class DownloadNotifierModule(reactContext: ReactApplicationContext) :
       // Ignore: service may not have been running.
     }
   }
+
+  // Required by NativeEventEmitter on the JS side (it validates that the
+  // module exposes these before wiring up listeners).
+  @ReactMethod
+  fun addListener(@Suppress("UNUSED_PARAMETER") eventName: String) {}
+
+  @ReactMethod
+  fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Int) {}
 
   @ReactMethod
   fun isIgnoringBatteryOptimizations(promise: Promise) {
@@ -103,5 +121,15 @@ class DownloadNotifierModule(reactContext: ReactApplicationContext) :
 
   companion object {
     const val NAME = "TelegraphNotifier"
+
+    /**
+     * Weak-ish global handle to the active React context, used by
+     * [DownloadForegroundService] to emit the JS keep-alive tick. Cleared in
+     * [invalidate] so we never leak the context across a reload.
+     */
+    @Volatile
+    @JvmStatic
+    var reactContextRef: ReactApplicationContext? = null
+      private set
   }
 }

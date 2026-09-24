@@ -271,6 +271,13 @@ export const en: Record<ZhKeys, string> = {
   'common.retry': 'Retry',
   'common.loading': 'Loading...',
   'common.back': 'Back',
+  // Network / download confirmation
+  'network.wifiWarning.title': 'Not on Wi-Fi',
+  'network.wifiWarning.body':
+    'You are using mobile data. Continuing will consume your data plan. Continue?',
+  'network.wifiWarning.bodyOffline':
+    'There is no network connection. The download may fail. Continue?',
+  'network.wifiWarning.continue': 'Continue',
   // Batch URL list
   'batch.title': 'Batch download',
   'batch.fgsTitle': 'Batch downloading',

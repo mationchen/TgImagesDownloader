@@ -78,6 +78,17 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
        * `{uri, name, content}` on success, or `null` if the user cancelled.
        */
       pickTextFile?(): Promise<PickedTextFile | null>;
+      /**
+       * Download `url` straight to `targetPath` with OkHttp on a native
+       * background thread (no JS involvement in the transfer). Keeps bytes
+       * flowing while Android freezes the JS thread in the background.
+       */
+      downloadToCache?(
+        url: string,
+        targetPath: string,
+        headers: Record<string, string>,
+        timeoutMs: number,
+      ): Promise<{ status: number; bytes: number; contentType: string }>;
     }
   | undefined;
 

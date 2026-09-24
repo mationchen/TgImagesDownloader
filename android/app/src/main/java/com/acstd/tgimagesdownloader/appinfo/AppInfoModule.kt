@@ -1,5 +1,8 @@
 package com.acstd.tgimagesdownloader.appinfo
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -10,13 +13,14 @@ import com.facebook.react.bridge.WritableMap
 
 /**
  * Exposes static app metadata (name / version / build) read from the Android
- * PackageManager.
+ * PackageManager, plus the active network transport.
  *
  * Mirrored on iOS by `AppInfo.m` (NSBundle) so the 关于 section can show the
  * real store version on both platforms.
  *
  * Methods:
  *   - getAppInfo(): Promise<{ appName, packageName, version, buildNumber }>
+ *   - getNetworkType(): Promise<'wifi'|'cellular'|'ethernet'|'none'|'unknown'>
  */
 class AppInfoModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
@@ -50,6 +54,49 @@ class AppInfoModule(reactContext: ReactApplicationContext) :
       promise.resolve(map)
     } catch (t: Throwable) {
       promise.reject("ERR_APP_INFO", t.message, t)
+    }
+  }
+
+  /**
+   * Report the transport carrying the user's internet traffic.
+   *
+   * Scans every connected network rather than just the active one because the
+   * active network is the VPN interface when a proxy app (Clash etc.) is
+   * running — its capabilities say TRANSPORT_VPN, not WIFI, which would
+   * otherwise make a Wi-Fi connection look like "other". The underlying Wi-Fi
+   * network is still listed, so it wins here.
+   *
+   * Resolves 'unknown' on any failure so the JS side never blocks a download
+   * on this check.
+   */
+  @ReactMethod
+  fun getNetworkType(promise: Promise) {
+    try {
+      val cm =
+          reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE)
+              as ConnectivityManager
+      var wifi = false
+      var ethernet = false
+      var cellular = false
+      for (network in cm.allNetworks) {
+        val caps = cm.getNetworkCapabilities(network) ?: continue
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+        when {
+          caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> wifi = true
+          caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> ethernet = true
+          caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> cellular = true
+        }
+      }
+      val type =
+          when {
+            wifi -> "wifi"
+            ethernet -> "ethernet"
+            cellular -> "cellular"
+            else -> "none"
+          }
+      promise.resolve(type)
+    } catch (_: Throwable) {
+      promise.resolve("unknown")
     }
   }
 
