@@ -27,6 +27,7 @@ import java.io.OutputStream
 import java.util.concurrent.TimeUnit
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 
 /**
@@ -53,17 +54,22 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
   /**
    * Shared OkHttp client for [downloadToCache].
    *
-   * A fresh client per request would open a new connection (and a new TLS
-   * handshake) for every image; the anti-bot CDN in front of some hosts
-   * answers that pattern with an HTTP/2 RST_STREAM ("stream was reset:
-   * CANCEL"). `newBuilder()` below reuses this client's connection pool and
-   * dispatcher while still allowing a per-call timeout override.
+   * Two deliberate choices, both driven by measurement on a real device:
+   *
+   *  - **HTTP/1.1 only.** These image CDNs serve HTTP/2 badly across a VPN:
+   *    with h2 enabled a ~300 KB image took 12-60s (and often hit the 90s
+   *    timeout), while the device's own curl — which only speaks HTTP/1.1 —
+   *    fetched the same URL in 0.7-2.4s. Forcing HTTP/1.1 restores that.
+   *  - **Short-lived connection pool.** A reused-but-dead connection (VPN or
+   *    NAT silently dropping idle sockets) hangs until the read timeout, so
+   *    idle connections are kept for only 30s instead of OkHttp's 5 minutes.
    */
   private val httpClient: OkHttpClient by lazy {
     OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
-        .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+        .protocols(listOf(Protocol.HTTP_1_1))
+        .connectionPool(ConnectionPool(8, 30, TimeUnit.SECONDS))
         .build()
   }
 
