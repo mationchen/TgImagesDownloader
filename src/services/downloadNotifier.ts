@@ -19,6 +19,8 @@ type NotifierModule = {
   update: (done: number, total: number) => void;
   finish: (success: number, failed: number, skipped: number) => void;
   stop: () => void;
+  isIgnoringBatteryOptimizations: () => Promise<boolean>;
+  requestIgnoreBatteryOptimizations: () => Promise<void>;
 };
 
 function module(): NotifierModule | undefined {
@@ -45,6 +47,36 @@ export async function ensureNotificationPermission(): Promise<boolean> {
 }
 
 /**
+ * Whether the app is whitelisted from battery optimization / Doze. Without
+ * the whitelist a long background batch can still be frozen by the system
+ * even with the foreground service running. Non-Android platforms and
+ * errors fail open (true) so callers never block on this.
+ */
+export async function isIgnoringBatteryOptimizations(): Promise<boolean> {
+  const m = module();
+  if (!m?.isIgnoringBatteryOptimizations) return true;
+  try {
+    return await m.isIgnoringBatteryOptimizations();
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Open the system "ignore battery optimizations" dialog for this app
+ * (best-effort; some vendors fall back to the whitelist list screen).
+ */
+export async function requestIgnoreBatteryOptimizations(): Promise<void> {
+  const m = module();
+  if (!m?.requestIgnoreBatteryOptimizations) return;
+  try {
+    await m.requestIgnoreBatteryOptimizations();
+  } catch {
+    // best-effort: the user can still whitelist manually in system settings
+  }
+}
+
+/**
  * Start the foreground download notification. No-op if the platform is iOS
  * or the native module is unavailable.
  */
@@ -52,7 +84,11 @@ export function notifyDownloadStart(title: string, total: number): void {
   const m = module();
   if (!m) return;
   try {
-    m.start(title, total);
+    // The native method carries a Promise param, so the RN bridge actually
+    // returns a Promise even though the typed surface says void. Swallow
+    // rejections (some OEMs refuse background foreground-service starts) to
+    // avoid unhandled-rejection noise.
+    Promise.resolve(m.start(title, total)).catch(() => undefined);
   } catch {
     // best-effort
   }

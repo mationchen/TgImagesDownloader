@@ -35,6 +35,7 @@ import {
   HISTORY_STATUS_LABEL_KEY,
   historyStatusVisual,
 } from '../utils/historyStatus';
+import { useMediaReadPermission } from '../utils/mediaPermission';
 import { t, useI18n } from '../i18n';
 
 type Props = RootStackScreenProps<'HistoryDetail'>;
@@ -58,6 +59,10 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
   const { id, ids } = route.params;
   const styles = useThemedStyles(createStyles);
   const { width } = useWindowDimensions();
+  // Records imported from another install of the app reference images owned
+  // by that install; reading them needs a media permission (Android). The
+  // tick increments once the permission arrives so failed tiles can retry.
+  const mediaTick = useMediaReadPermission();
 
   // Ordered ids for the pager. Always contains the record we were opened with,
   // even if the caller's list doesn't (e.g. it was created after the list load).
@@ -84,7 +89,9 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
         })}
         keyExtractor={pageId => String(pageId)}
         extraData={width}
-        renderItem={({ item }) => <RecordPage id={item} width={width} />}
+        renderItem={({ item }) => (
+          <RecordPage id={item} width={width} mediaTick={mediaTick} />
+        )}
       />
     </SafeAreaView>
   );
@@ -95,120 +102,129 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
  * plus a 3-column image grid. Each page owns its own data load, so swiping to a
  * neighbour only fetches that record.
  */
-const RecordPage: React.FC<{ id: number; width: number }> = React.memo(
-  ({ id, width }) => {
-    // Subscribe so this page re-renders in the active language.
-    useI18n();
-    const styles = useThemedStyles(createStyles);
-    const [record, setRecord] = useState<HistoryRecord | null | 'loading'>(
-      'loading',
-    );
-    // URIs used when the row has no recorded image_paths (older rows / skipped
-    // re-runs): either that article's own folder, or its source image URLs.
-    const [fallbackUris, setFallbackUris] = useState<string[]>([]);
-    // Index of the image tapped in the grid; null = fullscreen viewer closed.
-    const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+const RecordPage: React.FC<{
+  id: number;
+  width: number;
+  mediaTick: number;
+}> = React.memo(({ id, width, mediaTick }) => {
+  // Subscribe so this page re-renders in the active language.
+  useI18n();
+  const styles = useThemedStyles(createStyles);
+  const [record, setRecord] = useState<HistoryRecord | null | 'loading'>(
+    'loading',
+  );
+  // URIs used when the row has no recorded image_paths (older rows / skipped
+  // re-runs): either that article's own folder, or its source image URLs.
+  const [fallbackUris, setFallbackUris] = useState<string[]>([]);
+  // Index of the image tapped in the grid; null = fullscreen viewer closed.
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
-    useEffect(() => {
-      let cancelled = false;
-      setRecord('loading');
-      setFallbackUris([]);
-      (async () => {
-        const r = await getHistory(id);
-        if (cancelled) return;
-        setRecord(r);
-        if (!r || (r.imagePaths ?? []).length > 0) return;
+  useEffect(() => {
+    let cancelled = false;
+    setRecord('loading');
+    setFallbackUris([]);
+    (async () => {
+      const r = await getHistory(id);
+      if (cancelled) return;
+      setRecord(r);
+      if (!r || (r.imagePaths ?? []).length > 0) return;
 
-        if (isSharedSaveFolder(r.saveDir)) {
-          // The app defaults to ONE shared folder for every article, so listing
-          // it would surface other records' images (the "same batch" bug). Fall
-          // back to the record's own source URLs instead.
-          if (!cancelled) setFallbackUris(r.imageUrls ?? []);
-          return;
+      if (isSharedSaveFolder(r.saveDir)) {
+        // The app defaults to ONE shared folder for every article, so listing
+        // it would surface other records' images (the "same batch" bug). Fall
+        // back to the record's own source URLs instead.
+        if (!cancelled) setFallbackUris(r.imageUrls ?? []);
+        return;
+      }
+      // Per-article subfolder: it holds only this record's files.
+      if (isDownloaderAvailable() && TelegraphDownloader?.listGalleryImages) {
+        try {
+          const uris = await TelegraphDownloader.listGalleryImages(r.saveDir);
+          if (!cancelled) setFallbackUris(uris);
+        } catch {
+          // best-effort; leave the grid empty if the query fails
         }
-        // Per-article subfolder: it holds only this record's files.
-        if (isDownloaderAvailable() && TelegraphDownloader?.listGalleryImages) {
-          try {
-            const uris = await TelegraphDownloader.listGalleryImages(r.saveDir);
-            if (!cancelled) setFallbackUris(uris);
-          } catch {
-            // best-effort; leave the grid empty if the query fails
-          }
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
-    }, [id]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
-    const onThumbPress = useCallback((idx: number) => {
-      setViewerIndex(idx);
-    }, []);
-    const closeViewer = useCallback(() => setViewerIndex(null), []);
+  const onThumbPress = useCallback((idx: number) => {
+    setViewerIndex(idx);
+  }, []);
+  const closeViewer = useCallback(() => setViewerIndex(null), []);
 
-    if (record === 'loading') {
-      return (
-        <View style={{ width }}>
-          <View style={styles.center}>
-            <Text style={styles.loadingText}>{t('common.loading')}</Text>
-          </View>
-        </View>
-      );
-    }
-
-    if (!record) {
-      return (
-        <View style={{ width }}>
-          <EmptyState title={t('history.detail.notFound')} />
-        </View>
-      );
-    }
-
-    const imageUris =
-      record.imagePaths.length > 0 ? record.imagePaths : fallbackUris;
-    const urisEmpty = imageUris.length === 0;
-    const size = tileSizeFor(width);
-
+  if (record === 'loading') {
     return (
       <View style={{ width }}>
-        <FlatList
-          style={styles.pageScroll}
-          data={imageUris}
-          keyExtractor={(uri, idx) => `${idx}-${uri}`}
-          numColumns={COLS}
-          renderItem={({ item, index }) => (
-            <DetailThumb
-              uri={item}
-              size={size}
-              onPress={() => onThumbPress(index)}
-            />
-          )}
-          ListHeaderComponent={<Header record={record} />}
-          ListEmptyComponent={
-            <View style={styles.emptyBlock}>
-              <Text style={styles.emptyText}>
-                {t('history.detail.noDetail')}
-              </Text>
-              <Text style={styles.emptyHint}>
-                {t('history.detail.noDetailHint')}
-              </Text>
-            </View>
-          }
-          contentContainerStyle={styles.list}
-          // Keep an empty list renderable so ListEmptyComponent still fires.
-          extraData={urisEmpty ? undefined : imageUris}
-        />
-
-        <ImageViewer
-          visible={viewerIndex !== null}
-          uris={imageUris}
-          initialIndex={viewerIndex ?? 0}
-          onClose={closeViewer}
-        />
+        <View style={styles.center}>
+          <Text style={styles.loadingText}>{t('common.loading')}</Text>
+        </View>
       </View>
     );
-  },
-);
+  }
+
+  if (!record) {
+    return (
+      <View style={{ width }}>
+        <EmptyState title={t('history.detail.notFound')} />
+      </View>
+    );
+  }
+
+  const imageUris =
+    record.imagePaths.length > 0 ? record.imagePaths : fallbackUris;
+  // Remote URLs stay index-aligned with image_paths, so a local URI that
+  // cannot be opened can retry once against its own source URL.
+  const remoteUrls = record.imageUrls ?? [];
+  const urisEmpty = imageUris.length === 0;
+  const size = tileSizeFor(width);
+
+  return (
+    <View style={{ width }}>
+      <FlatList
+        style={styles.pageScroll}
+        data={imageUris}
+        // mediaTick in the key: when the media permission is granted after
+        // first render, every tile remounts and retries its image instead
+        // of keeping the stale red ×.
+        keyExtractor={(uri, idx) => `${mediaTick}-${idx}-${uri}`}
+        numColumns={COLS}
+        renderItem={({ item, index }) => (
+          <DetailThumb
+            uri={item}
+            size={size}
+            fallbackUri={
+              item.startsWith('content://') ? remoteUrls[index] : undefined
+            }
+            onPress={() => onThumbPress(index)}
+          />
+        )}
+        ListHeaderComponent={<Header record={record} />}
+        ListEmptyComponent={
+          <View style={styles.emptyBlock}>
+            <Text style={styles.emptyText}>{t('history.detail.noDetail')}</Text>
+            <Text style={styles.emptyHint}>
+              {t('history.detail.noDetailHint')}
+            </Text>
+          </View>
+        }
+        contentContainerStyle={styles.list}
+        // Keep an empty list renderable so ListEmptyComponent still fires.
+        extraData={urisEmpty ? undefined : imageUris}
+      />
+
+      <ImageViewer
+        visible={viewerIndex !== null}
+        uris={imageUris}
+        initialIndex={viewerIndex ?? 0}
+        onClose={closeViewer}
+      />
+    </View>
+  );
+});
 RecordPage.displayName = 'RecordPage';
 
 const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
@@ -273,9 +289,16 @@ const DetailThumb: React.FC<{
   uri: string;
   size: number;
   onPress: () => void;
-}> = React.memo(({ uri, size, onPress }) => {
+  /** Optional remote URL to retry with when a local URI fails to open. */
+  fallbackUri?: string;
+}> = React.memo(({ uri, size, onPress, fallbackUri }) => {
   const styles = useThemedStyles(createStyles);
   const [failed, setFailed] = useState(false);
+  // When a recorded local content:// URI cannot be opened (e.g. the file was
+  // written by an uninstalled build and is not readable), retry once with the
+  // record's remote URL so the tile is still useful online.
+  const [usingFallback, setUsingFallback] = useState(false);
+  const source = failed && fallbackUri && !usingFallback ? fallbackUri : uri;
   return (
     <Pressable
       onPress={onPress}
@@ -285,16 +308,22 @@ const DetailThumb: React.FC<{
         pressed && styles.tilePressed,
       ]}
     >
-      {failed ? (
+      {failed && (!fallbackUri || usingFallback) ? (
         <View style={styles.tileFallback}>
           <Text style={styles.tileFallbackText}>×</Text>
         </View>
       ) : (
         <Image
-          source={{ uri }}
+          source={{ uri: source }}
           style={styles.image}
           resizeMode="cover"
-          onError={() => setFailed(true)}
+          onError={() => {
+            if (failed && fallbackUri && !usingFallback) {
+              // The fallback also failed: show the placeholder.
+              setUsingFallback(true);
+            }
+            setFailed(true);
+          }}
         />
       )}
     </Pressable>

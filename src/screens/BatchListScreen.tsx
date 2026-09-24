@@ -26,6 +26,11 @@ import {
 } from '../services/nativeDownloader';
 import { parseArticle } from '../services/telegraphParser';
 import { useDownload } from '../store/DownloadContext';
+import {
+  isIgnoringBatteryOptimizations,
+  isNotifierSupported,
+  requestIgnoreBatteryOptimizations,
+} from '../services/downloadNotifier';
 import { listHistoryByUrls } from '../services/historyService';
 import { dedupeUrls } from '../utils/batchScheduler';
 import type { BatchItem, BatchItemStatus } from '../types/batch';
@@ -64,11 +69,19 @@ export const BatchListScreen: React.FC = () => {
   // Reset on unmount so leaving the screen fully cancels any in-flight batch.
   useEffect(
     () => () => {
+      const wasRunning = batchAbortRef.current != null;
       batchAbortRef.current?.abort();
       if (pauseResumeRef.current.resumeWaiter) {
         pauseResumeRef.current.resumeWaiter();
       }
+      // Safety net: if the abort cannot unwind runBatch's finally promptly
+      // (e.g. a parse stalled on a slow network), still release the
+      // foreground service + wake lock when the screen goes away.
+      // endBatchSession is a stable useCallback([]) in the provider, so the
+      // first-render closure stays valid.
+      if (wasRunning) downloadContext.endBatchSession();
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -179,88 +192,138 @@ export const BatchListScreen: React.FC = () => {
     setRunning(true);
     setPaused(false);
     setShowSummary(false);
+
+    // Background keep-alive prep (Android-only, best-effort):
+    //   1. Offer the battery-optimization whitelist when the app is not
+    //      exempt yet — Doze/vendor power management can otherwise freeze a
+    //      long batch even with a foreground service running.
+    //   2. Bring up the foreground service NOW, while the app is in the
+    //      foreground (Android 12+ refuses to start one from the
+    //      background), and keep it up for the WHOLE batch: tearing it down
+    //      between URLs would leave parsing gaps unprotected.
+    if (isNotifierSupported()) {
+      try {
+        const ignoring = await isIgnoringBatteryOptimizations();
+        if (!ignoring) await requestIgnoreBatteryOptimizations();
+      } catch {
+        // best-effort; the user can whitelist manually in system settings
+      }
+      downloadContext.beginBatchSession(t('batch.fgsTitle'));
+    }
+
     batchAbortRef.current = new AbortController();
     const signal = batchAbortRef.current.signal;
     let done = 0;
     let failed = 0;
     let skipped = 0;
-    for (let i = 0; i < items.length; i += 1) {
-      if (signal.aborted) break;
-      if (items[i]?.status === 'skipped') {
-        skipped += 1;
-        continue;
-      }
-      await waitIfPaused();
-      if (signal.aborted) break;
+    // Aggregate per-image totals across all articles; handed to
+    // endBatchSession so the batch-end completion notification can show the
+    // real numbers even when the user is in another app.
+    let imgSuccess = 0;
+    let imgFailed = 0;
+    let imgSkipped = 0;
+    try {
+      for (let i = 0; i < items.length; i += 1) {
+        if (signal.aborted) break;
+        if (items[i]?.status === 'skipped') {
+          skipped += 1;
+          continue;
+        }
+        await waitIfPaused();
+        if (signal.aborted) break;
 
-      updateItem(i, { status: 'parsing', detail: '', progress: null });
+        updateItem(i, { status: 'parsing', detail: '', progress: null });
 
-      let result;
-      try {
-        result = await parseArticle(items[i].url, { signal });
-      } catch {
-        updateItem(i, { status: 'failed', detail: '解析异常' });
-        failed += 1;
-        continue;
-      }
-      if (!result.ok || !result.article || result.article.images.length === 0) {
+        let result;
+        try {
+          result = await parseArticle(items[i].url, { signal });
+        } catch {
+          updateItem(i, { status: 'failed', detail: '解析异常' });
+          failed += 1;
+          continue;
+        }
+        if (
+          !result.ok ||
+          !result.article ||
+          result.article.images.length === 0
+        ) {
+          updateItem(i, {
+            status: 'failed',
+            detail: result.error?.message ?? '无图',
+          });
+          failed += 1;
+          continue;
+        }
+
         updateItem(i, {
-          status: 'failed',
-          detail: result.error?.message ?? '无图',
+          status: 'downloading',
+          detail: `下载中 0/${result.article.images.length}`,
+          progress: { cur: 0, total: result.article.images.length },
         });
-        failed += 1;
-        continue;
+        try {
+          const summary = await downloadContext.runDownload(result.article, {
+            signal,
+            onProgress: (cur, total) => {
+              updateItem(i, {
+                status: 'downloading',
+                detail: `下载中 ${cur}/${total}`,
+                progress: { cur, total },
+              });
+            },
+          });
+          imgSuccess += summary.success;
+          imgFailed += summary.failed;
+          imgSkipped += summary.skipped;
+          // Resolving only means the queue drained — it says nothing about
+          // whether any image was actually saved. Surface the real per-image
+          // counts so an article whose every image failed is shown as failed
+          // instead of "done".
+          const counts = t('batch.status.counts', {
+            success: summary.success,
+            skipped: summary.skipped,
+            failed: summary.failed,
+          });
+          const allFailed =
+            summary.failed > 0 &&
+            summary.success === 0 &&
+            summary.skipped === 0;
+          // On total failure show the reason alone; otherwise prefix the counts
+          // with the first error so partial failures stay visible.
+          const reason = summary.firstError;
+          let detail = counts;
+          if (allFailed) detail = reason ?? counts;
+          else if (reason) detail = `${counts} · ${reason}`;
+          updateItem(i, {
+            status: allFailed ? 'failed' : 'done',
+            detail,
+            progress: null,
+          });
+          if (allFailed) failed += 1;
+          else done += 1;
+        } catch {
+          updateItem(i, {
+            status: 'failed',
+            detail: '下载失败',
+            progress: null,
+          });
+          failed += 1;
+        }
       }
-
-      updateItem(i, {
-        status: 'downloading',
-        detail: `下载中 0/${result.article.images.length}`,
-        progress: { cur: 0, total: result.article.images.length },
-      });
-      try {
-        const summary = await downloadContext.runDownload(result.article, {
-          signal,
-          onProgress: (cur, total) => {
-            updateItem(i, {
-              status: 'downloading',
-              detail: `下载中 ${cur}/${total}`,
-              progress: { cur, total },
-            });
-          },
-        });
-        // Resolving only means the queue drained — it says nothing about
-        // whether any image was actually saved. Surface the real per-image
-        // counts so an article whose every image failed is shown as failed
-        // instead of "done".
-        const counts = t('batch.status.counts', {
-          success: summary.success,
-          skipped: summary.skipped,
-          failed: summary.failed,
-        });
-        const allFailed =
-          summary.failed > 0 && summary.success === 0 && summary.skipped === 0;
-        // On total failure show the reason alone; otherwise prefix the counts
-        // with the first error so partial failures stay visible.
-        const reason = summary.firstError;
-        let detail = counts;
-        if (allFailed) detail = reason ?? counts;
-        else if (reason) detail = `${counts} · ${reason}`;
-        updateItem(i, {
-          status: allFailed ? 'failed' : 'done',
-          detail,
-          progress: null,
-        });
-        if (allFailed) failed += 1;
-        else done += 1;
-      } catch {
-        updateItem(i, { status: 'failed', detail: '下载失败', progress: null });
-        failed += 1;
-      }
+    } finally {
+      // Release the foreground service + wake lock once the whole batch is
+      // done (or was cancelled / the screen unmounted mid-run). On a normal
+      // finish pass the aggregate counts so the completion notification is
+      // shown before the service is dismissed; on cancel stop immediately.
+      downloadContext.endBatchSession(
+        signal.aborted
+          ? undefined
+          : { success: imgSuccess, failed: imgFailed, skipped: imgSkipped },
+      );
+      batchAbortRef.current = null;
+      setRunning(false);
+      setPaused(false);
+      setShowSummary(true);
     }
-    batchAbortRef.current = null;
-    setRunning(false);
-    setPaused(false);
-    setShowSummary(true);
     Alert.alert(
       t('batch.summaryTitle'),
       t('batch.summaryBody', {

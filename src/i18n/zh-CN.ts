@@ -188,6 +188,10 @@ export const zhCN = {
   'history.detail.notFound': '记录不存在',
   'history.detail.title': '下载记录详情',
   'history.detail.noDetail': '此记录没有图片详情',
+  'history.mediaPerm.title': '需要照片访问权限',
+  'history.mediaPerm.body':
+    '部分记录的图片保存在系统相册中，需要授予「照片和视频」访问权限才能显示。Android 14 及以上可在系统设置中仅选择部分照片。',
+  'history.mediaPerm.goSettings': '去设置',
   'history.detail.noDetailHint': '该记录较早下载，尚未保存每张图的路径。',
   'history.detail.time': '时间：{time}',
   'history.detail.imageCount': '图片 {count} 张',
@@ -269,6 +273,7 @@ export const zhCN = {
   'common.back': '返回',
   // Batch URL list
   'batch.title': '批量下载',
+  'batch.fgsTitle': '批量下载中',
   'batch.intro':
     '选择一个 url.txt，每行一个 URL，逐个依次下载。点击某一行可预览该链接解析出的图片。',
   'batch.pickFile': '选择 url.txt 文件',

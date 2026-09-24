@@ -190,6 +190,10 @@ export const en: Record<ZhKeys, string> = {
   'history.detail.notFound': 'Record not found',
   'history.detail.title': 'Download history detail',
   'history.detail.noDetail': 'No image details for this record',
+  'history.mediaPerm.title': 'Photo access required',
+  'history.mediaPerm.body':
+    'Some recorded images live in the system gallery. Grant the "Photos and videos" permission to display them here. On Android 14+ you may select only some photos.',
+  'history.mediaPerm.goSettings': 'Open settings',
   'history.detail.noDetailHint':
     'This record predates the per-image detail feature.',
   'history.detail.time': 'Time: {time}',
@@ -269,6 +273,7 @@ export const en: Record<ZhKeys, string> = {
   'common.back': 'Back',
   // Batch URL list
   'batch.title': 'Batch download',
+  'batch.fgsTitle': 'Batch downloading',
   'batch.intro':
     'Pick a url.txt file (one URL per line). URLs will be processed one by one. Tap a row to preview the images parsed from that link.',
   'batch.pickFile': 'Choose url.txt',

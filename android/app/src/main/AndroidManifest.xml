@@ -5,15 +5,30 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Reading gallery images NOT created by this app (e.g. records imported
+         from another install of the app) via MediaStore:
+           API <= 32 -> READ_EXTERNAL_STORAGE
+           API 33+   -> READ_MEDIA_IMAGES
+         Files created by the app itself are always readable without these. -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Android 14+ partial photo access ("Select photos" in the dialog) -->
+    <uses-permission
+        android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <!-- Android 13+ runtime notification permission (spec §21) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Foreground service to keep downloads alive in the background (spec §20) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- Android 14+ requires a foreground service type for data sync -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Partial wake lock held by the download foreground service so the JS
+         queue keeps running while the screen is off -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Lets the batch flow offer a one-tap "ignore battery optimizations"
+         request so long downloads survive Doze/vendor power management -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
       android:name=".MainApplication"

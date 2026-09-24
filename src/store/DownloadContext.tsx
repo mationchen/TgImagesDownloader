@@ -58,6 +58,26 @@ interface DownloadContextValue {
       onProgress?: (cur: number, total: number) => void;
     },
   ) => Promise<RunSummary>;
+  /**
+   * Batch-session guard for the url.txt flow. While a session is active the
+   * foreground service stays up across articles (no 5s auto-stop after each
+   * article finishes), so the whole batch keeps its background protection;
+   * Android 12+ forbids restarting a foreground service from the background,
+   * so the session must be opened while the app is still visible.
+   * Android-only; a no-op on iOS.
+   */
+  beginBatchSession: (title: string) => void;
+  /**
+   * End the batch session and release the foreground service. Pass the
+   * aggregate image counts when the batch completed normally so a completion
+   * notification is shown before the service is dismissed; omit it (e.g. on
+   * cancel) to stop immediately.
+   */
+  endBatchSession: (summary?: {
+    success: number;
+    failed: number;
+    skipped: number;
+  }) => void;
   pause: () => void;
   resume: () => void;
   cancel: () => void;
@@ -166,6 +186,14 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   const notifyStartedForRef = useRef<{ title: string; total: number } | null>(
     null,
   );
+  // "Auto-stop the notification 5s after finish" timer. Declared here (not
+  // next to the effect) so the batch-session callbacks can cancel it too.
+  const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // While a url.txt batch runs, the foreground service must survive across
+  // articles: a per-article auto-stop would tear it down during a parsing
+  // gap, and Android 12+ refuses startForegroundService from the background.
+  const batchSessionRef = useRef(false);
+  const batchTitleRef = useRef('');
 
   const start = useCallback(
     (article: TelegraphArticle, images: TelegraphImage[]) => {
@@ -305,17 +333,18 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
     });
 
     // Kick off a foreground service + progress notification (spec §20/§21).
+    // Start the service even when POST_NOTIFICATIONS is denied: it is what
+    // keeps the process (and the JS queue) alive in the background; the
+    // notification is simply hidden on Android 13+ without the permission.
+    // The permission is requested in parallel, best-effort.
     if (isNotifierSupported() && images.length > 0) {
       notifyStartedForRef.current = {
         title: article.title,
         total: images.length,
       };
-      ensureNotificationPermission().then(granted => {
-        if (granted) {
-          notifyDownloadStart(article.title, images.length);
-          lastNotifyRef.current = Date.now();
-        }
-      });
+      notifyDownloadStart(article.title, images.length);
+      lastNotifyRef.current = Date.now();
+      ensureNotificationPermission().catch(() => undefined);
     }
 
     // Use a synchronous queueState so drain's live/cap check sees the
@@ -374,9 +403,66 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   const resume = useCallback(() => queueRef.current?.resume(), []);
   const cancel = useCallback(() => {
     queueRef.current?.cancel();
-    notifyDownloadStop();
-    notifyStartedForRef.current = null;
+    // During a batch session the foreground service must stay up for the
+    // following articles ("跳过当前" routes through cancel()); it is torn
+    // down by endBatchSession() instead. Single-article flows stop here.
+    if (!batchSessionRef.current) {
+      notifyDownloadStop();
+      notifyStartedForRef.current = null;
+    }
   }, []);
+
+  const beginBatchSession = useCallback((title: string) => {
+    batchSessionRef.current = true;
+    batchTitleRef.current = title;
+    // A previous session's "delayed auto-stop" timer must not survive into
+    // this batch — it would tear the freshly started service down ~5s in,
+    // and Android 12+ then forbids restarting it from the background.
+    if (stopTimerRef.current) {
+      clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = null;
+    }
+    if (!isNotifierSupported()) return;
+    // Start the service right now, while the app is guaranteed to be in the
+    // foreground (the user just tapped 开始): Android 12+ rejects
+    // startForegroundService from the background, so this is the only safe
+    // moment to bring the service up for the whole batch.
+    notifyStartedForRef.current = { title, total: 0 };
+    notifyDownloadStart(title, 0);
+    ensureNotificationPermission().catch(() => undefined);
+  }, []);
+
+  const endBatchSession = useCallback(
+    (summary?: { success: number; failed: number; skipped: number }) => {
+      batchSessionRef.current = false;
+      batchTitleRef.current = '';
+      if (stopTimerRef.current) {
+        clearTimeout(stopTimerRef.current);
+        stopTimerRef.current = null;
+      }
+      if (summary && isNotifierSupported() && notifyStartedForRef.current) {
+        // Batch completed normally: surface the aggregate result in the
+        // notification shade for a few seconds before releasing the service
+        // (same pattern as the single-article completion notification) so a
+        // user who stayed in another app still sees the outcome.
+        notifyDownloadFinished(
+          summary.success,
+          summary.failed,
+          summary.skipped,
+        );
+        notifyStartedForRef.current = null;
+        stopTimerRef.current = setTimeout(() => {
+          notifyDownloadStop();
+          stopTimerRef.current = null;
+        }, 5000);
+      } else {
+        // Cancelled (or nothing was ever started): release immediately.
+        notifyDownloadStop();
+        notifyStartedForRef.current = null;
+      }
+    },
+    [],
+  );
 
   const retryFailed = useCallback(() => {
     // Re-arm every failed task by emitting init-like patches inline.
@@ -405,7 +491,8 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   // Drive the foreground notification from queue state (spec §21):
   //   - running  -> throttled progress updates
   //   - finished -> completion summary, then auto-stop after a delay
-  const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  //     (suppressed while a batch session is active: the service must live
+  //     until the last URL of the batch is done)
   useEffect(() => {
     console.log(
       `[DL] notification effect finished=${summary.finished} success=${summary.success} failed=${summary.failed} skipped=${summary.skipped} downloading=${summary.downloading}`,
@@ -417,6 +504,19 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
       console.log(
         `[DL] download FINISHED success=${summary.success} failed=${summary.failed} skipped=${summary.skipped} total=${summary.total}`,
       );
+      if (batchSessionRef.current) {
+        // Between batch articles: swap back to the generic batch
+        // notification (indeterminate bar) and keep the service + wake lock
+        // running until endBatchSession().
+        if (batchTitleRef.current) {
+          notifyStartedForRef.current = {
+            title: batchTitleRef.current,
+            total: 0,
+          };
+          notifyDownloadStart(batchTitleRef.current, 0);
+        }
+        return;
+      }
       notifyDownloadFinished(summary.success, summary.failed, summary.skipped);
       if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
       // Let the user see the summary for a few seconds, then dismiss.
@@ -451,6 +551,8 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
       summary,
       start,
       runDownload,
+      beginBatchSession,
+      endBatchSession,
       pause,
       resume,
       cancel,
@@ -463,6 +565,8 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
       summary,
       start,
       runDownload,
+      beginBatchSession,
+      endBatchSession,
       pause,
       resume,
       cancel,

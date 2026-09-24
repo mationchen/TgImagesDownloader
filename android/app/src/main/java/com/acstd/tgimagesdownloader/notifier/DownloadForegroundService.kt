@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
 /**
@@ -26,12 +27,36 @@ import androidx.core.app.NotificationCompat
  *
  * Android 13+ needs POST_NOTIFICATIONS (requested from JS); Android 14+ needs
  * the FOREGROUND_SERVICE_DATA_SYNC permission declared in the manifest.
+ *
+ * While the service is foreground it also holds a PARTIAL_WAKE_LOCK so the CPU
+ * (and therefore the RN JS download queue) keeps running after the screen
+ * turns off; without it a backgrounded batch stalls as soon as the device
+ * suspends.
  */
 class DownloadForegroundService : Service() {
+
+  private var wakeLock: PowerManager.WakeLock? = null
+
+  private fun acquireWakeLock() {
+    if (wakeLock?.isHeld == true) return
+    val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+    wakeLock = pm
+        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
+        .apply {
+          setReferenceCounted(false)
+          acquire()
+        }
+  }
+
+  private fun releaseWakeLock() {
+    wakeLock?.let { if (it.isHeld) it.release() }
+    wakeLock = null
+  }
 
   companion object {
     const val CHANNEL_ID = "downloads"
     const val NOTIFICATION_ID = 1001
+    const val WAKE_LOCK_TAG = "TgImagesDownloader:DownloadForegroundService"
 
     /** Live instance so [DownloadNotifierModule] can update notifications. */
     @Volatile
@@ -87,8 +112,10 @@ class DownloadForegroundService : Service() {
         } else {
           startForeground(NOTIFICATION_ID, notification)
         }
+        acquireWakeLock()
       }
       ACTION_STOP -> {
+        releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         active = null
         stopSelf()
@@ -98,6 +125,7 @@ class DownloadForegroundService : Service() {
   }
 
   override fun onDestroy() {
+    releaseWakeLock()
     if (active === this) {
       active = null
     }
@@ -136,7 +164,9 @@ class DownloadForegroundService : Service() {
 
     return NotificationCompat.Builder(this, CHANNEL_ID)
         .setContentTitle(title.ifBlank { "Telegraph Downloader" })
-        .setContentText("$done / $total")
+        // total <= 0 means "parsing between articles": show an indeterminate
+        // bar without a misleading "0 / 0" counter.
+        .setContentText(if (total > 0) "$done / $total" else null)
         .setSmallIcon(android.R.drawable.stat_sys_download)
         .setProgress(total, done, total <= 0)
         .setOngoing(true)
