@@ -89,6 +89,11 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
         headers: Record<string, string>,
         timeoutMs: number,
       ): Promise<{ status: number; bytes: number; contentType: string }>;
+      /**
+       * Delete media entries by URI (content:// or file://). Resolves with the
+       * number actually removed; unsupported/foreign files are skipped.
+       */
+      deleteGalleryImages?(uris: string[]): Promise<number>;
     }
   | undefined;
 

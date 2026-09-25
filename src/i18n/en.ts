@@ -194,6 +194,19 @@ export const en: Record<ZhKeys, string> = {
   'history.mediaPerm.body':
     'Some recorded images live in the system gallery. Grant the "Photos and videos" permission to display them here. On Android 14+ you may select only some photos.',
   'history.mediaPerm.goSettings': 'Open settings',
+  // Record link actions (detail page)
+  'history.link.title': 'Link',
+  'history.link.copy': 'Copy link',
+  'history.link.open': 'Open in browser',
+  'history.link.copied': 'Link copied',
+  'history.rowActionsA11y': 'More actions',
+  // Delete options (record only vs. record + images)
+  'history.deleteRecordOnly': 'Delete record only',
+  'history.deleteWithImages': 'Delete record and images',
+  'history.deleteImagesConfirmTitle': 'Delete images?',
+  'history.deleteImagesConfirmMsg':
+    'This also removes {count} image(s) from your gallery. It cannot be undone.',
+  'history.deleteImagesConfirmOk': 'Delete',
   'history.detail.noDetailHint':
     'This record predates the per-image detail feature.',
   'history.detail.time': 'Time: {time}',
@@ -211,6 +224,8 @@ export const en: Record<ZhKeys, string> = {
   'history.searchPlaceholder': 'Search your title',
   'history.searchClearA11y': 'Clear search',
   'history.filterByDate': 'Filter by date',
+  'history.filterByStatus': 'Filter by status',
+  'history.statusFilter.all': 'All',
   'history.filterDateSelected': 'On: {date}',
   'history.clearFilter': 'Clear filter',
   'history.noMatch': 'No matching records',

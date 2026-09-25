@@ -1,17 +1,20 @@
-import {parseArticle, parseWebArticle} from '../src/services/telegraphParser';
+import { parseArticle, parseWebArticle } from '../src/services/telegraphParser';
 
 // Mock global fetch so the parser can run without a network.
-function mockFetchResponses(map: Record<string, {status: number; body: string}>) {
+function mockFetchResponses(
+  map: Record<string, { status: number; body: string }>,
+) {
   (globalThis as any).fetch = jest.fn(async (url: any) => {
     const key = String(url);
-    const entry = map[key] ?? map[new URL(key).pathname] ?? {
-      status: 404,
-      body: 'not found',
-    };
+    const entry = map[key] ??
+      map[new URL(key).pathname] ?? {
+        status: 404,
+        body: 'not found',
+      };
     return {
       ok: entry.status >= 200 && entry.status < 300,
       status: entry.status,
-      headers: {get: () => String(entry.body.length)},
+      headers: { get: () => String(entry.body.length) },
       text: async () => entry.body,
     };
   }) as any;
@@ -53,9 +56,9 @@ describe('parseWebArticle (generic pages + pagination)', () => {
   it('merges images across pages and filters related-post cards', async () => {
     const base = 'https://everia.club/2026/08/31/foo/';
     mockFetchResponses({
-      'https://everia.club/2026/08/31/foo/': {status: 200, body: page1Html},
-      'https://everia.club/2026/08/31/foo/2/': {status: 200, body: page2Html},
-      'https://everia.club/2026/08/31/foo/3/': {status: 404, body: 'x'},
+      'https://everia.club/2026/08/31/foo/': { status: 200, body: page1Html },
+      'https://everia.club/2026/08/31/foo/2/': { status: 200, body: page2Html },
+      'https://everia.club/2026/08/31/foo/3/': { status: 404, body: 'x' },
     });
 
     const res = await parseWebArticle(base);
@@ -77,6 +80,30 @@ describe('parseWebArticle (generic pages + pagination)', () => {
     expect(urls.some(u => u.includes('airibox.top'))).toBe(false);
   });
 
+  it('does not walk far past the last linked page (over-fetch regression)', async () => {
+    const base = 'https://everia.club/2026/08/31/foo/';
+    const responses: Record<string, { status: number; body: string }> = {
+      [base]: { status: 200, body: page1Html },
+    };
+    // Pages 2..20 all "exist", so only the gap-fill window can stop the walk
+    // (a 404 would end it early and hide the bug).
+    for (let n = 2; n <= 20; n += 1) {
+      responses[`${base}${n}/`] = { status: 200, body: page2Html };
+    }
+    mockFetchResponses(responses);
+
+    const res = await parseWebArticle(base);
+    expect(res.ok).toBe(true);
+
+    // page1Html links pages 2 and 3 → the window is lastLinked + 2 = 5, so at
+    // most pages 1..5 should ever be requested. `maxDiscovered` used to be
+    // recomputed from a set the loop itself kept growing, which slid the window
+    // upward until the walk hit maxPages (20 requests for a 3-page gallery).
+    const fetchMock = (globalThis as unknown as { fetch: jest.Mock }).fetch;
+    const fetched = fetchMock.mock.calls.map(call => String(call[0]));
+    expect(fetched.length).toBeLessThanOrEqual(6);
+  });
+
   it('returns a single page when no pagination exists', async () => {
     const single = `
       <html><head><title>单页</title></head><body>
@@ -85,7 +112,7 @@ describe('parseWebArticle (generic pages + pagination)', () => {
       </body></html>
     `;
     mockFetchResponses({
-      'https://example.com/post/': {status: 200, body: single},
+      'https://example.com/post/': { status: 200, body: single },
     });
     const res = await parseWebArticle('https://example.com/post/');
     expect(res.ok).toBe(true);
@@ -115,7 +142,7 @@ describe('parseWebArticle (generic pages + pagination)', () => {
     const html = `<html><head><title>TG</title></head><body>
       <img src="https://telegra.ph/file/a.jpg"></body></html>`;
     mockFetchResponses({
-      'https://telegra.ph/test': {status: 200, body: html},
+      'https://telegra.ph/test': { status: 200, body: html },
     });
     const res = await parseArticle('https://telegra.ph/test');
     expect(res.ok).toBe(true);
@@ -126,7 +153,7 @@ describe('parseWebArticle (generic pages + pagination)', () => {
     const html = `<html><head><title>Web</title></head><body>
       <img src="https://karubox.top/x.webp"></body></html>`;
     mockFetchResponses({
-      'https://karubox.top/post': {status: 200, body: html},
+      'https://karubox.top/post': { status: 200, body: html },
     });
     const res = await parseArticle('https://karubox.top/post');
     expect(res.ok).toBe(true);

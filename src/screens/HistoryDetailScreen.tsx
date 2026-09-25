@@ -6,22 +6,29 @@ import React, {
   useState,
 } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  ToastAndroid,
   View,
   useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type ScrollViewInstance,
 } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useThemedStyles, type ThemeColors } from '../theme';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useThemedStyles, useTheme, type ThemeColors } from '../theme';
 import { getHistory, type HistoryRecord } from '../services/historyService';
 import {
   isDownloaderAvailable,
@@ -29,12 +36,16 @@ import {
 } from '../services/nativeDownloader';
 import { EmptyState } from '../components/EmptyState';
 import { ZoomableImage } from '../components/ZoomableImage';
-import type { RootStackScreenProps } from '../navigation/types';
+import type {
+  RootStackParamList,
+  RootStackScreenProps,
+} from '../navigation/types';
 import { isSharedSaveFolder } from '../utils/saveDir';
 import {
   HISTORY_STATUS_LABEL_KEY,
   historyStatusVisual,
 } from '../utils/historyStatus';
+import { confirmDeleteRecord, reparseRecord } from '../utils/historyRowActions';
 import { useMediaReadPermission } from '../utils/mediaPermission';
 import { t, useI18n } from '../i18n';
 
@@ -46,6 +57,23 @@ const GAP = 2;
 /** Width of one grid tile for a page that is {@code width} px wide. */
 function tileSizeFor(width: number): number {
   return Math.floor((width - (COLS + 1) * GAP) / COLS);
+}
+
+/**
+ * Copy a record's URL to the clipboard.
+ *
+ * Android 13+ shows the system's own "copied" confirmation, so the extra toast
+ * is only shown on older Android; iOS copies silently (no equivalent toast).
+ */
+function copyUrl(url: string): void {
+  try {
+    Clipboard.setString(url);
+  } catch {
+    return;
+  }
+  if (Platform.OS === 'android' && Platform.Version < 33) {
+    ToastAndroid.show(t('history.link.copied'), ToastAndroid.SHORT);
+  }
 }
 
 /**
@@ -231,16 +259,84 @@ const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
   // Subscribe so meta labels re-render in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
-  const openUrl = useCallback(() => {
-    Linking.openURL(record.url).catch(() => undefined);
+  const { colors } = useTheme();
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  // Spinner while the article is being re-parsed: it fetches every page of the
+  // gallery, which can take a while on multi-page posts.
+  const [reparsing, setReparsing] = useState(false);
+
+  const onReparse = useCallback(async () => {
+    if (reparsing) return;
+    setReparsing(true);
+    try {
+      const article = await reparseRecord(record);
+      if (article) navigation.navigate('Preview', { article });
+    } finally {
+      setReparsing(false);
+    }
+  }, [record, navigation, reparsing]);
+
+  const onDelete = useCallback(() => {
+    confirmDeleteRecord(record, {
+      onReparsed: () => undefined,
+      // The record no longer exists: go back to the list, which reloads via the
+      // shared "history changed" flag.
+      onDeleted: () => navigation.goBack(),
+    });
+  }, [record, navigation]);
+
+  // Tapping the link opens a chooser instead of jumping straight to the
+  // browser: the URL is long and often only needed for copying/sharing.
+  const onUrlPress = useCallback(() => {
+    Alert.alert(t('history.link.title'), record.url, [
+      { text: t('history.link.copy'), onPress: () => copyUrl(record.url) },
+      {
+        text: t('history.link.open'),
+        onPress: () => Linking.openURL(record.url).catch(() => undefined),
+      },
+      { text: t('common.cancel'), style: 'cancel' },
+    ]);
   }, [record.url]);
 
   return (
     <View style={styles.header}>
-      <Text style={styles.title} numberOfLines={2}>
-        {record.title}
-      </Text>
-      <Pressable onPress={openUrl} hitSlop={6}>
+      <View style={styles.titleRow}>
+        {/* Full title: wraps over as many lines as the text needs. */}
+        <Text style={styles.title}>{record.title}</Text>
+        <View style={styles.headerActions}>
+          <Pressable
+            onPress={onReparse}
+            disabled={reparsing}
+            accessibilityRole="button"
+            accessibilityLabel={t('history.reparseHint')}
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.actionBtn,
+              pressed && styles.pressed,
+            ]}
+          >
+            {reparsing ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Text style={styles.actionBtnText}>🔄</Text>
+            )}
+          </Pressable>
+          <Pressable
+            onPress={onDelete}
+            accessibilityRole="button"
+            accessibilityLabel={t('history.delete')}
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.actionBtn,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.actionBtnText}>🗑</Text>
+          </Pressable>
+        </View>
+      </View>
+      <Pressable onPress={onUrlPress} hitSlop={6}>
         <Text style={styles.url} numberOfLines={2}>
           {record.url}
         </Text>
@@ -500,7 +596,19 @@ function createStyles(c: ThemeColors) {
     loadingText: { color: c.textHint, fontSize: 13 },
     list: { paddingBottom: 24 },
     header: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
-    title: { fontSize: 18, fontWeight: '700', color: c.textPrimary },
+    titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+    title: { flex: 1, fontSize: 18, fontWeight: '700', color: c.textPrimary },
+    /** Title-bar action icons (re-parse / delete), right of the title. */
+    headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    actionBtn: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      backgroundColor: c.surface,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    actionBtnText: { fontSize: 16, lineHeight: 20 },
     url: { marginTop: 6, fontSize: 12, color: c.primary },
     metaRow: {
       flexDirection: 'row',

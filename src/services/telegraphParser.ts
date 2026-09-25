@@ -208,6 +208,11 @@ export async function parseWebArticle(
   // Fill gaps up to maxPages by constructing /N/ URLs for missing indices
   // (WordPress often only renders a window of page numbers).
   const existingNumbers = new Set(urlsToFetch.map(getPageNumber).concat([1]));
+  // Highest page the page actually linked to. Frozen BEFORE the loop: this used
+  // to be recomputed from `existingNumbers` on every iteration, and since the
+  // loop adds to that same set, the "+2" window kept sliding upward and the
+  // walk ran all the way to `maxPages` (20 requests for an 8-page gallery).
+  const maxDiscoveredPage = Math.max(1, ...Array.from(existingNumbers));
   for (let n = 2; n <= maxPages && urlsToFetch.length < maxPages - 1; n += 1) {
     if (existingNumbers.has(n)) continue;
     const constructed = paginationUrl(normalized, n);
@@ -229,8 +234,7 @@ export async function parseWebArticle(
       // In practice this covers the common gap case where page 2 link is a
       // rel=next but page 3+ are numeric.
       // We conservatively add only if the gap is within the discovered range.
-      const maxDiscovered = Math.max(...Array.from(existingNumbers));
-      if (n <= maxDiscovered + 2) {
+      if (n <= maxDiscoveredPage + 2) {
         urlsToFetch.push(constructed);
         existingNumbers.add(n);
       }
@@ -382,12 +386,8 @@ function collectPaginationUrls(html: string, baseUrl: string): string[] {
     const tag = m[0] ?? '';
     const href = pickAttr(tag, 'href');
     if (href) {
-      try {
-        const abs = new URL(href, baseUrl).toString();
-        if (isSafeFetchUrl(abs)) out.add(abs);
-      } catch {
-        // ignore
-      }
+      const abs = resolveUrl(href, baseUrl);
+      if (abs && isSafeFetchUrl(abs)) out.add(abs);
     }
   }
   // Alternative order href before rel
@@ -397,12 +397,8 @@ function collectPaginationUrls(html: string, baseUrl: string): string[] {
     const tag = m[0] ?? '';
     const href = pickAttr(tag, 'href');
     if (href) {
-      try {
-        const abs = new URL(href, baseUrl).toString();
-        if (isSafeFetchUrl(abs)) out.add(abs);
-      } catch {
-        // ignore
-      }
+      const abs = resolveUrl(href, baseUrl);
+      if (abs && isSafeFetchUrl(abs)) out.add(abs);
     }
   }
   // <a href="..."> candidates
@@ -414,13 +410,9 @@ function collectPaginationUrls(html: string, baseUrl: string): string[] {
     if (!href || href.startsWith('#') || href.startsWith('javascript:'))
       continue;
     if (!isPaginationCandidate(href, baseUrl)) continue;
-    try {
-      const abs = new URL(href, baseUrl).toString();
-      if (!isSafeFetchUrl(abs)) continue;
-      out.add(abs);
-    } catch {
-      // ignore
-    }
+    const abs = resolveUrl(href, baseUrl);
+    if (!abs || !isSafeFetchUrl(abs)) continue;
+    out.add(abs);
   }
   const arr = Array.from(out);
   arr.sort((a, b) => getPageNumber(a) - getPageNumber(b));
@@ -602,6 +594,36 @@ function isDecorativeUrl(url: string, attrs: string): boolean {
   return false;
 }
 
+/**
+ * Resolve a (possibly relative) URL against the page URL.
+ *
+ * React Native's `URL` polyfill mis-resolves an **absolute** URL that still
+ * contains raw spaces or non-ASCII characters: instead of recognizing the
+ * scheme it treats the whole string as a relative path and prefixes the page
+ * URL. Observed on 1y.is, whose `<img src>` values are unencoded, e.g.
+ * `https://imgs.1y.is/nisaerzuo/VOL.105 fate玛修舞娘/1.webp`:
+ *
+ *   new URL(raw, base)               -> https://www.1y.is/<page>/https://imgs...
+ *   new URL(encodeURI(raw), base)    -> https://imgs.1y.is/...%20fate%E7%8E%9B...
+ *
+ * Node's/browsers' `URL` percent-encodes those characters themselves, which is
+ * why this only reproduces on device. Encode just the offending characters
+ * first — existing `%XX` escapes are left untouched (unlike `encodeURI`, which
+ * would double-encode them).
+ */
+function resolveUrl(raw: string, baseUrl: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const safe = trimmed
+    .replace(/ /g, '%20')
+    .replace(/[^\x20-\x7e]/g, ch => encodeURIComponent(ch));
+  try {
+    return new URL(safe, baseUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
 function extractImages(
   html: string,
   baseUrl: string,
@@ -616,12 +638,8 @@ function extractImages(
     if (!raw) return;
     if (opts.skipRelatedCards && /fifu-featured|post-id=["']?\d+/.test(attrs))
       return;
-    let absolute: string;
-    try {
-      absolute = new URL(raw, baseUrl).toString();
-    } catch {
-      return;
-    }
+    const absolute = resolveUrl(raw, baseUrl);
+    if (!absolute) return;
     if (!isSafeImageUrl(absolute)) return;
     if (isDecorativeUrl(absolute, attrs)) return;
     if (seen.has(absolute)) return;

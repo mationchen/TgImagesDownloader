@@ -15,6 +15,7 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.bridge.WritableNativeMap
@@ -291,6 +292,42 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Int) {}
+
+  /**
+   * Delete media entries by URI. Used by "删除记录和图片" in 下载记录详情.
+   *
+   * Handles both MediaStore `content://` URIs and legacy `file://` paths.
+   * Resolves with the number of entries actually removed. Best-effort per
+   * item: files owned by another install of the app cannot be deleted (the
+   * platform refuses), and those are simply counted as failures.
+   */
+  @ReactMethod
+  fun deleteGalleryImages(uris: ReadableArray, promise: Promise) {
+    Thread {
+          var deleted = 0
+          val resolver = reactApplicationContext.contentResolver
+          for (i in 0 until uris.size()) {
+            val uriString = uris.getString(i) ?: continue
+            try {
+              val uri = Uri.parse(uriString)
+              val removed =
+                  when (uri.scheme?.lowercase()) {
+                    "content" -> resolver.delete(uri, null, null)
+                    "file" -> {
+                      val path = uri.path
+                      if (path != null && File(path).delete()) 1 else 0
+                    }
+                    else -> 0
+                  }
+              if (removed > 0) deleted += 1
+            } catch (_: Throwable) {
+              // Skip this item; the caller only needs the aggregate count.
+            }
+          }
+          promise.resolve(deleted)
+        }
+        .start()
+  }
 
   /**
    * Download [url] straight to [targetPath] with OkHttp on a background thread

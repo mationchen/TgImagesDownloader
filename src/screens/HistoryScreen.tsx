@@ -7,7 +7,6 @@ import React, {
 } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   SectionList,
@@ -17,17 +16,17 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { EmptyState } from '../components/EmptyState';
 import {
   countHistory,
   initHistoryDatabase,
   listDailyCounts,
   listHistory,
-  removeHistory,
   type HistoryListFilter,
   type HistoryRecord,
+  type HistoryStatus,
 } from '../services/historyService';
-import { parseTelegraphArticle } from '../services/telegraphParser';
 import type { MainTabScreenProps } from '../navigation/types';
 import { t, useI18n } from '../i18n';
 import { useTheme, useThemedStyles, type ThemeColors } from '../theme';
@@ -36,6 +35,10 @@ import {
   historyStatusVisual,
   type HistoryStatusTone,
 } from '../utils/historyStatus';
+import {
+  consumeHistoryChanged,
+  showHistoryRowActions,
+} from '../utils/historyRowActions';
 
 type Props = MainTabScreenProps<'History'>;
 
@@ -45,6 +48,17 @@ interface Section {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Order of the download-status enum in the filter sheet. Matches the badge
+ * vocabulary used on every row: ✓ 完成 / ! 部分失败 / ✕ 失败 / – 已取消.
+ */
+const STATUS_ORDER: HistoryStatus[] = [
+  'done',
+  'partial',
+  'failed',
+  'cancelled',
+];
 
 /* Pagination knobs — see AGENTS.md §4 / §history rules. */
 const PAGE_SIZE = 20; // records loaded per scroll/pull
@@ -72,9 +86,13 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   // pagination math stays correct even when hundreds/thousands of rows exist.
   const [query, setQuery] = useState('');
   const [filterDay, setFilterDay] = useState<Date | null>(null);
+  // Download-status filter (enum). null = 全部 / no status predicate.
+  const [filterStatus, setFilterStatus] = useState<HistoryStatus | null>(null);
 
   // Calendar filter modal (custom month grid showing per-day counts).
   const [showCalendar, setShowCalendar] = useState(false);
+  // Status filter sheet (enum picker).
+  const [showStatusPicker, setShowStatusPicker] = useState(false);
 
   const listRef = useRef<SectionList<HistoryRecord, Section> | null>(null);
 
@@ -84,10 +102,13 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   queryRef.current = query;
   const filterDayRef = useRef(filterDay);
   filterDayRef.current = filterDay;
+  const filterStatusRef = useRef(filterStatus);
+  filterStatusRef.current = filterStatus;
 
   const buildFilter = useCallback((): HistoryListFilter | undefined => {
     const title = queryRef.current.trim();
     const day = filterDayRef.current;
+    const status = filterStatusRef.current;
     const filter: HistoryListFilter = {};
     if (title) filter.title = title;
     if (day) {
@@ -95,7 +116,10 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
       filter.createdAfterMs = dayStart;
       filter.createdBeforeMs = dayStart + DAY_MS;
     }
-    return filter.title || filter.createdAfterMs != null ? filter : undefined;
+    if (status) filter.status = status;
+    return filter.title || filter.createdAfterMs != null || filter.status
+      ? filter
+      : undefined;
   }, []);
 
   const reload = useCallback(
@@ -125,10 +149,10 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     [buildFilter],
   );
 
-  // Initial load. Also re-runs immediately when the date filter changes.
+  // Initial load. Also re-runs immediately when the date / status filter changes.
   useEffect(() => {
     reload(0);
-  }, [filterDay, reload]);
+  }, [filterDay, filterStatus, reload]);
 
   // Debounced reload for the free-text title search.
   useEffect(() => {
@@ -195,7 +219,8 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
 
   const showFab = records.length > PAGE_SIZE;
   const showPagination = records.length >= PAGE_BATCH || offset > 0;
-  const hasFilter = query.trim().length > 0 || filterDay != null;
+  const hasFilter =
+    query.trim().length > 0 || filterDay != null || filterStatus != null;
 
   const openDatePicker = useCallback(() => {
     setShowCalendar(true);
@@ -206,55 +231,38 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     setShowCalendar(false);
   }, []);
 
+  /** Apply (or clear, with null) the download-status filter. */
+  const onStatusSelect = useCallback((status: HistoryStatus | null) => {
+    setFilterStatus(status);
+    setShowStatusPicker(false);
+  }, []);
+
   const clearFilter = useCallback(() => {
     setQuery('');
     setFilterDay(null);
+    setFilterStatus(null);
   }, []);
 
-  const handleDelete = useCallback((record: HistoryRecord) => {
-    Alert.alert(
-      t('history.deleteConfirmTitle'),
-      t('history.deleteConfirmMsg'),
-      [
-        { text: t('history.cancel'), style: 'cancel' },
-        {
-          text: t('history.deleteConfirmOk'),
-          style: 'destructive',
-          onPress: async () => {
-            await removeHistory(record.id);
-            setRecords(prev => prev.filter(r => r.id !== record.id));
-            setTotal(prev => Math.max(0, prev - 1));
-          },
+  const handleLongPress = useCallback(
+    (record: HistoryRecord) => {
+      showHistoryRowActions(record, {
+        onReparsed: article => navigation.navigate('Preview', { article }),
+        onDeleted: deleted => {
+          setRecords(prev => prev.filter(r => r.id !== deleted.id));
+          setTotal(prev => Math.max(0, prev - 1));
         },
-      ],
-    );
-  }, []);
-
-  const handleReparse = useCallback(
-    async (record: HistoryRecord) => {
-      const result = await parseTelegraphArticle(record.url);
-      if (result.ok && result.article) {
-        navigation.navigate('Preview', { article: result.article });
-      } else {
-        Alert.alert(t('error.parseError'));
-      }
+      });
     },
     [navigation],
   );
 
-  const handleLongPress = useCallback(
-    (record: HistoryRecord) => {
-      Alert.alert(record.title, undefined, [
-        { text: t('history.reparse'), onPress: () => handleReparse(record) },
-        {
-          text: t('history.delete'),
-          style: 'destructive',
-          onPress: () => handleDelete(record),
-        },
-        { text: t('history.cancel'), style: 'cancel' },
-      ]);
-    },
-    [handleDelete, handleReparse],
+  // Reload when another screen changed history rows (e.g. a delete from the
+  // detail page). Guarded by the shared flag so ordinary tab switches keep the
+  // current page/scroll position instead of jumping back to page 1.
+  useFocusEffect(
+    useCallback(() => {
+      if (consumeHistoryChanged()) reload(0);
+    }, [reload]),
   );
 
   const pageFrom = offset + 1;
@@ -294,6 +302,26 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
             </Pressable>
           ) : null}
         </View>
+        {/* Download-status filter: icon button that opens the enum picker. */}
+        <Pressable
+          onPress={() => setShowStatusPicker(true)}
+          accessibilityRole="button"
+          accessibilityLabel={t('history.filterByStatus')}
+          style={({ pressed }) => [
+            styles.statusBtn,
+            filterStatus && styles.dateBtnActive,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text
+            style={[
+              styles.dateBtnText,
+              filterStatus && styles.dateBtnTextActive,
+            ]}
+          >
+            {filterStatus ? historyStatusVisual(filterStatus).icon : '🏷'}
+          </Text>
+        </Pressable>
         <Pressable
           onPress={openDatePicker}
           accessibilityRole="button"
@@ -311,15 +339,28 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
         </Pressable>
       </View>
 
-      {/* Active date chip */}
-      {filterDay ? (
+      {/* Active filter chips (date and/or status) */}
+      {filterDay || filterStatus ? (
         <View style={styles.chipRow}>
-          <View style={styles.chip}>
-            <Text style={styles.chipText}>{filterDateLabel}</Text>
-            <Pressable onPress={() => setFilterDay(null)} hitSlop={10}>
-              <Text style={styles.chipClear}>×</Text>
-            </Pressable>
-          </View>
+          {filterDay ? (
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>{filterDateLabel}</Text>
+              <Pressable onPress={() => setFilterDay(null)} hitSlop={10}>
+                <Text style={styles.chipClear}>×</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {filterStatus ? (
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>
+                {historyStatusVisual(filterStatus).icon}{' '}
+                {t(HISTORY_STATUS_LABEL_KEY[filterStatus])}
+              </Text>
+              <Pressable onPress={() => setFilterStatus(null)} hitSlop={10}>
+                <Text style={styles.chipClear}>×</Text>
+              </Pressable>
+            </View>
+          ) : null}
           <Pressable
             onPress={clearFilter}
             hitSlop={8}
@@ -460,6 +501,14 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
         onSelect={onCalendarSelect}
         onClose={() => setShowCalendar(false)}
       />
+
+      {/* Download-status filter sheet (enum picker) */}
+      <HistoryStatusPicker
+        visible={showStatusPicker}
+        selected={filterStatus}
+        onSelect={onStatusSelect}
+        onClose={() => setShowStatusPicker(false)}
+      />
     </SafeAreaView>
   );
 };
@@ -539,6 +588,85 @@ function formatDayKey(y: number, m: number, d: number): number {
  * day (0 -> nothing, dot-free). Uses {listDailyCounts} which aggregates by
  * the user's local day.
  */
+/**
+ * Download-status filter sheet.
+ *
+ * Lists every status a history row can hold (plus "全部"), using the same
+ * glyph + label vocabulary as the row badges. Selecting an option applies it
+ * immediately and closes the sheet; "全部" clears the status predicate.
+ */
+const HistoryStatusPicker: React.FC<{
+  visible: boolean;
+  selected: HistoryStatus | null;
+  onSelect: (status: HistoryStatus | null) => void;
+  onClose: () => void;
+}> = ({ visible, selected, onSelect, onClose }) => {
+  // Subscribe so option labels re-render in the active language.
+  useI18n();
+  const styles = useThemedStyles(createStyles);
+  if (!visible) return null;
+
+  const options: { key: HistoryStatus | null; label: string; icon: string }[] =
+    [
+      { key: null, label: t('history.statusFilter.all'), icon: '≡' },
+      ...STATUS_ORDER.map(status => ({
+        key: status as HistoryStatus | null,
+        label: t(HISTORY_STATUS_LABEL_KEY[status]),
+        icon: historyStatusVisual(status).icon,
+      })),
+    ];
+
+  return (
+    <Modal transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.calBackdrop} onPress={onClose}>
+        <Pressable style={styles.calSheet} onPress={() => undefined}>
+          <View style={styles.calHeader}>
+            <Text style={styles.statusSheetTitle}>
+              {t('history.filterByStatus')}
+            </Text>
+          </View>
+          {options.map(option => {
+            const active = option.key === selected;
+            return (
+              <Pressable
+                key={option.key ?? 'all'}
+                onPress={() => onSelect(option.key)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                style={({ pressed }) => [
+                  styles.statusOption,
+                  active && styles.statusOptionActive,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.statusOptionIcon,
+                    active && styles.statusOptionTextActive,
+                  ]}
+                >
+                  {option.icon}
+                </Text>
+                <Text
+                  style={[
+                    styles.statusOptionText,
+                    active && styles.statusOptionTextActive,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+                {active ? (
+                  <Text style={styles.statusOptionCheck}>✓</Text>
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+};
+
 const HistoryCalendar: React.FC<{
   visible: boolean;
   initialDate: Date | null;
@@ -844,6 +972,44 @@ function createStyles(c: ThemeColors) {
     dateBtnActive: { backgroundColor: c.primarySoft },
     dateBtnText: { fontSize: 13, color: c.textSecondary },
     dateBtnTextActive: { color: c.primarySoftText, fontWeight: '600' },
+    // Icon-only download-status filter button (between search and date).
+    statusBtn: {
+      height: 38,
+      width: 38,
+      borderRadius: 8,
+      backgroundColor: c.surface,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    /** Title row of the status filter sheet (reuses the calendar chrome). */
+    statusSheetTitle: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: c.textPrimary,
+      paddingHorizontal: 8,
+    },
+    statusOption: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingVertical: 14,
+      paddingHorizontal: 16,
+      borderRadius: 10,
+    },
+    statusOptionActive: { backgroundColor: c.primarySoft },
+    statusOptionIcon: {
+      width: 22,
+      textAlign: 'center',
+      fontSize: 15,
+      color: c.textSecondary,
+    },
+    statusOptionText: { flex: 1, fontSize: 15, color: c.textPrimary },
+    statusOptionTextActive: { color: c.primarySoftText, fontWeight: '600' },
+    statusOptionCheck: {
+      fontSize: 15,
+      color: c.primarySoftText,
+      fontWeight: '700',
+    },
     chipRow: {
       flexDirection: 'row',
       alignItems: 'center',

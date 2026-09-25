@@ -192,6 +192,19 @@ export const zhCN = {
   'history.mediaPerm.body':
     '部分记录的图片保存在系统相册中，需要授予「照片和视频」访问权限才能显示。Android 14 及以上可在系统设置中仅选择部分照片。',
   'history.mediaPerm.goSettings': '去设置',
+  // Record link actions (detail page)
+  'history.link.title': '链接',
+  'history.link.copy': '复制链接',
+  'history.link.open': '浏览器打开',
+  'history.link.copied': '链接已复制',
+  'history.rowActionsA11y': '更多操作',
+  // Delete options (record only vs. record + images)
+  'history.deleteRecordOnly': '仅删除记录',
+  'history.deleteWithImages': '删除记录和图片',
+  'history.deleteImagesConfirmTitle': '确认删除图片',
+  'history.deleteImagesConfirmMsg':
+    '将同时从相册删除该记录的 {count} 张图片，此操作无法撤销。',
+  'history.deleteImagesConfirmOk': '确认删除',
   'history.detail.noDetailHint': '该记录较早下载，尚未保存每张图的路径。',
   'history.detail.time': '时间：{time}',
   'history.detail.imageCount': '图片 {count} 张',
@@ -208,6 +221,8 @@ export const zhCN = {
   'history.searchPlaceholder': '搜索标题',
   'history.searchClearA11y': '清空搜索',
   'history.filterByDate': '按日期筛选',
+  'history.filterByStatus': '按下载状态筛选',
+  'history.statusFilter.all': '全部',
   'history.filterDateSelected': '日期：{date}',
   'history.clearFilter': '清除筛选',
   'history.noMatch': '没有找到匹配的记录',

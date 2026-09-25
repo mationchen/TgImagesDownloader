@@ -361,6 +361,8 @@ export interface HistoryListFilter {
   createdAfterMs?: number;
   /** Exclusive upper bound on created_at (UTC ms). */
   createdBeforeMs?: number;
+  /** Exact match on the derived run status (done / partial / failed / cancelled). */
+  status?: HistoryStatus;
 }
 
 /**
@@ -389,6 +391,10 @@ function buildHistoryFilter(filter?: HistoryListFilter): {
   if (filter.createdBeforeMs != null) {
     clauses.push('created_at < ?');
     params.push(filter.createdBeforeMs);
+  }
+  if (filter.status) {
+    clauses.push('status = ?');
+    params.push(filter.status);
   }
   return {
     whereSql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
@@ -550,6 +556,27 @@ export async function removeHistory(id: number): Promise<void> {
   await initHistoryDatabase();
   const d = getDb();
   await d.execute('DELETE FROM history WHERE id = ?;', [id]);
+}
+
+/**
+ * Drop ledger rows for the given source image URLs.
+ *
+ * Called when the user deletes a record *together with its images*: the ledger
+ * is what makes a later re-download skip URLs it has already saved, so leaving
+ * stale rows behind would make the next run skip every image of a record whose
+ * files no longer exist.
+ */
+export async function removeDownloadedImages(urls: string[]): Promise<void> {
+  if (urls.length === 0) return;
+  await initHistoryDatabase();
+  const d = getDb();
+  for (const url of urls) {
+    try {
+      await d.execute('DELETE FROM downloaded_images WHERE url = ?;', [url]);
+    } catch {
+      // Best-effort: a failed ledger cleanup only risks a future "skip".
+    }
+  }
 }
 
 /** Clear all history (does NOT touch downloaded files). */
