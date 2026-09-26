@@ -536,8 +536,13 @@ const HistoryRow: React.FC<{
         {/* Full title, wrapping over as many lines as needed (no truncation). */}
         <Text style={styles.rowTitle}>{record.title}</Text>
         <Text style={styles.rowMeta} numberOfLines={1}>
-          {t('history.itemCount', { count: record.imageCount })} ·{' '}
-          {formatLocalTime(record.createdAt)}
+          {record.failedCount > 0
+            ? t('history.itemCountPartial', {
+                success: record.successCount,
+                total: record.imageCount,
+              })
+            : t('history.itemCount', { count: record.imageCount })}{' '}
+          · {formatLocalTime(record.createdAt)}
         </Text>
       </View>
       <View

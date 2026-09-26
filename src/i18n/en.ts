@@ -173,6 +173,9 @@ export const en: Record<ZhKeys, string> = {
   'history.yesterday': 'Yesterday',
   'history.groupFormat': '{date}',
   'history.itemCount': '{count} images',
+  // Shown instead of itemCount when the run had failures, so a partly-failed
+  // record doesn't look like a fully successful one.
+  'history.itemCountPartial': '{success}/{total} images',
   'history.status.done': 'Done',
   'history.status.partial': 'Partial',
   'history.status.failed': 'Failed',

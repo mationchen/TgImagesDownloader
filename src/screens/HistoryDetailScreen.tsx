@@ -26,8 +26,6 @@ import {
 } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useThemedStyles, useTheme, type ThemeColors } from '../theme';
 import { getHistory, type HistoryRecord } from '../services/historyService';
 import {
@@ -36,10 +34,7 @@ import {
 } from '../services/nativeDownloader';
 import { EmptyState } from '../components/EmptyState';
 import { ZoomableImage } from '../components/ZoomableImage';
-import type {
-  RootStackParamList,
-  RootStackScreenProps,
-} from '../navigation/types';
+import type { RootStackScreenProps } from '../navigation/types';
 import { isSharedSaveFolder } from '../utils/saveDir';
 import {
   HISTORY_STATUS_LABEL_KEY,
@@ -83,9 +78,10 @@ function copyUrl(url: string): void {
  * History list; callers that only know a single id (e.g. the Home
  * duplicate-link alert) omit it and get a single, non-swipeable page.
  */
-export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
+export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
   const { id, ids } = route.params;
   const styles = useThemedStyles(createStyles);
+  const { colors } = useTheme();
   const { width } = useWindowDimensions();
   // Records imported from another install of the app reference images owned
   // by that install; reading them needs a media permission (Android). The
@@ -101,6 +97,111 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
 
   const initialIndex = Math.max(0, pageIds.indexOf(id));
 
+  // The title-bar actions act on whichever record the pager currently shows, so
+  // the index has to be tracked here (each RecordPage owns its own data load).
+  const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const [currentRecord, setCurrentRecord] = useState<HistoryRecord | null>(
+    null,
+  );
+  // Spinner while the article is being re-parsed: it fetches every page of the
+  // gallery, which can take a while on multi-page posts.
+  const [reparsing, setReparsing] = useState(false);
+
+  const currentId = pageIds[currentIndex] ?? id;
+
+  useEffect(() => {
+    let cancelled = false;
+    getHistory(currentId)
+      .then(record => {
+        if (!cancelled) setCurrentRecord(record);
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentRecord(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentId]);
+
+  const onReparse = useCallback(async () => {
+    if (!currentRecord || reparsing) return;
+    setReparsing(true);
+    try {
+      const article = await reparseRecord(currentRecord);
+      if (article) navigation.navigate('Preview', { article });
+    } finally {
+      setReparsing(false);
+    }
+  }, [currentRecord, reparsing, navigation]);
+
+  const onDelete = useCallback(() => {
+    if (!currentRecord) return;
+    confirmDeleteRecord(currentRecord, {
+      onReparsed: () => undefined,
+      // The record no longer exists: go back to the list, which reloads via the
+      // shared "history changed" flag.
+      onDeleted: () => navigation.goBack(),
+    });
+  }, [currentRecord, navigation]);
+
+  // Re-parse / delete live in the navigation title bar.
+  useEffect(() => {
+    navigation.setOptions({
+      headerRight: () =>
+        currentRecord ? (
+          <View style={styles.headerActions}>
+            <Pressable
+              onPress={() => {
+                onReparse().catch(() => undefined);
+              }}
+              disabled={reparsing}
+              accessibilityRole="button"
+              accessibilityLabel={t('history.reparseHint')}
+              hitSlop={6}
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              {reparsing ? (
+                <ActivityIndicator size="small" color={colors.headerTitle} />
+              ) : (
+                <Text style={styles.headerActionText}>🔄</Text>
+              )}
+            </Pressable>
+            <Pressable
+              onPress={onDelete}
+              accessibilityRole="button"
+              accessibilityLabel={t('history.delete')}
+              hitSlop={6}
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.headerActionText}>🗑</Text>
+            </Pressable>
+          </View>
+        ) : null,
+    });
+  }, [
+    navigation,
+    currentRecord,
+    reparsing,
+    onReparse,
+    onDelete,
+    styles,
+    colors.headerTitle,
+  ]);
+
+  const onPagerScrollEnd = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const index = Math.round(e.nativeEvent.contentOffset.x / width);
+      setCurrentIndex(Math.max(0, Math.min(pageIds.length - 1, index)));
+    },
+    [width, pageIds.length],
+  );
+
   return (
     <SafeAreaView style={styles.safe} edges={['left', 'right']}>
       <FlatList
@@ -110,6 +211,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route }) => {
         pagingEnabled
         showsHorizontalScrollIndicator={false}
         initialScrollIndex={initialIndex}
+        onMomentumScrollEnd={onPagerScrollEnd}
         getItemLayout={(_, index) => ({
           length: width,
           offset: width * index,
@@ -259,33 +361,6 @@ const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
   // Subscribe so meta labels re-render in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
-  const { colors } = useTheme();
-  const navigation =
-    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  // Spinner while the article is being re-parsed: it fetches every page of the
-  // gallery, which can take a while on multi-page posts.
-  const [reparsing, setReparsing] = useState(false);
-
-  const onReparse = useCallback(async () => {
-    if (reparsing) return;
-    setReparsing(true);
-    try {
-      const article = await reparseRecord(record);
-      if (article) navigation.navigate('Preview', { article });
-    } finally {
-      setReparsing(false);
-    }
-  }, [record, navigation, reparsing]);
-
-  const onDelete = useCallback(() => {
-    confirmDeleteRecord(record, {
-      onReparsed: () => undefined,
-      // The record no longer exists: go back to the list, which reloads via the
-      // shared "history changed" flag.
-      onDeleted: () => navigation.goBack(),
-    });
-  }, [record, navigation]);
-
   // Tapping the link opens a chooser instead of jumping straight to the
   // browser: the URL is long and often only needed for copying/sharing.
   const onUrlPress = useCallback(() => {
@@ -301,41 +376,8 @@ const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
 
   return (
     <View style={styles.header}>
-      <View style={styles.titleRow}>
-        {/* Full title: wraps over as many lines as the text needs. */}
-        <Text style={styles.title}>{record.title}</Text>
-        <View style={styles.headerActions}>
-          <Pressable
-            onPress={onReparse}
-            disabled={reparsing}
-            accessibilityRole="button"
-            accessibilityLabel={t('history.reparseHint')}
-            hitSlop={6}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              pressed && styles.pressed,
-            ]}
-          >
-            {reparsing ? (
-              <ActivityIndicator size="small" color={colors.primary} />
-            ) : (
-              <Text style={styles.actionBtnText}>🔄</Text>
-            )}
-          </Pressable>
-          <Pressable
-            onPress={onDelete}
-            accessibilityRole="button"
-            accessibilityLabel={t('history.delete')}
-            hitSlop={6}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text style={styles.actionBtnText}>🗑</Text>
-          </Pressable>
-        </View>
-      </View>
+      {/* Full title: wraps over as many lines as the text needs. */}
+      <Text style={styles.title}>{record.title}</Text>
       <Pressable onPress={onUrlPress} hitSlop={6}>
         <Text style={styles.url} numberOfLines={2}>
           {record.url}
@@ -596,19 +638,19 @@ function createStyles(c: ThemeColors) {
     loadingText: { color: c.textHint, fontSize: 13 },
     list: { paddingBottom: 24 },
     header: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
-    titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-    title: { flex: 1, fontSize: 18, fontWeight: '700', color: c.textPrimary },
-    /** Title-bar action icons (re-parse / delete), right of the title. */
-    headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-    actionBtn: {
-      width: 34,
-      height: 34,
-      borderRadius: 17,
-      backgroundColor: c.surface,
+    title: { fontSize: 18, fontWeight: '700', color: c.textPrimary },
+    /**
+     * Navigation title-bar action icons (re-parse / delete). Transparent so
+     * they sit cleanly on the coloured header background.
+     */
+    headerActions: { flexDirection: 'row', alignItems: 'center' },
+    headerActionBtn: {
+      width: 40,
+      height: 40,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    actionBtnText: { fontSize: 16, lineHeight: 20 },
+    headerActionText: { fontSize: 17 },
     url: { marginTop: 6, fontSize: 12, color: c.primary },
     metaRow: {
       flexDirection: 'row',

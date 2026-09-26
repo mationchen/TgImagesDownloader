@@ -171,6 +171,9 @@ export const zhCN = {
   'history.yesterday': '昨天',
   'history.groupFormat': '{date}',
   'history.itemCount': '{count} 张',
+  // Shown instead of itemCount when the run had failures, so a partly-failed
+  // record doesn't look like a fully successful one.
+  'history.itemCountPartial': '成功 {success}/{total} 张',
   'history.status.done': '完成',
   'history.status.partial': '部分失败',
   'history.status.failed': '失败',
