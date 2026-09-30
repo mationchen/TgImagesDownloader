@@ -24,6 +24,17 @@ export type BatchItem = {
   /** Incremental download progress while status === 'downloading'. */
   progress: { cur: number; total: number } | null;
   /**
+   * Set when this row is a local archive to extract instead of a URL to fetch
+   * ("解压压缩包"). `url` then carries the archive's display name so the row
+   * renders without any special casing.
+   */
+  archive?: {
+    /** SAF `content://` URI of the picked archive. */
+    uri: string;
+    /** File name as shown in the picker. */
+    name: string;
+  };
+  /**
    * Set when this URL already has a row in the history DB at load time
    * (most recent successful batch). The scheduler skips these by default;
    * the user can manually re-queue by tapping the row to clear the flag.

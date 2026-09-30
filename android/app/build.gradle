@@ -91,8 +91,8 @@ android {
         applicationId "com.acstd.tgimagesdownloader"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 8
-        versionName "1.0.8"
+        versionCode 9
+        versionName "1.0.9"
     }
     signingConfigs {
         debug {
@@ -136,4 +136,17 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // Archive reading for the "解压压缩包" import feature. Pure Java, so it
+    // works with Hermes/New Architecture without any extra native build steps.
+    //   - commons-compress: zip + 7z (random access via SeekableByteChannel,
+    //     which is required because a content:// archive has no file path)
+    //   - xz: the LZMA/LZMA2 codecs 7z archives rely on
+    implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.tukaani:xz:1.10")
+    // RAR reading (incl. RAR5, which the pure-Java junrar cannot do). Bundles
+    // libarchive built with the NDK; `readOpenFd` matches our content:// URIs.
+    implementation("me.zhanghai.android.libarchive:library:1.1.4")
+    // DocumentFile: safe child listing / navigation of a SAF tree folder.
+    implementation("androidx.documentfile:documentfile:1.0.1")
 }

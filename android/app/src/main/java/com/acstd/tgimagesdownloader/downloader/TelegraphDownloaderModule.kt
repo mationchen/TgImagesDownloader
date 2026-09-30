@@ -113,14 +113,23 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
 
       val mimeType = inferMimeType(safeFilename, source)
 
+      // Videos are stored in the video collection, under Movies/<app folder>
+      // (or Download/<app folder> when the user saves to Downloads).
+      val isVideo = mimeType.startsWith("video/", ignoreCase = true)
+
       // Compute the correct base path based on storageType so that images
       // land in the directory the JS side expects (Pictures vs Download).
-      val basePath = if (storageType == "downloads") BASE_RELATIVE_PATH_DOWNLOAD else BASE_RELATIVE_PATH
+      val basePath =
+          when {
+            storageType == "downloads" -> BASE_RELATIVE_PATH_DOWNLOAD
+            isVideo -> BASE_RELATIVE_PATH_VIDEO
+            else -> BASE_RELATIVE_PATH
+          }
 
       val resultUri: Uri =
           when {
             customTreeUri.isNotEmpty() -> saveToCustomTree(source, safeSubfolder, safeFilename, mimeType, customTreeUri)
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> saveOnAndroidQ(source, safeSubfolder, safeFilename, mimeType, basePath)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> saveOnAndroidQ(source, safeSubfolder, safeFilename, mimeType, basePath, isVideo)
             else -> saveOnAndroidLegacy(source, safeSubfolder, safeFilename, mimeType, basePath)
           }
 
@@ -292,6 +301,70 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Int) {}
+
+  /**
+   * Hand a saved media item to the system (gallery / video player).
+   *
+   * RN's `Linking.openURL` cannot be used here: it does not add
+   * FLAG_GRANT_READ_URI_PERMISSION, so the player would be denied read access
+   * to our `content://` URI. Resolves false when no app can handle it.
+   */
+  @ReactMethod
+  fun openMediaExternally(uri: String, mimeType: String, promise: Promise) {
+    try {
+      val intent =
+          Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(Uri.parse(uri), mimeType.ifEmpty { "video/*" })
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          }
+      val context = getCurrentActivity() ?: reactApplicationContext
+      context.startActivity(intent)
+      promise.resolve(true)
+    } catch (e: Throwable) {
+      promise.resolve(false)
+    }
+  }
+
+  /**
+   * Square thumbnail for a MediaStore item, cached in the app cache and
+   * returned as a `file://` URI so `<Image>` can render it.
+   *
+   * Video tiles need this because a video's `content://` URI cannot be decoded
+   * as an image. Resolves null on Android < 10 (no `loadThumbnail`) or when the
+   * thumbnail cannot be produced.
+   */
+  @ReactMethod
+  fun loadMediaThumbnail(uri: String, size: Int, promise: Promise) {
+    Thread {
+          try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+              promise.resolve(null)
+              return@Thread
+            }
+            val wanted = if (size > 0) size else 256
+            val dir = File(reactApplicationContext.cacheDir, "thumbs")
+            if (!dir.exists()) dir.mkdirs()
+            val target = File(dir, "${uri.hashCode().toString(16)}_$wanted.jpg")
+            if (!target.exists() || target.length() <= 0L) {
+              val bitmap =
+                  reactApplicationContext.contentResolver.loadThumbnail(
+                      Uri.parse(uri),
+                      android.util.Size(wanted, wanted),
+                      null,
+                  )
+              FileOutputStream(target).use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+              }
+              bitmap.recycle()
+            }
+            promise.resolve("file://${target.absolutePath}")
+          } catch (e: Throwable) {
+            promise.resolve(null)
+          }
+        }
+        .start()
+  }
 
   /**
    * Delete media entries by URI. Used by "删除记录和图片" in 下载记录详情.
@@ -713,12 +786,19 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       filename: String,
       mimeType: String,
       basePath: String,
+      isVideo: Boolean,
   ): Uri {
     val resolver: ContentResolver = reactApplicationContext.contentResolver
 
     val relativePath =
         if (subfolder.isEmpty()) basePath
         else "$basePath/$subfolder"
+
+    // Images and videos live in different MediaStore collections; only the
+    // Images one is browsed by `listGalleryImages`.
+    val collection =
+        if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
 
     val mediaDetails = ContentValues().apply {
       put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
@@ -728,7 +808,7 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     }
 
     val mediaUri =
-        resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, mediaDetails)
+        resolver.insert(collection, mediaDetails)
             ?: throw IOException(
                 "ContentResolver#insert returned null for RELATIVE_PATH=$relativePath"
             )
@@ -885,7 +965,24 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       "heic" -> "image/heic"
       "heif" -> "image/heif"
       "avif" -> "image/avif"
-      else -> "image/jpeg"
+      // Video (archives imported through 解压压缩包 can hold these).
+      "mp4",
+      "m4v" -> "video/mp4"
+      "mov" -> "video/quicktime"
+      "mkv" -> "video/x-matroska"
+      "webm" -> "video/webm"
+      "avi" -> "video/x-msvideo"
+      "wmv" -> "video/x-ms-wmv"
+      "flv" -> "video/x-flv"
+      "mpg",
+      "mpeg" -> "video/mpeg"
+      "3gp" -> "video/3gpp"
+      "ts" -> "video/mp2t"
+      // Unknown extension: ask the platform instead of silently claiming jpeg
+      // (that used to file every non-image into the Images collection).
+      else ->
+        android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            ?: "application/octet-stream"
     }
   }
 
@@ -905,6 +1002,8 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     private const val BASE_FOLDER = "TelegraphDownloader"
     private const val BASE_RELATIVE_PATH = "Pictures/$BASE_FOLDER"
     private const val BASE_RELATIVE_PATH_DOWNLOAD = "Download/$BASE_FOLDER"
+    /** Videos go to the video gallery, mirroring the Pictures album. */
+    private const val BASE_RELATIVE_PATH_VIDEO = "Movies/$BASE_FOLDER"
     private val BASE_RELATIVE_PATHS =
         listOf("Pictures/$BASE_FOLDER", "Download/$BASE_FOLDER")
 

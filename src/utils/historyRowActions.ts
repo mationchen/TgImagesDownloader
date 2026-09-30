@@ -1,6 +1,7 @@
 import { Alert } from 'react-native';
 import { t } from '../i18n';
 import {
+  markHistoryChanged,
   removeDownloadedImages,
   removeHistory,
   type HistoryRecord,
@@ -25,22 +26,14 @@ export interface HistoryRowActionHandlers {
 }
 
 /**
- * Set when a row is deleted from outside the list screen, so the list can
- * refresh when it next regains focus without reloading on every tab switch.
+ * The "history changed" flag lives in the history service now, because
+ * downloads and imports set it too (so 下载记录 can auto-refresh). Re-exported
+ * here to keep the existing import sites working.
  */
-let historyChanged = false;
-
-/** Record that history rows changed on another screen. */
-export function markHistoryChanged(): void {
-  historyChanged = true;
-}
-
-/** True exactly once after such a change; clears the flag. */
-export function consumeHistoryChanged(): boolean {
-  const changed = historyChanged;
-  historyChanged = false;
-  return changed;
-}
+export {
+  consumeHistoryChanged,
+  markHistoryChanged,
+} from '../services/historyService';
 
 /**
  * Re-parse a record's article.

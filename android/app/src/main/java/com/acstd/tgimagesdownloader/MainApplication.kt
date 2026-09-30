@@ -7,6 +7,7 @@ import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.acstd.tgimagesdownloader.appinfo.AppInfoPackage
+import com.acstd.tgimagesdownloader.archive.ArchivePackage
 import com.acstd.tgimagesdownloader.downloader.TelegraphDownloaderPackage
 import com.acstd.tgimagesdownloader.notifier.DownloadNotifierPackage
 import com.acstd.tgimagesdownloader.share.ShareIntentPackage
@@ -25,6 +26,7 @@ class MainApplication : Application(), ReactApplication {
           add(ShareIntentPackage())
           add(DownloadNotifierPackage())
           add(AppInfoPackage())
+          add(ArchivePackage())
         },
     )
   }

@@ -25,10 +25,13 @@ async function canReadOthersMedia(): Promise<boolean> {
   if (Platform.OS !== 'android') return true;
   try {
     if (Platform.Version >= 33) {
-      const full = await PermissionsAndroid.check(
+      const images = await PermissionsAndroid.check(
         PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES,
       );
-      if (full) return true;
+      const videos = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.READ_MEDIA_VIDEO,
+      );
+      if (images && videos) return true;
       // Android 14+ partial access: the user selected specific photos; the
       // selected ones are readable, so treat it as granted (tiles that stay
       // unreadable keep their red × and the prompt can be retried next launch).
@@ -65,7 +68,15 @@ export function useMediaReadPermission(): number {
           ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES
           : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
       try {
-        await PermissionsAndroid.request(perm);
+        if (Platform.Version >= 33) {
+          // Images and videos are separate permissions on Android 13+.
+          await PermissionsAndroid.requestMultiple([
+            PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES,
+            PermissionsAndroid.PERMISSIONS.READ_MEDIA_VIDEO,
+          ]);
+        } else {
+          await PermissionsAndroid.request(perm);
+        }
       } catch {
         // fall through to the re-check below
       }

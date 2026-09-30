@@ -320,6 +320,7 @@ export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
       now,
     ],
   );
+  markHistoryChanged();
 }
 
 /**
@@ -556,6 +557,7 @@ export async function removeHistory(id: number): Promise<void> {
   await initHistoryDatabase();
   const d = getDb();
   await d.execute('DELETE FROM history WHERE id = ?;', [id]);
+  markHistoryChanged();
 }
 
 /**
@@ -584,6 +586,29 @@ export async function clearHistory(): Promise<void> {
   await initHistoryDatabase();
   const d = getDb();
   await d.execute('DELETE FROM history;');
+}
+
+/* ------------------------------------------------------------------ */
+/* Cross-screen "history changed" flag                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Set whenever history rows change, so a list screen can refresh the next time
+ * it regains focus — after a download finishes in another tab, or after a
+ * delete on the detail page — without reloading on every tab switch.
+ */
+let historyChanged = false;
+
+/** Record that history rows changed. */
+export function markHistoryChanged(): void {
+  historyChanged = true;
+}
+
+/** True exactly once after a change; clears the flag. */
+export function consumeHistoryChanged(): boolean {
+  const changed = historyChanged;
+  historyChanged = false;
+  return changed;
 }
 
 /** Close the database (used for tests / teardown). */

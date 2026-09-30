@@ -121,6 +121,25 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
 - 涉及平台能力或系统 UI 的文案（如权限弹窗、系统分享），沿用系统 / 组件
   自带本地化，不需自行维护。
 
+### 10. 后台/长时进程必须显式可见且可由用户关闭
+
+当你在后台运行命令行启动的服务器端进程（例如 `dotnet run`、
+`dotnet HAO.RIZI.Api.exe`、`npx react-native start` / Metro、
+`npx react-native run-android` / `run-ios`、Gradle daemon、
+长时间 `npm test --watch` 等），必须**在独立的 PowerShell/终端窗口中启动**，
+并在执行后告知用户：
+
+1. 进程名 / 命令 / 端口 / 启动 URL（如 `http://127.0.0.1:5180/swagger`），
+   便于用户打开浏览器 / 客户端；
+2. 进程 PID（任务管理器 / `Get-NetTCPConnection` 可查），以及如何用
+   `Stop-Process -Id <pid> -Force` 或 `taskkill /PID <pid> /F` 关闭；
+3. 如果是 dev server（如 `npx react-native start`、`.NET` 监听 5180、
+   `ngrok` 等）必须同时提醒它会**持续占用该端口**直到用户主动停止，
+   未停止前端口可能不可复用；
+4. **禁止**让 opencode 在自己进程内静默持有长期 dev server / 守护进程——
+   一旦后端服务在 opencode 内部启动到后台，必须向用户确认后再决定是否
+   关闭，且默认不能跨回合继续占用。
+
 ---
 
 ## State of the project

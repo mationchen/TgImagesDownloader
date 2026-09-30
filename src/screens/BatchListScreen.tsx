@@ -34,7 +34,29 @@ import {
 import { listHistoryByUrls } from '../services/historyService';
 import { dedupeUrls } from '../utils/batchScheduler';
 import { confirmDownloadWithoutWifi } from '../utils/downloadNetworkGuard';
+import { ArchivePicker } from '../components/ArchivePicker';
+import {
+  archiveHistoryUrl,
+  importArchive,
+  type ArchiveImportReason,
+} from '../services/archiveImport';
+import {
+  inspectArchive,
+  isArchiveSupported,
+  subscribeArchiveProgress,
+  type PickedArchive,
+} from '../services/archiveService';
 import type { BatchItem, BatchItemStatus } from '../types/batch';
+
+/** Failure reason -> i18n key for archive rows. */
+const ARCHIVE_REASON_KEY = {
+  ENCRYPTED: 'archive.reason.encrypted',
+  NO_IMAGES: 'archive.reason.noImages',
+  TOO_LARGE: 'archive.reason.tooLarge',
+  TOO_MANY_ENTRIES: 'archive.reason.tooManyEntries',
+  UNREADABLE: 'archive.reason.unreadable',
+  UNSUPPORTED: 'archive.reason.unsupported',
+} as const satisfies Record<ArchiveImportReason, string>;
 
 /**
  * Batch URL-download flow:
@@ -58,6 +80,8 @@ export const BatchListScreen: React.FC = () => {
   const [running, setRunning] = useState(false);
   const [paused, setPaused] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
+  /** In-app archive browser (解压压缩包) visibility. */
+  const [showArchivePicker, setShowArchivePicker] = useState(false);
   /** URL whose row is currently parsing for a preview (spinner + press lock). */
   const [previewingUrl, setPreviewingUrl] = useState<string | null>(null);
 
@@ -187,6 +211,60 @@ export const BatchListScreen: React.FC = () => {
     pauseResumeRef.current.resumeWaiter = null;
   }, []);
 
+  /** Drop one row from the list (archives are removed by long-press). */
+  const removeItem = useCallback((index: number) => {
+    setItems(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  /** Row currently being extracted, so progress events land on the right row. */
+  const archiveRowRef = useRef<number | null>(null);
+
+  // Native extraction ticks (done/total) drive the row's progress bar.
+  useEffect(() => {
+    if (!isArchiveSupported()) return undefined;
+    return subscribeArchiveProgress(p => {
+      const index = archiveRowRef.current;
+      if (index == null) return;
+      updateItem(index, {
+        status: 'downloading',
+        detail: t('archive.progress', { done: p.done, total: p.total }),
+        progress: { cur: p.done, total: p.total },
+      });
+    });
+  }, [updateItem]);
+
+  /** Queue the archives chosen in the in-app browser. */
+  const handlePickArchives = useCallback(async (picked: PickedArchive[]) => {
+    if (picked.length === 0) return;
+    setShowSummary(false);
+    // Inspect each pick up-front so an archive that was already imported (even
+    // under a different file name) is marked "already imported" instead of
+    // being extracted again. Reading the central directory is cheap.
+    const rows: BatchItem[] = [];
+    for (const item of picked) {
+      const info = await inspectArchive(item.uri);
+      const fingerprint = info.ok ? info.fingerprint : undefined;
+      const existing = fingerprint
+        ? (await listHistoryByUrls([archiveHistoryUrl(fingerprint)])).get(
+            archiveHistoryUrl(fingerprint),
+          )
+        : undefined;
+      rows.push({
+        url: item.name,
+        status: existing ? 'skipped' : ('pending' as BatchItemStatus),
+        detail: existing
+          ? t('archive.alreadyImported', { count: existing.imageCount })
+          : '',
+        progress: null,
+        archive: { uri: item.uri, name: item.name },
+      });
+    }
+    setItems(prev => {
+      const seen = new Set(prev.map(it => it.archive?.uri).filter(Boolean));
+      return [...prev, ...rows.filter(r => !seen.has(r.archive?.uri))];
+    });
+  }, []);
+
   const runBatch = useCallback(async () => {
     if (running || items.length === 0) return;
     if (batchAbortRef.current) return;
@@ -232,6 +310,50 @@ export const BatchListScreen: React.FC = () => {
         }
         await waitIfPaused();
         if (signal.aborted) break;
+
+        // Archive rows: extract straight into the gallery instead of fetching a
+        // page and downloading its images.
+        const archive = items[i]?.archive;
+        if (archive) {
+          archiveRowRef.current = i;
+          updateItem(i, {
+            status: 'downloading',
+            detail: t('archive.extracting'),
+            progress: null,
+          });
+          try {
+            const result = await importArchive(archive.uri, archive.name);
+            if (result.reason) {
+              updateItem(i, {
+                status: 'failed',
+                detail: t(ARCHIVE_REASON_KEY[result.reason]),
+                progress: null,
+              });
+              failed += 1;
+            } else {
+              updateItem(i, {
+                status: result.failed > 0 ? 'failed' : 'done',
+                detail: t('batch.status.counts', {
+                  success: result.success,
+                  skipped: result.skipped,
+                  failed: result.failed,
+                }),
+                progress: null,
+              });
+              if (result.failed > 0) failed += 1;
+              else done += 1;
+            }
+          } catch {
+            updateItem(i, {
+              status: 'failed',
+              detail: t(ARCHIVE_REASON_KEY.UNREADABLE),
+              progress: null,
+            });
+            failed += 1;
+          }
+          archiveRowRef.current = null;
+          continue;
+        }
 
         updateItem(i, { status: 'parsing', detail: '', progress: null });
 
@@ -338,13 +460,21 @@ export const BatchListScreen: React.FC = () => {
 
   const handleStart = useCallback(() => {
     // A batch can move hundreds of megabytes: confirm first when the phone is
-    // on mobile data. If the check itself fails, never block the download.
+    // on mobile data. Archive rows extract locally, so they don't need the
+    // warning — only ask when the batch actually contains URL rows.
+    const hasUrlRows = items.some(it => !it.archive);
+    const proceed = () => runBatch().catch(() => undefined);
+    if (!hasUrlRows) {
+      proceed();
+      return;
+    }
+    // If the check itself fails, never block the download.
     confirmDownloadWithoutWifi()
       .catch(() => true)
       .then(ok => {
-        if (ok) runBatch().catch(() => undefined);
+        if (ok) proceed();
       });
-  }, [runBatch]);
+  }, [items, runBatch]);
 
   const handlePauseToggle = useCallback(() => {
     if (!running) return;
@@ -509,13 +639,22 @@ export const BatchListScreen: React.FC = () => {
           ? 'batch.status.failed'
           : 'batch.status.skipped';
       const label = t(labelKey, item.progress ?? {});
-      const isReQueueable = !!item.existing || item.status === 'skipped';
-      const isPreviewing = previewingUrl === item.url;
+      const isArchive = !!item.archive;
+      // Archive rows have no URL to preview; long-pressing removes them.
+      const isReQueueable =
+        !isArchive && (!!item.existing || item.status === 'skipped');
+      const isPreviewing = !isArchive && previewingUrl === item.url;
       return (
         <Pressable
-          onPress={() => openPreview(item, index)}
+          onPress={isArchive ? undefined : () => openPreview(item, index)}
           onLongPress={
-            isReQueueable && !running ? () => requeueItem(index) : undefined
+            isArchive
+              ? running
+                ? undefined
+                : () => removeItem(index)
+              : isReQueueable && !running
+              ? () => requeueItem(index)
+              : undefined
           }
           disabled={isPreviewing}
           style={({ pressed }) => [
@@ -557,6 +696,7 @@ export const BatchListScreen: React.FC = () => {
       openPreview,
       previewingUrl,
       running,
+      removeItem,
     ],
   );
 
@@ -565,12 +705,28 @@ export const BatchListScreen: React.FC = () => {
       <View style={styles.body}>
         <Text style={styles.intro}>{t('batch.intro')}</Text>
         {items.length === 0 ? (
-          <Pressable
-            onPress={handlePickFile}
-            style={({ pressed }) => [styles.pickBtn, pressed && styles.pressed]}
-          >
-            <Text style={styles.pickBtnText}>{t('batch.pickFile')}</Text>
-          </Pressable>
+          <View style={styles.pickRow}>
+            <Pressable
+              onPress={handlePickFile}
+              style={({ pressed }) => [
+                styles.pickBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.pickBtnText}>{t('batch.pickFile')}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setShowArchivePicker(true)}
+              style={({ pressed }) => [
+                styles.pickBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.pickBtnText}>
+                {t('archive.pickArchives')}
+              </Text>
+            </Pressable>
+          </View>
         ) : (
           <>
             <View style={styles.fileRow}>
@@ -587,6 +743,18 @@ export const BatchListScreen: React.FC = () => {
               >
                 <Text style={styles.repickBtnText}>
                   {t('batch.repickFile')}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setShowArchivePicker(true)}
+                style={({ pressed }) => [
+                  styles.repickBtn,
+                  pressed && styles.pressed,
+                ]}
+                disabled={running}
+              >
+                <Text style={styles.repickBtnText}>
+                  {t('archive.pickArchives')}
                 </Text>
               </Pressable>
             </View>
@@ -690,6 +858,15 @@ export const BatchListScreen: React.FC = () => {
           </Pressable>
         ) : null}
       </View>
+      {/* 解压压缩包: in-app browser (only archives are listed, and archives
+          imported before are marked as already done). */}
+      <ArchivePicker
+        visible={showArchivePicker}
+        onClose={() => setShowArchivePicker(false)}
+        onPick={picked => {
+          handlePickArchives(picked).catch(() => undefined);
+        }}
+      />
     </SafeAreaView>
   );
 };
@@ -699,7 +876,9 @@ function createStyles(c: ThemeColors) {
     safe: { flex: 1, backgroundColor: c.background },
     body: { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
     intro: { fontSize: 13, color: c.textSecondary, marginBottom: 12 },
+    pickRow: { flexDirection: 'row', gap: 10 },
     pickBtn: {
+      flex: 1,
       backgroundColor: c.primary,
       paddingVertical: 14,
       borderRadius: 8,

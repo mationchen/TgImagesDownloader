@@ -30,6 +30,7 @@ import { useThemedStyles, useTheme, type ThemeColors } from '../theme';
 import { getHistory, type HistoryRecord } from '../services/historyService';
 import {
   isDownloaderAvailable,
+  isVideoUri,
   TelegraphDownloader,
 } from '../services/nativeDownloader';
 import { EmptyState } from '../components/EmptyState';
@@ -69,6 +70,13 @@ function copyUrl(url: string): void {
   if (Platform.OS === 'android' && Platform.Version < 33) {
     ToastAndroid.show(t('history.link.copied'), ToastAndroid.SHORT);
   }
+}
+
+/** Hand a video to the system gallery / video player. */
+function playExternally(uri: string): void {
+  TelegraphDownloader?.openMediaExternally?.(uri, 'video/*').catch(
+    () => undefined,
+  );
 }
 
 /**
@@ -378,11 +386,13 @@ const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
     <View style={styles.header}>
       {/* Full title: wraps over as many lines as the text needs. */}
       <Text style={styles.title}>{record.title}</Text>
-      <Pressable onPress={onUrlPress} hitSlop={6}>
-        <Text style={styles.url} numberOfLines={2}>
-          {record.url}
-        </Text>
-      </Pressable>
+      {/^https?:/i.test(record.url) ? (
+        <Pressable onPress={onUrlPress} hitSlop={6}>
+          <Text style={styles.url} numberOfLines={2}>
+            {record.url}
+          </Text>
+        </Pressable>
+      ) : null}
       <View style={styles.metaRow}>
         <MetaChip
           label={t('history.detail.time', {
@@ -436,6 +446,50 @@ const DetailThumb: React.FC<{
   // written by an uninstalled build and is not readable), retry once with the
   // record's remote URL so the tile is still useful online.
   const [usingFallback, setUsingFallback] = useState(false);
+  const isVideo = isVideoUri(uri);
+  // Video URIs cannot be decoded by <Image>; ask MediaStore for a frame.
+  const [thumb, setThumb] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isVideo) return;
+    let cancelled = false;
+    TelegraphDownloader?.loadMediaThumbnail?.(uri, 256)
+      .then(path => {
+        if (!cancelled && path) setThumb(path);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [uri, isVideo]);
+
+  if (isVideo) {
+    // Tapping a video hands it to the system gallery/player, which can
+    // actually play it (the in-app viewer is image-only).
+    return (
+      <Pressable
+        onPress={() => playExternally(uri)}
+        style={({ pressed }) => [
+          styles.tile,
+          { width: size, height: size },
+          pressed && styles.tilePressed,
+        ]}
+      >
+        {thumb ? (
+          <Image
+            source={{ uri: thumb }}
+            style={styles.image}
+            resizeMode="cover"
+          />
+        ) : (
+          <View style={styles.tileVideo} />
+        )}
+        <View style={styles.tilePlayBadge}>
+          <Text style={styles.tilePlayText}>▶</Text>
+        </View>
+      </Pressable>
+    );
+  }
+
   const source = failed && fallbackUri && !usingFallback ? fallbackUri : uri;
   return (
     <Pressable
@@ -585,6 +639,29 @@ const ImageViewerPage: React.FC<{
   const styles = useThemedStyles(createStyles);
   const [failed, setFailed] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
+
+  // Videos can't be rendered by the image viewer, so offer the system player.
+  if (isVideoUri(uri)) {
+    return (
+      <View style={styles.viewerPageInner}>
+        <View style={styles.viewerErrorBox}>
+          <Text style={styles.videoHintText}>{t('history.detail.video')}</Text>
+          <Pressable
+            onPress={() => playExternally(uri)}
+            style={({ pressed }) => [
+              styles.retryBtn,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.retryText}>
+              {t('history.detail.openExternal')}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.viewerPageInner}>
       {failed ? (
@@ -694,6 +771,22 @@ function createStyles(c: ThemeColors) {
       backgroundColor: c.dangerBg,
     },
     tileFallbackText: { fontSize: 22, color: c.danger, fontWeight: '700' },
+    /** Video tile placeholder (before/without a MediaStore thumbnail). */
+    tileVideo: { flex: 1, backgroundColor: c.surfaceStrong },
+    tilePlayBadge: {
+      position: 'absolute',
+      top: '50%',
+      left: '50%',
+      width: 34,
+      height: 34,
+      marginTop: -17,
+      marginLeft: -17,
+      borderRadius: 17,
+      backgroundColor: 'rgba(0,0,0,0.55)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    tilePlayText: { fontSize: 14, color: '#fff', marginLeft: 2 },
     viewerRoot: { flex: 1, backgroundColor: '#000' },
     viewerHeader: {
       height: 52,
@@ -740,6 +833,14 @@ function createStyles(c: ThemeColors) {
       color: '#fff',
       fontSize: 15,
       marginBottom: 12,
+      textAlign: 'center',
+    },
+    /** Video notice inside the fullscreen viewer. */
+    videoHintText: {
+      color: '#fff',
+      fontSize: 17,
+      fontWeight: '600',
+      marginBottom: 14,
       textAlign: 'center',
     },
     retryBtn: {

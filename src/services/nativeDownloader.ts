@@ -94,8 +94,26 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
        * number actually removed; unsupported/foreign files are skipped.
        */
       deleteGalleryImages?(uris: string[]): Promise<number>;
+      /**
+       * Hand a saved media item to the system (gallery / video player),
+       * granting read access. Resolves false when nothing can handle it.
+       */
+      openMediaExternally?(uri: string, mimeType: string): Promise<boolean>;
+      /**
+       * Cached square thumbnail of a MediaStore item, as a `file://` URI (null
+       * when unavailable). Needed to render video tiles.
+       */
+      loadMediaThumbnail?(uri: string, size: number): Promise<string | null>;
     }
   | undefined;
+
+/**
+ * True when a saved URI points at a video in MediaStore. The collection
+ * segment is the reliable signal (`/video/media/` vs `/images/media/`).
+ */
+export function isVideoUri(uri: string): boolean {
+  return /\/video\/media\//.test(uri);
+}
 
 export function isDownloaderAvailable(): boolean {
   return TelegraphDownloader != null;

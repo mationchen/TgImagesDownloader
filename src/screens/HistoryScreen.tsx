@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Modal,
   Pressable,
+  RefreshControl,
   SectionList,
   StyleSheet,
   Text,
@@ -81,6 +82,8 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  /** Pull-to-refresh spinner (kept separate from the initial-load spinner). */
+  const [refreshing, setRefreshing] = useState(false);
 
   // Search / filter state. Both are applied server-side (in SQL) so the
   // pagination math stays correct even when hundreds/thousands of rows exist.
@@ -123,8 +126,10 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const reload = useCallback(
-    async (nextOffset: number) => {
-      setLoading(true);
+    async (nextOffset: number, opts?: { silent?: boolean }) => {
+      // `silent` keeps the current list on screen (pull-to-refresh) instead of
+      // swapping it for the full-screen spinner.
+      if (!opts?.silent) setLoading(true);
       setLoadError(false);
       const filter = buildFilter();
       try {
@@ -148,6 +153,16 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     },
     [buildFilter],
   );
+
+  // Pull-to-refresh: reload the newest page without blanking the list.
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await reload(0, { silent: true });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [reload]);
 
   // Initial load. Also re-runs immediately when the date / status filter changes.
   useEffect(() => {
@@ -479,6 +494,16 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
             </View>
           }
           contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                onRefresh().catch(() => undefined);
+              }}
+              colors={[themeColors.primary]}
+              tintColor={themeColors.textSecondary}
+            />
+          }
         />
       )}
 

@@ -73,5 +73,15 @@ class MainActivity : ReactActivity() {
         }
       }
     }
+    if (requestCode == 0x7746) {
+      val module = com.acstd.tgimagesdownloader.archive.ArchiveModule.getInstance()
+      module?.consumePickedTree(if (resultCode == Activity.RESULT_OK) data?.data else null)
+      return
+    }
+    if (requestCode == 0x7747) {
+      val module = com.acstd.tgimagesdownloader.archive.ArchiveModule.getInstance()
+      module?.consumePickedArchives(if (resultCode == Activity.RESULT_OK) data else null)
+      return
+    }
   }
 }
