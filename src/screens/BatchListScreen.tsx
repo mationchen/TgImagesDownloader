@@ -891,8 +891,11 @@ function createStyles(c: ThemeColors) {
       alignItems: 'center',
       justifyContent: 'space-between',
       marginBottom: 8,
+      // Keep 「重新选择」 and 「选择压缩包」 visually separated; the label uses
+      // flex: 1 so the gap is purely between the two buttons.
+      gap: 10,
     },
-    fileLabel: { flex: 1, fontSize: 13, color: c.textPrimary, marginRight: 8 },
+    fileLabel: { flex: 1, fontSize: 13, color: c.textPrimary },
     repickBtn: {
       paddingHorizontal: 12,
       paddingVertical: 6,

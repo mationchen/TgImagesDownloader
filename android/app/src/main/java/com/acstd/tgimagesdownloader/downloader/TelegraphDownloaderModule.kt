@@ -978,11 +978,17 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
       "mpeg" -> "video/mpeg"
       "3gp" -> "video/3gpp"
       "ts" -> "video/mp2t"
-      // Unknown extension: ask the platform instead of silently claiming jpeg
-      // (that used to file every non-image into the Images collection).
-      else ->
-        android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
-            ?: "application/octet-stream"
+      // Unknown extension: ask the platform, but never let it resolve to a
+      // non-media type. The web download path only ever saves images, and the
+      // Images collection rejects anything outside `image/*` — so an unknown
+      // or empty extension must still claim an image type.
+      else -> {
+        val guessed =
+            android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+        if (guessed != null && (guessed.startsWith("image/") || guessed.startsWith("video/")))
+            guessed
+        else "image/jpeg"
+      }
     }
   }
 
