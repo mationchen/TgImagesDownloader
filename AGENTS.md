@@ -140,6 +140,21 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
    一旦后端服务在 opencode 内部启动到后台，必须向用户确认后再决定是否
    关闭，且默认不能跨回合继续占用。
 
+### 11. Shell 中文输出编码（避免乱码）
+
+本机 Windows 控制台代码页是 **936（GBK）**，而 opencode 按 **UTF-8** 解码命令输出，
+因此把中文直接打到 stdout 会出现乱码（如 `δ��Forewise`）。必须遵守：
+
+1. **Python 一律加 `-X utf8`**（或先设 `$env:PYTHONIOENCODING='utf-8'`）。
+2. **PowerShell 输出中文**时：先执行
+   `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`，并且中文**必须经**
+   `| ForEach-Object { [Console]::Out.WriteLine($_) }` 输出 —— 只设编码对
+   `Write-Output` / `Write-Host` / 裸字符串**无效**（已实测）。
+3. 中文内容较多时，**优先写入 UTF-8 文件，再用 read 工具查看**。
+4. **不要**用 `Select-String` / `Get-Content` / Python 默认编码把中文直接打印到 stdout。
+5. `git status` 的中文路径被转义成八进制属正常现象，不是乱码。
+
+
 ---
 
 ## State of the project
