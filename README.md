@@ -1,103 +1,123 @@
-<<<<<<< HEAD
-# ImagesBatchDownloader
-网页图片批量下载工具
-为LSP开发的网页链接的中有一大堆图片的下载工具
-=======
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# 网页图片批量下载器（TgImagesDownloader）
 
-# Getting Started
+把「一个网页里的一大堆图片」一次性下载进手机相册的 Android App。
+基于 React Native 开发，除批量下载外还支持**下载记录管理**与**本地压缩包解压导入**。
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+| 项 | 值 |
+|---|---|
+| 应用名 | 网页图片批量下载器（debug 版显示为「网页图片批量下载器 Debug」，方便区分） |
+| 包名 | `com.acstd.tgimagesdownloader`（release 变体为 `… .release`，可与调试版共存） |
+| 当前版本 | 1.0.10（versionCode 10） |
+| 平台 | Android 优先；iOS 暂为 no-op |
 
-## Step 1: Start Metro
+## 功能
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+### 1. 批量下载
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+- 粘贴一个或多个网页链接，逐个解析出图片并下载；也可用「选择 url.txt」批量导入
+- 已下载过的链接 / 图片自动跳过，可一键重新排队
+- 支持多站点适配器（`src/services/adapters`）与图片地址解析器（`src/services/resolvers`）
+- 进度可见：暂停 / 继续 / 跳过当前 / 取消全部
+- 后台保活：前台服务 + WakeLock / WifiLock + JS 心跳，切到后台继续下载
+- 未连接 Wi-Fi 时下载前给出提示
 
-```sh
-# Using npm
-npm start
+### 2. 下载记录
 
-# OR using Yarn
-yarn start
+- 列表：状态筛选、日期筛选、下拉刷新；下载完成后切回该页会自动刷新
+- 有失败时显示「成功 X / 总数 Y」
+- 详情页：图片网格、大图查看（可缩放）、左右滑动切换相邻记录
+- 支持「重新解析」（链接失效时重跑）与「删除」（可选择连带删除相册文件）
+
+### 3. 解压压缩包导入（本地）
+
+- 批量下载页「选择压缩包」进入**应用内压缩包浏览页**
+  - 只列出压缩包；支持按名称 / 时间排序、已解压标记、一键隐藏已解压项
+  - 首次需授权一次目录：系统禁止授权 `Download` 根目录，请选里面的子文件夹
+- 支持格式：**zip / 7z / tar / tar.gz(.tgz) / rar（含 RAR5）/ cbz / cbr**
+- 按**内容指纹**去重：同一个包改名后再选（`xxx.zip` / `xxx (1).zip`）会被识别为已解压
+- 解压结果统一放到共享目录，**不建任何子目录**（避免相册自动生成大量相簿）
+- 归档内的**视频**会导入视频相册，详情页显示首帧缩略图，点击调用系统播放器播放
+- 加密包、损坏包、超大包（> 4 GB）与条目过多（> 2 万）都会给出明确原因
+
+### 4. 其他
+
+- 多语言：简体中文（默认）/ English
+- 设置：保存位置（Pictures / Download / 自定义 SAF 目录）、命名规则、并发数、重试次数
+- 隐私政策页
+
+## 技术栈
+
+| 项 | 选型 |
+|---|---|
+| 框架 | React Native 0.87.1 + React 19.2.3（Hermes + New Architecture） |
+| 语言 | TypeScript 6 |
+| 导航 | `@react-navigation`（bottom-tabs + native-stack） |
+| 本地存储 | `@op-engineering/op-sqlite`（SQLite，schema 按版本号迁移） |
+| 下载 | `react-native-blob-util` + 原生 OkHttp 模块 |
+| 相册 | `@react-native-camera-roll/camera-roll` + 原生 MediaStore 模块 |
+| 压缩包 | `commons-compress` + `xz`（zip / 7z / tar）、`libarchive`（RAR5） |
+| 国际化 | `src/i18n`（轻量字典，统一走 `t(key)`） |
+
+## 目录结构
+
+```
+src/
+  app/          应用外壳
+  components/   通用组件（含 ArchivePicker 压缩包浏览页）
+  constants/    常量与默认配置
+  i18n/         多语言字典（zh-CN / en）
+  navigation/   路由（底部 Tab + 根 Stack）
+  screens/      页面
+  services/     业务服务（解析 / 下载 / 记录 / 压缩包 / 设置）
+  store/        全局状态
+  theme/        主题与配色
+  types/        类型定义
+  utils/        工具函数
+android/        Android 原生工程（Kotlin 模块在 app/src/main/java/...）
+__tests__/      Jest 单元测试
+开发相关资源/    指令日志等开发资料（不参与构建）
 ```
 
-## Step 2: Build and run your app
-
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+## 开发命令
 
 ```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+npm start                # 启动 Metro（占用 8081，建议在独立终端）
+npm run android          # 构建并安装 debug 版
+npm run ios              # iOS：首次需 bundle install && bundle exec pod install
+npm run lint             # ESLint
+npm test                 # Jest
+npx tsc --noEmit         # 类型检查（没有独立 npm script）
+npx prettier --write .   # 格式化
 ```
 
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+构建 release：
 
 ```sh
-bundle install
+cd android
+.\gradlew assembleRelease                              # 三个架构
+.\gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a   # 只要 arm64，本地调试更快
 ```
 
-Then, and every time you update your native dependencies, run:
+产物在 `android/app/build/outputs/apk/release/`。
 
-```sh
-bundle exec pod install
-```
+## 发布流程
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+1. 改 `android/app/build.gradle` 里的 `versionCode` / `versionName`
+2. `.\gradlew assembleRelease`
+3. `git add -A` → `git commit -m "…"` → `git push origin master`
+4. `git tag vX.Y.Z` → `git push origin vX.Y.Z`
+5. `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file <notes> <三个 APK>`
 
-```sh
-# Using npm
-npm run ios
+## 注意事项
 
-# OR using Yarn
-yarn ios
-```
+- **Android 权限**：Android 13+ 想读相册里由其他应用创建的图片 / 视频，需要
+  `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO`，详情页会按需申请。
+- **iOS**：目前按 no-op 惯例处理，原生能力集中在 Android 侧实现。
+- **数据库迁移**：`historyService` 的 schema 按版本号逐级累加迁移，改动前先读
+  `AGENTS.md` 第 4 条。
+- **共享目录**：所有下载与解压结果默认落在 `Pictures/TelegraphDownloader`
+  （视频在 `Movies/TelegraphDownloader`），且不建子目录。
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+---
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
->>>>>>> 2026年9月2日，新建项目
+更细的开发约定（全局规则、i18n、数据库迁移、后台进程、提交习惯等）见 `AGENTS.md`。

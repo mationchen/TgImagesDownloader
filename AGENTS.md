@@ -154,19 +154,57 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
 4. **不要**用 `Select-String` / `Get-Content` / Python 默认编码把中文直接打印到 stdout。
 5. `git status` 的中文路径被转义成八进制属正常现象，不是乱码。
 
+### 12. 「总结工作 + 提交 git」的标准流程
+
+当用户说**「总结一下今天的工作，我要提交 git」**（或类似措辞：「总结工作要提交 git」
+「准备提交 git」「写个提交信息」）时，**立刻照做，不要反问**，按以下步骤执行：
+
+1. **读指令日志**：读取 `开发相关资源/历史迭代指令汇总.md` —— 它按第 7 条记着用户
+   每一条原始指令，是「这段时间到底干了什么」最可靠的来源。
+2. **用 git 定时间窗口**：`git log -1 --format=%cI` 取上次提交的时间，只汇总
+   **该时间之后到现在**的指令与产出；上次提交说明里写过的不要重复。
+3. **写 ≤100 字的中文总结**：写「做了什么 + 修了什么 + 版本变化」，
+   **总字数控制在一百个字符以内**；沿用本项目格式 `yyyy年M月d日，<摘要>`。
+4. **给出可直接复制的提交命令**（`git add -A` → `git commit -m "…"` →
+   `git push origin master`）。**不要替用户执行 `git commit`**，除非用户明确说
+   「你提交」。注意本机 git 配了 `http.proxy=127.0.0.1:7897`，代理没起时 push 会报
+   `Failed to connect to github.com:443 over proxy`，用
+   `git -c http.proxy= -c https.proxy= push origin master` 绕过。
+5. **涉及发版时补上发布命令**：`git tag vX.Y.Z` + `git push origin vX.Y.Z` +
+   `gh release create vX.Y.Z`（附 `app-arm64-v8a-release.apk`、
+   `app-armeabi-v7a-release.apk`、`app-x86_64-release.apk` 三个架构）。
+6. **同步更新 `README.md`**：总结里提到的功能 / 版本变化，如果 README 有对应描述
+   （特性清单、版本号、目录结构、命令），一并改掉，保持文实相符。
+
+> 依据是「指令日志 + git 区间」这两份可核对的事实，**不要凭记忆写摘要**。
+> 通用部分（触发语、代理绕过、不替用户提交）另见本机全局 `AGENTS.md` 第八节。
+
 
 ---
 
 ## State of the project
 
-This is a fresh React Native template — `App.tsx` still renders the stock
-`<NewAppScreen />` from `@react-native/new-app-screen`. There is no app code,
-no `src/` directory, and no feature logic. Any real work starts by replacing
-`App.tsx` (or introducing a `src/` layout). There is no existing
-domain code to extend or follow as a pattern.
+A shipped Android app (release **1.0.10**, `versionCode 10`): a web image batch
+downloader, plus a download-history manager and a local archive import feature.
+`README.md` is this project's own documentation — read it first for features,
+commands, layout and the release flow.
 
-No prior agent / cursor / copilot / claude instruction files exist. README.md
-is the upstream RN bootstrap README and should not be treated as project docs.
+Source lives under `src/` (`screens` / `services` / `components` / `store` /
+`theme` / `i18n` / `navigation` / `utils` / `types`). Native Kotlin modules sit
+in `android/app/src/main/java/com/acstd/tgimagesdownloader/` (`downloader`,
+`archive`, `notifier`, `share`, `appinfo`) and are registered in
+`MainApplication.kt`. Date-stamped instruction history and other dev material
+live in `开发相关资源/` — per rule 8, do not read it, except for the rule 7 log.
+
+Feature areas:
+
+- 批量下载 — parse a page, download its images to the gallery, with a foreground
+  service + wake/wifi locks keeping long batches alive in the background.
+- 下载记录 — status/date filters, pull-to-refresh, detail grid + fullscreen
+  viewer, re-parse, delete (optionally removing the saved files too).
+- 解压压缩包 — in-app archive browser (archives only, sort / filter / imported
+  badge) importing zip / 7z / tar / rar (incl. RAR5), de-duplicated by content
+  fingerprint; videos go to the video gallery and open in the system player.
 
 ## Stack (pinned, recent — do not "update" to older defaults)
 
