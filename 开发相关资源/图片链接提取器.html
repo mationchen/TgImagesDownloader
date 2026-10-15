@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>图片链接提取器</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --line:#262b36; --fg:#e6e9ef;
+    --dim:#98a2b3; --accent:#4c8dff; --ok:#3fb950; --err:#f85149; --warn:#d29922;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:20px 20px 60px; background:var(--bg); color:var(--fg);
+    font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  }
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:19px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:13px;margin:0 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+  .card > h2{font-size:13px;margin:0 0 12px;color:var(--dim);font-weight:600;letter-spacing:.5px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .row + .row{margin-top:10px}
+  input[type=text],select,textarea{
+    background:#0b0d11;color:var(--fg);border:1px solid var(--line);
+    border-radius:7px;padding:8px 10px;font:inherit;outline:none;max-width:100%;
+  }
+  input[type=text]{flex:1 1 260px;min-width:0}
+  input[type=text]:focus,textarea:focus,select:focus{border-color:var(--accent)}
+  button{
+    background:#232936;color:var(--fg);border:1px solid var(--line);
+    border-radius:7px;padding:8px 14px;font:inherit;cursor:pointer;white-space:nowrap;
+  }
+  button:hover{background:#2b323f}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover{filter:brightness(1.1)}
+  button:disabled{opacity:.5;cursor:default}
+  textarea{width:100%;resize:vertical;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.5}
+  #source{height:110px;margin-top:10px}
+  #out{height:320px}
+  .mono{font-family:ui-monospace,Consolas,"Courier New",monospace}
+
+  /* 命令行代码块：保持单行可复制，窄屏横向滚动而不是硬折断 */
+  .cmd{
+    background:#0b0d11;border:1px solid var(--line);border-radius:7px;
+    padding:10px 12px;margin:10px 0 0;
+    white-space:pre;overflow-x:auto;
+    font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12.5px;
+    color:#c8d3e0;line-height:1.55;
+  }
+
+  /* 推荐路径提示 */
+  .tip{font-size:12.5px;color:var(--dim);margin:8px 0 0}
+  .tip b{color:var(--fg)}
+
+  /* 输出模式（单选） */
+  .modes{display:flex;flex-wrap:wrap;gap:10px 22px;padding-bottom:13px;margin-bottom:13px;
+         border-bottom:1px dashed var(--line)}
+  .radio{
+    display:inline-flex;align-items:center;gap:7px;cursor:pointer;user-select:none;
+    font-size:13.5px;color:var(--fg);white-space:nowrap;
+  }
+  .radio input{accent-color:var(--accent);margin:0;flex:none}
+  .radio .hint{color:var(--dim);font-size:12.5px}
+
+  /* 复选框区：只有 checkbox，靠 flex-wrap 自动换行，不会挤压文字 */
+  .opts{display:flex;flex-wrap:wrap;gap:9px 20px}
+  .opts.disabled{opacity:.42;pointer-events:none}
+  .chk{
+    display:inline-flex;align-items:center;gap:7px;white-space:nowrap;
+    font-size:13px;color:var(--dim);cursor:pointer;user-select:none;
+  }
+  .chk input{accent-color:var(--accent);margin:0;flex:none}
+  .chk:hover{color:var(--fg)}
+
+  /* 带输入框的设置项：标签在上、输入框在下，宽度独立，不会串位 */
+  .fields{display:flex;flex-wrap:wrap;gap:12px;margin-top:14px;
+          border-top:1px dashed var(--line);padding-top:14px}
+  .field{display:flex;flex-direction:column;gap:5px;font-size:12.5px;color:var(--dim);flex:0 1 auto}
+  .field input{flex:none;width:230px}
+  .field.grow{flex:1 1 260px}
+  .field.grow input{width:100%}
+
+  .status{margin-top:10px;font-size:13px;min-height:20px;word-break:break-word}
+  .status.ok{color:var(--ok)} .status.err{color:var(--err)} .status.info{color:var(--dim)}
+  details.alt{margin-top:14px;border-top:1px dashed var(--line);padding-top:12px}
+  summary{cursor:pointer;color:var(--accent);font-size:13px}
+  .count{font-size:12.5px;color:var(--dim)}
+  .count b{color:var(--fg);font-size:15px}
+  code{background:#0b0d11;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px}
+  label.file{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--dim)}
+  label.file > span{white-space:nowrap}
+  label.file input{color:var(--dim);font-size:12.5px;max-width:100%}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>图片链接提取器</h1>
+<p class="sub">从一个网页里提取所有图片地址，<b>一行一个</b>，可直接复制或存成 .txt。</p>
+
+<!-- ================= ① 目标网页 ================= -->
+<section class="card">
+  <h2>① 目标网页</h2>
+  <div class="row">
+    <input type="text" id="url" value="https://everia.club/page/5/" placeholder="https://example.com/page/5/">
+    <button class="primary" id="copyCmdBtn">复制下载命令</button>
+  </div>
+  <pre class="cmd" id="curlCmd"></pre>
+  <p class="tip">
+    在 <b>PowerShell</b> 里粘贴执行 → <code>page.html</code> 会存到本工具所在目录；
+    然后到 ② 里选中这个文件即可。
+    <br>本机没开代理时，把命令里的 <code>-x http://127.0.0.1:7897</code> 删掉。
+  </p>
+</section>
+
+<!-- ================= ② 拿到源码 ================= -->
+<section class="card">
+  <h2>② 拿到网页源码</h2>
+  <div class="row">
+    <label class="file"><span>选择本地文件（.html / .htm / .txt）</span>
+      <input type="file" id="file" accept=".html,.htm,.txt,.php">
+    </label>
+    <button id="pasteBtn">📋 读取剪贴板里的源码</button>
+  </div>
+  <textarea id="source" spellcheck="false" placeholder="也可以把源码直接粘贴到这里（浏览器里 Ctrl+U 看源码 → Ctrl+A 全选 → Ctrl+C）"></textarea>
+  <div class="row">
+    <button class="primary" id="parseSourceBtn">解析并提取</button>
+    <span class="count" id="sourceInfo"></span>
+  </div>
+
+  <details class="alt">
+    <summary>方式 B：直接填网址抓取（需先启动本机「取页服务」，或走公共 CORS 代理）</summary>
+    <div class="row">
+      <label class="chk">通道
+        <select id="proxy">
+          <option value="http://127.0.0.1:8787/?url=">本机取页服务（推荐）</option>
+          <option value="https://api.allorigins.win/raw?url=">allorigins（公共，需浏览器直连）</option>
+          <option value="">直连（同域页面可用）</option>
+          <option value="__custom__">自定义…</option>
+        </select>
+      </label>
+      <input type="text" id="proxyCustom" placeholder="自定义前缀，例如 http://127.0.0.1:8787/?url=" style="display:none">
+      <button class="primary" id="fetchBtn">抓取网页</button>
+      <button id="pingBtn">检测取页服务</button>
+    </div>
+    <div class="status info" id="fetchStatus">正在检测取页服务…</div>
+    <p class="tip">
+      取页服务是什么：浏览器不允许网页直接抓别的站点（同源策略），公共 CORS 代理又基本都失效了，
+      所以在<b>本机起一个极小的中继</b>。启动方式：双击
+      <code>开发相关资源\启动取页服务.cmd</code>（会占用 <code>127.0.0.1:8787</code>，
+      用 Ctrl+C 或关窗口即可停止）。
+    </p>
+  </details>
+</section>
+
+<!-- ================= ③ 提取设置 ================= -->
+<section class="card">
+  <h2>③ 输出模式与提取设置</h2>
+
+  <div class="modes">
+    <label class="radio"><input type="radio" name="mode" value="link" checked>
+      图片的跳转链接 <span class="hint">（点图片后跳转到的那个页面）</span></label>
+    <label class="radio"><input type="radio" name="mode" value="image">
+      图片地址 <span class="hint">（图片文件本身的 URL）</span></label>
+    <label class="radio"><input type="radio" name="mode" value="anchor">
+      全部链接 <span class="hint">（页面里所有 a[href]，不限图片）</span></label>
+  </div>
+
+  <p class="tip" id="modeHint"></p>
+
+  <div class="opts" id="imageOpts" style="margin-top:12px">
+    <label class="chk"><input type="checkbox" id="optLazy" checked> 懒加载属性（data-src 等）</label>
+    <label class="chk"><input type="checkbox" id="optSrcset" checked> srcset / picture</label>
+    <label class="chk"><input type="checkbox" id="optAnchor" checked> 链接指向图片（a[href]）</label>
+    <label class="chk"><input type="checkbox" id="optCss" checked> CSS 背景图</label>
+    <label class="chk"><input type="checkbox" id="optOg" checked> og:image / twitter:image</label>
+    <label class="chk"><input type="checkbox" id="optDedupe" checked> 去重</label>
+    <label class="chk"><input type="checkbox" id="optStripSize"> 还原原图（去掉 -300x200 尺寸后缀）</label>
+    <label class="chk"><input type="checkbox" id="optKeyword" checked> 过滤 logo/icon/avatar 等</label>
+    <label class="chk"><input type="checkbox" id="optTiny" checked> 过滤小图</label>
+  </div>
+  <div class="fields" id="imageFields">
+    <label class="field">
+      <span>只保留这些扩展名（逗号分隔）</span>
+      <input type="text" id="optExt" value="jpg,jpeg,png,webp,gif,avif,bmp,svg">
+    </label>
+    <label class="field">
+      <span>最小边长（px）</span>
+      <input type="text" id="optMin" value="200">
+    </label>
+    <label class="field grow">
+      <span>排除关键词（逗号分隔）</span>
+      <input type="text" id="optBlack" value="logo,icon,avatar,sprite,emoji,gravatar,placeholder,blank,spacer,loading,1x1">
+    </label>
+  </div>
+  <div class="row" style="margin-top:14px">
+    <button class="primary" id="reparseBtn">按当前设置重新提取</button>
+    <span class="count">改完设置点这里即可，不用重新抓取。</span>
+  </div>
+</section>
+
+<!-- ================= ④ 结果 ================= -->
+<section class="card">
+  <h2>④ 结果</h2>
+  <div class="row">
+    <span class="count">共 <b id="count">0</b> 条</span>
+    <button id="copyBtn">复制全部</button>
+    <button id="dlBtn">下载 .txt</button>
+    <button id="clearBtn">清空</button>
+  </div>
+  <textarea id="out" spellcheck="false" placeholder="提取结果会出现在这里，一行一个地址"></textarea>
+</section>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var lastHtml = '';
+  var lastBase = '';
+  var results = [];
+
+  /* ------------------------------------------------------------------ */
+  /* 工具函数                                                            */
+  /* ------------------------------------------------------------------ */
+
+  function setStatus(text, kind) {
+    var el = $('fetchStatus');
+    el.textContent = text;
+    el.className = 'status ' + (kind || 'info');
+  }
+
+  function setInfo(text) { $('sourceInfo').textContent = text; }
+
+  function splitList(value) {
+    return String(value || '').split(/[,，\s]+/)
+      .map(function (s) { return s.trim().toLowerCase(); })
+      .filter(Boolean);
+  }
+
+  /** srcset="a.jpg 1x, b.jpg 2x" → ["a.jpg","b.jpg"] */
+  function parseSrcset(value) {
+    if (!value) return [];
+    return String(value).split(',')
+      .map(function (part) { return part.trim().split(/\s+/)[0]; })
+      .filter(Boolean);
+  }
+
+  function isHttp(u) { return /^https?:\/\//i.test(u); }
+
+  /** 相对地址 → 绝对地址；data:/blob: 之类直接丢弃 */
+  function absolutize(raw, base) {
+    if (!raw) return null;
+    var u = String(raw).trim().replace(/^['"]|['"]$/g, '');
+    if (!u) return null;
+    if (/^(data|blob|javascript|mailto|tel|about|chrome):/i.test(u)) return null;
+    if (/^\/\//.test(u)) u = (base ? base.split(':')[0] : 'https') + ':' + u;
+    if (/^https?:\/\//i.test(u)) return u;
+    try { return new URL(u, base || location.href).href; } catch (e) { return null; }
+  }
+
+  function extOf(u) {
+    var p;
+    try { p = new URL(u).pathname.toLowerCase(); } catch (e) { p = u.toLowerCase(); }
+    var m = p.match(/\.([a-z0-9]{2,5})$/);
+    return m ? m[1] : '';
+  }
+
+  /** WordPress 等常见的缩略图后缀：foo-300x200.jpg → foo.jpg */
+  function stripSize(u) {
+    try {
+      var url = new URL(u);
+      url.pathname = url.pathname.replace(/-\d{2,4}x\d{2,4}(?=\.[a-z0-9]{2,5}$)/i, '');
+      return url.href;
+    } catch (e) {
+      return u.replace(/-\d{2,4}x\d{2,4}(?=\.[a-z0-9]{2,5}$)/i, '');
+    }
+  }
+
+  function urlsFromCss(text) {
+    var out = [], re, m;
+    if (!text) return out;
+    re = /url\(\s*(?:(['"])(.*?)\1|([^)'"]+))\s*\)/gi;
+    while ((m = re.exec(text)) !== null) {
+      var v = (m[2] || m[3] || '').trim();
+      if (v) out.push(v);
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 输出模式                                                            */
+  /* ------------------------------------------------------------------ */
+
+  function currentMode() {
+    var el = document.querySelector('input[name="mode"]:checked');
+    return el ? el.value : 'link';
+  }
+
+  /** 图片外层链接 / 页面全部链接 */
+  function linksFrom(doc, base, mode) {
+    var out = [];
+    if (mode === 'link') {
+      // 每个 <img> 往上找最近的 <a href>，就是「点图片跳转到的地址」
+      doc.querySelectorAll('img').forEach(function (img) {
+        var a = null;
+        try { a = img.closest('a[href]'); } catch (e) { a = null; }
+        if (!a) return;
+        var abs = absolutize(a.getAttribute('href'), base);
+        if (abs && isHttp(abs)) out.push(abs);
+      });
+    } else {
+      doc.querySelectorAll('a[href]').forEach(function (a) {
+        var abs = absolutize(a.getAttribute('href'), base);
+        if (abs && isHttp(abs)) out.push(abs);
+      });
+    }
+    return out;
+  }
+
+  /** 链接模式只做去重：链接不是图片文件，扩展名/尺寸/关键词过滤都不适用 */
+  function filterLinks(list) {
+    var dedupe = $('optDedupe').checked;
+    var seen = {}, out = [];
+    list.forEach(function (u) {
+      if (dedupe) {
+        if (seen[u]) return;
+        seen[u] = 1;
+      }
+      out.push(u);
+    });
+    return out;
+  }
+
+  function syncModeUi() {
+    var m = currentMode();
+    var imageMode = m === 'image';
+    $('imageOpts').className = 'opts' + (imageMode ? '' : ' disabled');
+    $('imageFields').style.display = imageMode ? '' : 'none';
+    $('modeHint').textContent = imageMode
+      ? '当前：提取「图片文件地址」—— 下面的开关与过滤条件全部生效。'
+      : '当前：提取' + (m === 'link' ? '「图片的跳转链接」' : '「页面全部链接」') +
+        ' —— 链接不是图片文件，所以扩展名 / 小图 / 关键词这些过滤不参与，只做去重。';
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 核心：从 HTML 源码提取                                              */
+  /* ------------------------------------------------------------------ */
+
+  function extract(html, baseUrl) {
+    var opts = {
+      lazy: $('optLazy').checked,
+      srcset: $('optSrcset').checked,
+      anchor: $('optAnchor').checked,
+      css: $('optCss').checked,
+      og: $('optOg').checked,
+      dedupe: $('optDedupe').checked,
+      stripSize: $('optStripSize').checked,
+      keyword: $('optKeyword').checked,
+      tiny: $('optTiny').checked,
+      exts: splitList($('optExt').value),
+      minPx: parseInt($('optMin').value, 10) || 0,
+      black: splitList($('optBlack').value)
+    };
+
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+
+    var baseEl = doc.querySelector('base[href]');
+    var base = (baseEl && baseEl.getAttribute('href')) || baseUrl || location.href;
+    base = absolutize(base, baseUrl || location.href) || base;
+
+    // 链接模式：不需要走下面的图片提取逻辑
+    var mode = currentMode();
+    if (mode !== 'image') return filterLinks(linksFrom(doc, base, mode));
+
+    var found = [];
+    function push(raw) {
+      var abs = absolutize(raw, base);
+      if (!abs || !isHttp(abs)) return;
+      found.push(opts.stripSize ? stripSize(abs) : abs);
+    }
+
+    // 1) <img src> + 懒加载属性 + srcset
+    var LAZY = ['data-src', 'data-original', 'data-lazy-src', 'data-lazy', 'data-echo',
+                'data-url', 'data-image', 'data-full', 'data-large', 'data-hi-res',
+                'data-orig-file', 'data-actualsrc'];
+    doc.querySelectorAll('img').forEach(function (img) {
+      var src = img.getAttribute('src');
+      if (src) push(src);
+      if (opts.lazy) {
+        LAZY.forEach(function (a) {
+          var v = img.getAttribute(a);
+          if (v) push(v);
+        });
+      }
+      if (opts.srcset) {
+        parseSrcset(img.getAttribute('srcset')).forEach(push);
+        if (opts.lazy) parseSrcset(img.getAttribute('data-srcset')).forEach(push);
+      }
+    });
+
+    // 2) <picture><source>
+    if (opts.srcset) {
+      doc.querySelectorAll('source').forEach(function (s) {
+        parseSrcset(s.getAttribute('srcset')).forEach(push);
+        if (opts.lazy) parseSrcset(s.getAttribute('data-srcset')).forEach(push);
+        var ss = s.getAttribute('src');
+        if (ss) push(ss);
+      });
+    }
+
+    // 3) <a href> 指向图片
+    if (opts.anchor) {
+      doc.querySelectorAll('a[href]').forEach(function (a) {
+        var href = a.getAttribute('href');
+        if (href && /\.(jpe?g|png|webp|gif|avif|bmp|svg)(\?|#|$)/i.test(href)) push(href);
+      });
+    }
+
+    // 4) CSS 背景图
+    if (opts.css) {
+      doc.querySelectorAll('[style]').forEach(function (el) {
+        urlsFromCss(el.getAttribute('style')).forEach(push);
+      });
+      doc.querySelectorAll('style').forEach(function (st) {
+        urlsFromCss(st.textContent).forEach(push);
+      });
+    }
+
+    // 5) og:image / twitter:image
+    if (opts.og) {
+      var RE = 'meta[property="og:image"],meta[property="og:image:url"],' +
+               'meta[property="og:image:secure_url"],meta[name="twitter:image"],' +
+               'meta[name="twitter:image:src"],meta[itemprop="image"]';
+      doc.querySelectorAll(RE).forEach(function (m) { push(m.getAttribute('content')); });
+    }
+
+    // 6) 小图过滤（只看 <img> 的 width/height，没写尺寸的保留）
+    var tinySet = {};
+    if (opts.tiny && opts.minPx > 0) {
+      doc.querySelectorAll('img').forEach(function (img) {
+        var w = parseInt(img.getAttribute('width'), 10);
+        var h = parseInt(img.getAttribute('height'), 10);
+        var small = (w > 0 && w < opts.minPx) || (h > 0 && h < opts.minPx);
+        if (!small) return;
+        var raw = img.getAttribute('src') || img.getAttribute('data-src') ||
+                  img.getAttribute('data-original');
+        var abs = absolutize(raw, base);
+        if (abs) tinySet[opts.stripSize ? stripSize(abs) : abs] = true;
+      });
+    }
+
+    // 7) 过滤 + 去重
+    var seen = {}, out = [];
+    found.forEach(function (u) {
+      if (opts.exts.length) {
+        var e = extOf(u);
+        if (e && opts.exts.indexOf(e) === -1) return;   // 无扩展名的 CDN 链接放行
+      }
+      if (opts.tiny && opts.minPx > 0 && tinySet[u]) return;
+      if (opts.keyword && opts.black.length) {
+        var low = u.toLowerCase();
+        for (var i = 0; i < opts.black.length; i++) {
+          if (low.indexOf(opts.black[i]) !== -1) return;
+        }
+      }
+      if (opts.dedupe) {
+        if (seen[u]) return;
+        seen[u] = 1;
+      }
+      out.push(u);
+    });
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 输出                                                                */
+  /* ------------------------------------------------------------------ */
+
+  function render(list) {
+    results = list;
+    $('out').value = list.join('\n');
+    $('count').textContent = String(list.length);
+  }
+
+  function run(html, baseUrl) {
+    lastHtml = html || '';
+    lastBase = baseUrl || '';
+    if (!html || !html.trim()) {
+      render([]);
+      setInfo('没有内容可解析。');
+      return;
+    }
+    var list = extract(html, baseUrl);
+    render(list);
+    var what = currentMode() === 'image' ? '个图片地址'
+             : (currentMode() === 'link' ? '个跳转链接' : '个链接');
+    setInfo(list.length === 0
+      ? '解析完成，但没提取到内容 —— 换个输出模式，或放宽 ③ 里的过滤条件后点「重新提取」。'
+      : '解析完成，共 ' + list.length + ' ' + what + '。');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* ① 命令行下载命令                                                    */
+  /* ------------------------------------------------------------------ */
+
+  var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+           '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+  /** 工具自身所在目录：用 file:// 打开时自动取，移动文件夹后也不用改 */
+  function toolDir() {
+    try {
+      if (location.protocol === 'file:') {
+        var p = decodeURIComponent(location.pathname).replace(/^\//, '');
+        var dir = p.replace(/\/[^\/]*$/, '');
+        if (dir) return dir.replace(/\//g, '\\');
+      }
+    } catch (e) { /* 忽略，走下面的兜底 */ }
+    return 'D:\\Android\\TgImagesDownloader\\开发相关资源';
+  }
+
+  function buildCmd() {
+    var u = $('url').value.trim() || 'https://example.com/page/5/';
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+    // 先切到工具所在目录：page.html 会落在旁边，② 里选文件时一眼就能找到
+    return 'cd "' + toolDir() + '"\n' +
+           'curl.exe -x http://127.0.0.1:7897 -L -A "' + UA + '" -o page.html "' + u + '"';
+  }
+
+  function refreshCmd() { $('curlCmd').textContent = buildCmd(); }
+
+  $('url').addEventListener('input', refreshCmd);
+
+  $('copyCmdBtn').addEventListener('click', function () {
+    var text = buildCmd();
+    var done = function () { setInfo('下载命令已复制，去 PowerShell 里粘贴执行。'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function () {
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        document.execCommand('copy'); document.body.removeChild(ta); done();
+      });
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta); done();
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* ② 源码输入                                                          */
+  /* ------------------------------------------------------------------ */
+
+  function baseFromUrl() {
+    var base = ($('url').value || '').trim() || location.href;
+    if (base && !/^https?:\/\//i.test(base)) base = 'https://' + base;
+    return base;
+  }
+
+  $('parseSourceBtn').addEventListener('click', function () {
+    run($('source').value, baseFromUrl());
+  });
+
+  $('pasteBtn').addEventListener('click', function () {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      setInfo('这个浏览器不允许直接读剪贴板，请手动粘贴到文本框。');
+      return;
+    }
+    navigator.clipboard.readText().then(function (text) {
+      $('source').value = text;
+      run(text, baseFromUrl());
+    }).catch(function () {
+      setInfo('读取剪贴板被拒绝，请手动粘贴。');
+    });
+  });
+
+  $('file').addEventListener('change', function (e) {
+    var f = e.target.files && e.target.files[0];
+    if (!f) return;
+    var r = new FileReader();
+    r.onload = function () {
+      var text = String(r.result || '');
+      $('source').value = text;
+      run(text, baseFromUrl());
+      setInfo('已读取 ' + f.name + '（' + (f.size / 1024).toFixed(0) + ' KB）。');
+    };
+    r.readAsText(f, 'utf-8');
+  });
+
+  $('reparseBtn').addEventListener('click', function () {
+    if (!lastHtml) { setInfo('还没有源码，先在 ② 里选文件或粘贴源码。'); return; }
+    run(lastHtml, lastBase || baseFromUrl());
+  });
+
+  // 输出模式切换：联动设置区可用性，并用已抓到的源码重新提取
+  Array.prototype.forEach.call(document.querySelectorAll('input[name="mode"]'), function (radio) {
+    radio.addEventListener('change', function () {
+      syncModeUi();
+      if (lastHtml) run(lastHtml, lastBase || baseFromUrl());
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* 方式 B：联网抓取                                                    */
+  /* ------------------------------------------------------------------ */
+
+  $('proxy').addEventListener('change', function () {
+    $('proxyCustom').style.display = this.value === '__custom__' ? '' : 'none';
+  });
+
+  /* 取页服务健康检查：页面打开时静默探一次，用户也能手动点 */
+  function pingRelay(silent) {
+    return fetch('http://127.0.0.1:8787/', { cache: 'no-store' })
+      .then(function (r) { return r.text(); })
+      .then(function (t) {
+        if (!silent) setStatus('取页服务已运行 ✅　' + t.trim(), 'ok');
+        return true;
+      })
+      .catch(function () {
+        if (!silent) {
+          setStatus('取页服务未运行 ❌ —— 请双击「开发相关资源\\启动取页服务.cmd」，' +
+            '看到窗口里出现 listening 字样后再试。', 'err');
+        }
+        return false;
+      });
+  }
+
+  $('pingBtn').addEventListener('click', function () { pingRelay(false); });
+
+  pingRelay(true).then(function (ok) {
+    setStatus(ok
+      ? '取页服务已运行（127.0.0.1:8787）—— 方式 B 可以直接用。'
+      : '提示：方式 B 要先双击「开发相关资源\\启动取页服务.cmd」；或改用 ① 的命令行办法。',
+      ok ? 'ok' : 'info');
+  });
+
+  function proxyPrefix() {
+    var v = $('proxy').value;
+    if (v === '__custom__') return $('proxyCustom').value.trim();
+    return v;
+  }
+
+  $('fetchBtn').addEventListener('click', function () {
+    var url = $('url').value.trim();
+    if (!url) { setStatus('请先填网址。', 'err'); return; }
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    $('url').value = url;
+
+    var prefix = proxyPrefix();
+    if (prefix && prefix.indexOf(':') === -1) { setStatus('代理前缀看起来不对（要以 http(s):// 开头）。', 'err'); return; }
+    var target = prefix ? prefix + encodeURIComponent(url) : url;
+    $('fetchBtn').disabled = true;
+    var t0 = Date.now();
+    setStatus('抓取中…（' + (prefix ? '经代理：' + prefix : '直连') + '）');
+
+    fetch(target, { redirect: 'follow' })
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.text();
+      })
+      .then(function (html) {
+        var used = ((Date.now() - t0) / 1000).toFixed(1);
+        var title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '';
+        title = title.trim().replace(/\s+/g, ' ').slice(0, 60);
+        run(html, url);
+        setStatus('抓取成功（' + used + 's，' + (html.length / 1024).toFixed(0) + ' KB' +
+          (title ? '，标题：' + title : '') + '）→ 提取到 ' + results.length + ' 个地址' +
+          (results.length === 0 ? '（可放宽 ③ 的过滤条件）' : '。'),
+          results.length === 0 ? 'err' : 'ok');
+      })
+      .catch(function (err) {
+        setStatus('抓取失败：' + err.message +
+          '。公共代理常失效，改用 ① 的命令行办法最稳。', 'err');
+      })
+      .finally(function () { $('fetchBtn').disabled = false; });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* ④ 结果操作                                                          */
+  /* ------------------------------------------------------------------ */
+
+  $('copyBtn').addEventListener('click', function () {
+    var text = $('out').value;
+    if (!text) return;
+    var done = function () { setInfo('已复制 ' + results.length + ' 条到剪贴板。'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function () {
+        $('out').select(); document.execCommand('copy'); done();
+      });
+    } else {
+      $('out').select(); document.execCommand('copy'); done();
+    }
+  });
+
+  $('dlBtn').addEventListener('click', function () {
+    if (!$('out').value) return;
+    var blob = new Blob([$('out').value], { type: 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    var host = 'images';
+    try { host = new URL($('url').value).hostname.replace(/^www\./, ''); } catch (e) {}
+    a.download = host + '-' + new Date().toISOString().slice(0, 10) + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+
+  $('clearBtn').addEventListener('click', function () {
+    lastHtml = '';
+    $('source').value = '';
+    render([]);
+    setInfo('已清空。');
+    setStatus('已清空。', 'info');
+  });
+
+  syncModeUi();
+  refreshCmd();
+})();
+</script>
+</body>
+</html>
