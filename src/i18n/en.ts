@@ -213,6 +213,8 @@ export const en: Record<ZhKeys, string> = {
   'history.detail.noDetailHint':
     'This record predates the per-image detail feature.',
   'history.detail.time': 'Time: {time}',
+  'history.detail.sortHint': 'Drag the images to reorder — saved automatically',
+  'history.detail.sortDone': 'Done',
   'history.detail.video': 'This is a video',
   'history.detail.openExternal': 'Open with the system player',
   'history.detail.imageCount': '{count} files',

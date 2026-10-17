@@ -210,6 +210,8 @@ export const zhCN = {
   'history.deleteImagesConfirmOk': '确认删除',
   'history.detail.noDetailHint': '该记录较早下载，尚未保存每张图的路径。',
   'history.detail.time': '时间：{time}',
+  'history.detail.sortHint': '拖动图片调整顺序，松手自动保存',
+  'history.detail.sortDone': '完成',
   'history.detail.video': '这是一个视频',
   'history.detail.openExternal': '用系统播放器打开',
   'history.detail.imageCount': '文件 {count} 个',

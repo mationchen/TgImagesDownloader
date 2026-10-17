@@ -41,6 +41,7 @@ import { useDownload } from '../store/DownloadContext';
 import { t, useI18n } from '../i18n';
 import { useTheme, useThemedStyles, type ThemeColors } from '../theme';
 import { errorMessage } from '../utils/errorMessage';
+import { decodeHtmlEntities } from '../utils/htmlEntities';
 
 type Props = MainTabScreenProps<'Batch'>;
 
@@ -589,7 +590,7 @@ const RecentRow: React.FC<{
       ]}
     >
       <Text style={styles.recentTitle} numberOfLines={1}>
-        {record.title}
+        {decodeHtmlEntities(record.title)}
       </Text>
       <Text style={styles.recentCount}>
         {t('history.itemCount', { count: record.imageCount })}

@@ -8,6 +8,7 @@ import {
 } from '../services/historyService';
 import { TelegraphDownloader } from '../services/nativeDownloader';
 import { parseArticle } from '../services/telegraphParser';
+import { decodeHtmlEntities } from './htmlEntities';
 import type { TelegraphArticle } from '../types/telegraph';
 
 /**
@@ -141,7 +142,7 @@ export function showHistoryRowActions(
   record: HistoryRecord,
   handlers: HistoryRowActionHandlers,
 ): void {
-  Alert.alert(record.title, undefined, [
+  Alert.alert(decodeHtmlEntities(record.title), undefined, [
     {
       text: t('history.reparse'),
       onPress: async () => {

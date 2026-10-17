@@ -8,10 +8,12 @@ import React, {
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   FlatList,
   Image,
   Linking,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -27,7 +29,11 @@ import {
 import Clipboard from '@react-native-clipboard/clipboard';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useThemedStyles, useTheme, type ThemeColors } from '../theme';
-import { getHistory, type HistoryRecord } from '../services/historyService';
+import {
+  getHistory,
+  reorderHistoryImages,
+  type HistoryRecord,
+} from '../services/historyService';
 import {
   isDownloaderAvailable,
   isVideoUri,
@@ -43,12 +49,16 @@ import {
 } from '../utils/historyStatus';
 import { confirmDeleteRecord, reparseRecord } from '../utils/historyRowActions';
 import { useMediaReadPermission } from '../utils/mediaPermission';
+import { decodeHtmlEntities } from '../utils/htmlEntities';
 import { t, useI18n } from '../i18n';
 
 type Props = RootStackScreenProps<'HistoryDetail'>;
 
 const COLS = 3;
 const GAP = 2;
+
+/** 原生 View 实例类型（RN 0.87 通过组件 ref 暴露）。 */
+type HostView = React.ComponentRef<typeof View>;
 
 /** Width of one grid tile for a page that is {@code width} px wide. */
 function tileSizeFor(width: number): number {
@@ -257,6 +267,246 @@ const RecordPage: React.FC<{
   // Index of the image tapped in the grid; null = fullscreen viewer closed.
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
+  /* ---------------- 手动排序（长按拖动） ---------------- */
+
+  /**
+   * `order[i]` = 显示位置 i 上放的是「原始数组」的第几张；null = 未拖动过。
+   * 拖动时实时改它，松手后写回数据库。
+   */
+  const [order, setOrder] = useState<number[] | null>(null);
+  const orderRef = useRef<number[] | null>(null);
+  /** 被拖方块当前所在的显示位置；null = 没在拖。 */
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const dragIndexRef = useRef<number | null>(null);
+  /** 跟随手指的悬浮预览图。 */
+  const [dragUri, setDragUri] = useState<string | null>(null);
+  const draggingRef = useRef(false);
+
+  /** 按下的是第几格（长按后据此开始拖动）。 */
+  const pressIndexRef = useRef<number | null>(null);
+  const pressedIndexRef = useRef<number | null>(null);
+  const [pressedIndex, setPressedIndex] = useState<number | null>(null);
+  const pressStartRef = useRef(0);
+  const movedRef = useRef(false);
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // PanResponder 建在 useMemo 里，闭包拿不到最新值，统一走 ref。
+  const beginDragRef = useRef<(index: number) => void>(() => undefined);
+  const pressHandlerRef = useRef<(index: number) => void>(() => undefined);
+  const reorderableRef = useRef(false);
+
+  const clearLongPress = useCallback(() => {
+    if (longPressRef.current) {
+      clearTimeout(longPressRef.current);
+      longPressRef.current = null;
+    }
+  }, []);
+  /** 网格 / 本页在屏幕上的原点，用于把手指坐标换算成格子下标。 */
+  const gridOriginRef = useRef({ x: 0, y: 0 });
+  const pageOriginRef = useRef({ x: 0, y: 0 });
+  const tileRefs = useRef<(HostView | null)[]>([]);
+  const rootRef = useRef<HostView | null>(null);
+  const dragPos = useRef(new Animated.ValueXY()).current;
+
+  const loadedRecord = record !== 'loading' ? record : null;
+  const baseUris =
+    loadedRecord && (loadedRecord.imagePaths?.length ?? 0) > 0
+      ? loadedRecord.imagePaths
+      : loadedRecord
+      ? fallbackUris
+      : [];
+  /** 实际渲染顺序（拖动中会变）。 */
+  const uris = order ? order.map(i => baseUris[i]) : baseUris;
+  const remoteUrls = loadedRecord?.imageUrls ?? [];
+  const size = tileSizeFor(width);
+  const cell = size + GAP;
+  // 只有「顺序来自记录本身」时才允许拖动 —— 否则改了也存不回数据库。
+  const reorderable =
+    baseUris.length > 1 &&
+    (loadedRecord?.imagePaths?.length ?? 0) === baseUris.length;
+  reorderableRef.current = reorderable;
+
+  const urisRef = useRef<string[]>([]);
+  useEffect(() => {
+    urisRef.current = uris;
+  }, [uris]);
+
+  /** 把拖动的结果落库，并把本地记录改成新顺序（避免重复应用）。 */
+  const persistOrder = useCallback(
+    (nextOrder: number[]) => {
+      if (!nextOrder.some((v, i) => v !== i)) {
+        setOrder(null);
+        orderRef.current = null;
+        return;
+      }
+      setRecord(prev =>
+        prev && prev !== 'loading'
+          ? {
+              ...prev,
+              imagePaths: nextOrder.map(i => prev.imagePaths[i]),
+              imageUrls: nextOrder.map(i => prev.imageUrls[i]),
+              savePaths: nextOrder.map(i => prev.savePaths[i]),
+            }
+          : prev,
+      );
+      setOrder(null);
+      orderRef.current = null;
+      reorderHistoryImages(id, nextOrder).catch(() => undefined);
+    },
+    [id],
+  );
+
+  const finishDrag = useCallback(() => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    const from = dragIndexRef.current;
+    const to = targetRef.current;
+    setDragIndex(null);
+    setDragTarget(null);
+    setDragUri(null);
+    dragIndexRef.current = null;
+    targetRef.current = null;
+    if (from == null || to == null || from === to) return;
+    // 松手后才真正重排 + 落库
+    const total = urisRef.current.length;
+    const current =
+      orderRef.current ?? Array.from({ length: total }, (_, i) => i);
+    const next = current.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    orderRef.current = null;
+    persistOrder(next);
+  }, [persistOrder]);
+
+  /** 手指在屏幕上移动时：算出落到哪一格，只更新高亮。
+   *  注意：**不能在拖动过程中重排列表** —— 那会把持有手势的格子移走/重挂，响应者
+   *  立刻丢失（实测第 2 次 MOVE 后就再也收不到事件，连 release 都没有）。所以这里
+   *  只记录目标位置，等松手再一次性重排。 */
+  const [dragTarget, setDragTarget] = useState<number | null>(null);
+  const targetRef = useRef<number | null>(null);
+  /**
+   * 排序模式：长按任意图片进入。
+   *
+   * 为什么需要它：`onShouldBlockNativeResponder` 只在**手势被授予的那一刻**读取，
+   * 而那时拖动还没开始，原生 ScrollView 会在移动超过阈值后把手势抢走（实测拖动
+   * 只走一步就 terminate）。先进入模式、把列表滚动关掉，之后的新手势从按下起就
+   * 受保护，拖动才连贯。
+   */
+  const [sortMode, setSortMode] = useState(false);
+  const sortModeRef = useRef(false);
+  sortModeRef.current = sortMode;
+  const moveTo = useCallback(
+    (x: number, y: number) => {
+      const total = urisRef.current.length;
+      const from = dragIndexRef.current;
+      if (from == null || total === 0) return;
+      const origin = gridOriginRef.current;
+      const col = Math.floor((x - origin.x) / cell);
+      const row = Math.floor((y - origin.y) / cell);
+      const to = Math.max(0, Math.min(row * COLS + col, total - 1));
+      if (to === targetRef.current) return;
+      targetRef.current = to;
+      setDragTarget(to);
+    },
+    [cell],
+  );
+
+  /**
+   * 触摸由**格子自己**持有：`Pressable` 会把响应者拿在手里，父级即使在捕获阶段
+   * 也抢不过来（实测 onPanResponderMove 一次都没触发），所以这里不用 Pressable，
+   * 由外层 View 统一处理「点击 / 长按 / 拖动」。
+   */
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponderCapture: () => true,
+        // 关键：没进入排序模式时**不要**阻止原生 ScrollView 接管，否则网格滚不动；
+        // 进入排序模式后阻止，拖动才不会被滚动抢走。注意这个回调在手势被授予时
+        // 求值一次，所以必须在**按下之前**就已经处于排序模式。
+        onShouldBlockNativeResponder: () => sortModeRef.current,
+        onPanResponderGrant: (_evt, _g) => {
+          movedRef.current = false;
+          pressStartRef.current = Date.now();
+          pressedIndexRef.current = pressIndexRef.current;
+          setPressedIndex(pressIndexRef.current);
+          clearLongPress();
+          const idx = pressIndexRef.current;
+          if (idx != null && reorderableRef.current) {
+            longPressRef.current = setTimeout(() => {
+              longPressRef.current = null;
+              if (movedRef.current || draggingRef.current) return;
+              // 已在排序模式 → 直接开始拖动；否则先进入排序模式（用户松手后再拖）。
+              if (sortModeRef.current) beginDragRef.current(idx);
+              else setSortMode(true);
+            }, 320);
+          }
+        },
+        onPanResponderMove: (_evt, g) => {
+          if (Math.abs(g.dx) > 8 || Math.abs(g.dy) > 8) {
+            movedRef.current = true;
+            clearLongPress();
+          }
+          if (!draggingRef.current) return;
+          dragPos.setValue({
+            x: g.moveX - pageOriginRef.current.x - cell / 2,
+            y: g.moveY - pageOriginRef.current.y - cell / 2,
+          });
+          moveTo(g.moveX, g.moveY);
+        },
+        onPanResponderRelease: () => {
+          clearLongPress();
+          const idx = pressIndexRef.current;
+          setPressedIndex(null);
+          if (draggingRef.current) {
+            finishDrag();
+            return;
+          }
+          // 没拖动、也没怎么移动 → 当作一次点击
+          if (!movedRef.current && Date.now() - pressStartRef.current < 320) {
+            const uri = idx == null ? null : urisRef.current[idx];
+            if (uri && isVideoUri(uri)) {
+              playExternally(uri);
+            } else if (idx != null) {
+              pressHandlerRef.current(idx);
+            }
+          }
+        },
+        onPanResponderTerminate: () => {
+          // 被外层滚动抢走（正常滚动）或其它中断：全部复位
+          clearLongPress();
+          movedRef.current = true;
+          setPressedIndex(null);
+          finishDrag();
+        },
+      }),
+    [cell, dragPos, finishDrag, moveTo, clearLongPress],
+  );
+
+  const beginDrag = useCallback(
+    (index: number) => {
+      const tile = tileRefs.current[index];
+      if (!tile) return;
+      const col = index % COLS;
+      const row = Math.floor(index / COLS);
+      tile.measureInWindow((x: number, y: number) => {
+        gridOriginRef.current = { x: x - col * cell, y: y - row * cell };
+        rootRef.current?.measureInWindow((px: number) => {
+          pageOriginRef.current = { x: px, y: 0 };
+        });
+        dragIndexRef.current = index;
+        orderRef.current =
+          orderRef.current ??
+          Array.from({ length: urisRef.current.length }, (_, i) => i);
+        dragPos.setValue({ x, y });
+        draggingRef.current = true;
+        setDragIndex(index);
+        setDragUri(urisRef.current[index] ?? null);
+      });
+    },
+    [cell, dragPos],
+  );
+  beginDragRef.current = beginDrag;
+
   useEffect(() => {
     let cancelled = false;
     setRecord('loading');
@@ -277,8 +527,8 @@ const RecordPage: React.FC<{
       // Per-article subfolder: it holds only this record's files.
       if (isDownloaderAvailable() && TelegraphDownloader?.listGalleryImages) {
         try {
-          const uris = await TelegraphDownloader.listGalleryImages(r.saveDir);
-          if (!cancelled) setFallbackUris(uris);
+          const found = await TelegraphDownloader.listGalleryImages(r.saveDir);
+          if (!cancelled) setFallbackUris(found);
         } catch {
           // best-effort; leave the grid empty if the query fails
         }
@@ -292,6 +542,7 @@ const RecordPage: React.FC<{
   const onThumbPress = useCallback((idx: number) => {
     setViewerIndex(idx);
   }, []);
+  pressHandlerRef.current = onThumbPress;
   const closeViewer = useCallback(() => setViewerIndex(null), []);
 
   if (record === 'loading') {
@@ -312,33 +563,66 @@ const RecordPage: React.FC<{
     );
   }
 
-  const imageUris =
-    record.imagePaths.length > 0 ? record.imagePaths : fallbackUris;
-  // Remote URLs stay index-aligned with image_paths, so a local URI that
-  // cannot be opened can retry once against its own source URL.
-  const remoteUrls = record.imageUrls ?? [];
-  const urisEmpty = imageUris.length === 0;
-  const size = tileSizeFor(width);
+  const urisEmpty = uris.length === 0;
 
   return (
-    <View style={{ width }}>
+    <View style={{ width }} ref={rootRef}>
+      {sortMode ? (
+        <View style={styles.sortBar}>
+          <Text style={styles.sortBarText}>{t('history.detail.sortHint')}</Text>
+          <Pressable
+            onPress={() => setSortMode(false)}
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.sortBarBtn,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.sortBarBtnText}>
+              {t('history.detail.sortDone')}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
       <FlatList
         style={styles.pageScroll}
-        data={imageUris}
+        data={uris}
         // mediaTick in the key: when the media permission is granted after
         // first render, every tile remounts and retries its image instead
         // of keeping the stale red ×.
-        keyExtractor={(uri, idx) => `${mediaTick}-${idx}-${uri}`}
+        // key 里**不能带下标**：拖动排序会改变下标，导致所有格子重新挂载（78 张图
+        // 一次全重挂会直接卡死）。用 URI + mediaTick 做 key，排序时只是位置变化，
+        // 组件会被复用。mediaTick 用于权限授予后强制重挂以重试图。
+        keyExtractor={uri => `${mediaTick}-${uri}`}
         numColumns={COLS}
+        // 排序模式下禁掉列表滚动，手势从按下起就由格子全权处理。
+        scrollEnabled={!sortMode}
         renderItem={({ item, index }) => (
-          <DetailThumb
-            uri={item}
-            size={size}
-            fallbackUri={
-              item.startsWith('content://') ? remoteUrls[index] : undefined
-            }
-            onPress={() => onThumbPress(index)}
-          />
+          // 手势挂在格子外层 View 上：点击 / 长按 / 拖动都在这里判定（见 pan）。
+          <View
+            ref={node => {
+              tileRefs.current[index] = node;
+            }}
+            {...pan.panHandlers}
+            onStartShouldSetResponderCapture={() => {
+              pressIndexRef.current = index;
+              return true;
+            }}
+            style={[
+              styles.tileOuter,
+              { width: size, height: size },
+              dragIndex === index && styles.tileLifted,
+              dragTarget === index && styles.tileTarget,
+              pressedIndex === index && styles.tilePressed,
+            ]}
+          >
+            <DetailThumb
+              uri={item}
+              fallbackUri={
+                item.startsWith('content://') ? remoteUrls[index] : undefined
+              }
+            />
+          </View>
         )}
         ListHeaderComponent={<Header record={record} />}
         ListEmptyComponent={
@@ -351,12 +635,33 @@ const RecordPage: React.FC<{
         }
         contentContainerStyle={styles.list}
         // Keep an empty list renderable so ListEmptyComponent still fires.
-        extraData={urisEmpty ? undefined : imageUris}
+        extraData={urisEmpty ? undefined : uris}
       />
+
+      {/* 拖动时跟随手指的悬浮方块 */}
+      {dragUri ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.dragGhost,
+            {
+              width: cell,
+              height: cell,
+              transform: dragPos.getTranslateTransform(),
+            },
+          ]}
+        >
+          <Image
+            source={{ uri: dragUri }}
+            style={styles.dragGhostImage}
+            resizeMode="cover"
+          />
+        </Animated.View>
+      ) : null}
 
       <ImageViewer
         visible={viewerIndex !== null}
-        uris={imageUris}
+        uris={uris}
         initialIndex={viewerIndex ?? 0}
         onClose={closeViewer}
       />
@@ -385,7 +690,7 @@ const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
   return (
     <View style={styles.header}>
       {/* Full title: wraps over as many lines as the text needs. */}
-      <Text style={styles.title}>{record.title}</Text>
+      <Text style={styles.title}>{decodeHtmlEntities(record.title)}</Text>
       {/^https?:/i.test(record.url) ? (
         <Pressable onPress={onUrlPress} hitSlop={6}>
           <Text style={styles.url} numberOfLines={2}>
@@ -433,13 +738,12 @@ const MetaChip: React.FC<{ label: string }> = React.memo(({ label }) => {
 });
 MetaChip.displayName = 'MetaChip';
 
+/** 格子内容。手势（点击 / 长按 / 拖动）由外层 View 统一处理，这里只管显示。 */
 const DetailThumb: React.FC<{
   uri: string;
-  size: number;
-  onPress: () => void;
   /** Optional remote URL to retry with when a local URI fails to open. */
   fallbackUri?: string;
-}> = React.memo(({ uri, size, onPress, fallbackUri }) => {
+}> = React.memo(({ uri, fallbackUri }) => {
   const styles = useThemedStyles(createStyles);
   const [failed, setFailed] = useState(false);
   // When a recorded local content:// URI cannot be opened (e.g. the file was
@@ -463,17 +767,9 @@ const DetailThumb: React.FC<{
   }, [uri, isVideo]);
 
   if (isVideo) {
-    // Tapping a video hands it to the system gallery/player, which can
-    // actually play it (the in-app viewer is image-only).
+    // 点视频时由外层把手势交给系统播放器（App 内查看器只能看图）。
     return (
-      <Pressable
-        onPress={() => playExternally(uri)}
-        style={({ pressed }) => [
-          styles.tile,
-          { width: size, height: size },
-          pressed && styles.tilePressed,
-        ]}
-      >
+      <View style={styles.tile}>
         {thumb ? (
           <Image
             source={{ uri: thumb }}
@@ -486,20 +782,13 @@ const DetailThumb: React.FC<{
         <View style={styles.tilePlayBadge}>
           <Text style={styles.tilePlayText}>▶</Text>
         </View>
-      </Pressable>
+      </View>
     );
   }
 
   const source = failed && fallbackUri && !usingFallback ? fallbackUri : uri;
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.tile,
-        { width: size, height: size },
-        pressed && styles.tilePressed,
-      ]}
-    >
+    <View style={styles.tile}>
       {failed && (!fallbackUri || usingFallback) ? (
         <View style={styles.tileFallback}>
           <Text style={styles.tileFallbackText}>×</Text>
@@ -518,9 +807,10 @@ const DetailThumb: React.FC<{
           }}
         />
       )}
-    </Pressable>
+    </View>
   );
 });
+DetailThumb.displayName = 'DetailThumb';
 DetailThumb.displayName = 'DetailThumb';
 
 /**
@@ -543,19 +833,22 @@ const ImageViewer: React.FC<{
   // True while the current page is zoomed in; disables page swiping so the
   // image can be dragged without flipping pages.
   const [zoomed, setZoomed] = useState(false);
+  /** 初次定位完成前先不显示，避免闪一下第一张。 */
+  const [ready, setReady] = useState(false);
   const scrollRef = useRef<ScrollViewInstance>(null);
 
   useEffect(() => {
-    if (visible) {
-      setCurrentIndex(initialIndex);
-      setZoomed(false);
-      requestAnimationFrame(() => {
-        scrollRef.current?.scrollTo({
-          x: initialIndex * width,
-          animated: false,
-        });
-      });
+    if (!visible) {
+      setReady(false);
+      return;
     }
+    setCurrentIndex(initialIndex);
+    setZoomed(false);
+    // 先把 ScrollView 滚到目标页，再让内容显示出来 —— 否则会先看到第 1 张。
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ x: initialIndex * width, animated: false });
+      setReady(true);
+    });
   }, [visible, initialIndex, width]);
 
   // Reset zoom whenever the visible page changes (only reachable while at 1x).
@@ -613,11 +906,14 @@ const ImageViewer: React.FC<{
           showsHorizontalScrollIndicator={false}
           onMomentumScrollEnd={handleScrollEnd}
           scrollEventThrottle={16}
-          style={styles.viewerScroll}
+          style={[styles.viewerScroll, !ready && styles.viewerHidden]}
           contentContainerStyle={styles.viewerScrollContent}
         >
           {uris.map((uri, index) => (
-            <View key={uri} style={[styles.viewerPage, { width }]}>
+            <View
+              key={`${index}-${uri}`}
+              style={[styles.viewerPage, { width }]}
+            >
               <ImageViewerPage
                 uri={uri}
                 onZoomChange={index === safeIndex ? setZoomed : undefined}
@@ -756,6 +1052,12 @@ function createStyles(c: ThemeColors) {
       textAlign: 'center',
     },
     tile: {
+      flex: 1,
+      backgroundColor: c.surfaceStrong,
+      overflow: 'hidden',
+    },
+    /** 格子的外层容器：负责布局 + 承载手势（点击/长按/拖动）。 */
+    tileOuter: {
       margin: GAP / 2,
       backgroundColor: c.surfaceStrong,
       overflow: 'hidden',
@@ -764,6 +1066,45 @@ function createStyles(c: ThemeColors) {
     tilePressed: {
       opacity: 0.7,
     },
+    /** 被拖起的格子：留个半透明占位（悬浮块跟着手指走）。 */
+    tileLifted: {
+      opacity: 0.25,
+    },
+    /** 拖动时手指所在的目标格子：描个边。 */
+    tileTarget: {
+      borderWidth: 2,
+      borderColor: c.primary,
+    },
+    /** 排序模式提示条。 */
+    sortBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      backgroundColor: c.primarySoft,
+    },
+    sortBarText: { flex: 1, fontSize: 12.5, color: c.primarySoftText },
+    sortBarBtn: { paddingHorizontal: 10, paddingVertical: 4 },
+    sortBarBtnText: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: c.primarySoftText,
+    },
+    /** 拖动时跟随手指的方块。 */
+    dragGhost: {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      zIndex: 30,
+      elevation: 12,
+      borderRadius: 6,
+      overflow: 'hidden',
+      borderWidth: 2,
+      borderColor: c.primary,
+      opacity: 0.92,
+    },
+    dragGhostImage: { width: '100%', height: '100%' },
     tileFallback: {
       flex: 1,
       alignItems: 'center',
@@ -788,6 +1129,8 @@ function createStyles(c: ThemeColors) {
     },
     tilePlayText: { fontSize: 14, color: '#fff', marginLeft: 2 },
     viewerRoot: { flex: 1, backgroundColor: '#000' },
+    /** 定位完成前隐藏，避免闪一下第一张。 */
+    viewerHidden: { opacity: 0 },
     viewerHeader: {
       height: 52,
       flexDirection: 'row',

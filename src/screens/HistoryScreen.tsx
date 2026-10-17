@@ -7,6 +7,7 @@ import React, {
 } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Modal,
   Pressable,
   RefreshControl,
@@ -30,6 +31,8 @@ import {
 } from '../services/historyService';
 import type { MainTabScreenProps } from '../navigation/types';
 import { t, useI18n } from '../i18n';
+import { decodeHtmlEntities } from '../utils/htmlEntities';
+import { isVideoUri } from '../services/nativeDownloader';
 import { useTheme, useThemedStyles, type ThemeColors } from '../theme';
 import {
   HISTORY_STATUS_LABEL_KEY,
@@ -550,6 +553,10 @@ const HistoryRow: React.FC<{
   const visual = historyStatusVisual(record.status);
   const badge = statusBadgeColors(colors, visual.tone);
   const statusLabel = t(HISTORY_STATUS_LABEL_KEY[record.status]);
+  // 图集预览：优先本地已存的第一张，没有本地路径时退回远程 URL。
+  const previewUri = record.imagePaths?.[0] ?? record.imageUrls?.[0] ?? null;
+  const previewIsVideo = previewUri ? isVideoUri(previewUri) : false;
+  const [previewFailed, setPreviewFailed] = useState(false);
   return (
     <Pressable
       onPress={onPress}
@@ -557,9 +564,21 @@ const HistoryRow: React.FC<{
       delayLongPress={350}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
+      {previewUri && !previewIsVideo && !previewFailed ? (
+        <Image
+          source={{ uri: previewUri }}
+          style={styles.rowThumb}
+          resizeMode="cover"
+          onError={() => setPreviewFailed(true)}
+        />
+      ) : (
+        <View style={[styles.rowThumb, styles.rowThumbEmpty]}>
+          <Text style={styles.rowThumbIcon}>{previewIsVideo ? '🎬' : '🖼'}</Text>
+        </View>
+      )}
       <View style={styles.rowMain}>
         {/* Full title, wrapping over as many lines as needed (no truncation). */}
-        <Text style={styles.rowTitle}>{record.title}</Text>
+        <Text style={styles.rowTitle}>{decodeHtmlEntities(record.title)}</Text>
         <Text style={styles.rowMeta} numberOfLines={1}>
           {record.failedCount > 0
             ? t('history.itemCountPartial', {
@@ -1102,6 +1121,16 @@ function createStyles(c: ThemeColors) {
       backgroundColor: c.background,
     },
     pressed: { backgroundColor: c.surface, opacity: 0.85 },
+    /** 列表行左侧的图集预览图（取第一张）。 */
+    rowThumb: {
+      width: 56,
+      height: 56,
+      borderRadius: 8,
+      marginRight: 12,
+      backgroundColor: c.surfaceStrong,
+    },
+    rowThumbEmpty: { alignItems: 'center', justifyContent: 'center' },
+    rowThumbIcon: { fontSize: 20 },
     rowMain: { flex: 1, paddingRight: 12 },
     rowTitle: { fontSize: 15, fontWeight: '500', color: c.textPrimary },
     rowMeta: { marginTop: 3, fontSize: 12, color: c.textHint },

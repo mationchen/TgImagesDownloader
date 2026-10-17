@@ -28,6 +28,7 @@ import {
   validateWebUrl,
 } from '../utils/url';
 import { inferExtFromUrl } from '../utils/mime';
+import { decodeHtmlEntities } from '../utils/htmlEntities';
 import { isRetryableHttpStatus, withRetry } from '../utils/retry';
 import type {
   ParseErrorCode,
@@ -880,24 +881,6 @@ function largestSrcsetUrl(srcset: string | undefined): string | undefined {
 
 function stripTags(s: string): string {
   return s.replace(/<[^>]*>/g, '');
-}
-
-function decodeHtmlEntities(s: string): string {
-  // Minimal decoder for the entities we actually see in Telegraph titles.
-  // Avoid pulling in a full library.
-  const entities: Record<string, string> = {
-    '&amp;': '&',
-    '&lt;': '<',
-    '&gt;': '>',
-    '&quot;': '"',
-    '&apos;': "'",
-    '&#39;': "'",
-    '&nbsp;': ' ',
-  };
-  return s.replace(
-    /&(?:amp|lt|gt|quot|apos|#39|nbsp);/g,
-    m => entities[m] ?? m,
-  );
 }
 
 function parseIntOrUndefined(s: string | undefined): number | undefined {

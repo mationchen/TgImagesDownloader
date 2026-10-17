@@ -553,6 +553,53 @@ export async function listHistoryByUrls(
 }
 
 /** Delete a single history row (does NOT touch downloaded files). */
+/**
+ * Persist a manual re-ordering of one record's images.
+ *
+ * `order[i]` is the index (into the stored arrays) of the image that should end
+ * up at display position `i`. All three per-image arrays are permuted together
+ * so `image_paths[i]` keeps matching `image_urls[i]` / `save_paths[i]` — the
+ * detail grid relies on that alignment for its remote retry fallback.
+ *
+ * The arrays are stored as JSON text, so this needs no schema migration.
+ */
+export async function reorderHistoryImages(
+  id: number,
+  order: number[],
+): Promise<void> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const res = await d.execute(
+    `SELECT image_urls, image_paths, save_paths FROM history WHERE id = ? LIMIT 1;`,
+    [id],
+  );
+  const row = (res.rows ?? [])[0];
+  if (!row || order.length === 0) return;
+
+  const permute = (value: unknown): string => {
+    const arr = decodeJsonArray(value);
+    // A malformed order (or a row whose arrays disagree in length) must never
+    // drop entries — keep the stored order in that case.
+    if (arr.length !== order.length) return JSON.stringify(arr);
+    const next = order.map(i => arr[i]);
+    return JSON.stringify(next.every(v => typeof v === 'string') ? next : arr);
+  };
+
+  await d.execute(
+    `UPDATE history
+        SET image_urls = ?, image_paths = ?, save_paths = ?, updated_at = ?
+      WHERE id = ?;`,
+    [
+      permute(row.image_urls),
+      permute(row.image_paths),
+      permute(row.save_paths),
+      Date.now(),
+      id,
+    ],
+  );
+  markHistoryChanged();
+}
+
 export async function removeHistory(id: number): Promise<void> {
   await initHistoryDatabase();
   const d = getDb();
