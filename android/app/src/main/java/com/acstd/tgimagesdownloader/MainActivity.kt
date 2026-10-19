@@ -3,6 +3,7 @@ package com.acstd.tgimagesdownloader
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.provider.OpenableColumns
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -13,6 +14,25 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.ReactApplication
 
 class MainActivity : ReactActivity() {
+
+  /**
+   * 丢弃系统传入的 savedInstanceState。
+   *
+   * 进程被系统回收后从「最近任务」切回时，系统会用保存的实例状态重建 Activity，
+   * 进而尝试恢复 react-native-screens 的 Fragment —— 而 ScreenFragment 明确禁止被
+   * 恢复，构造函数直接抛异常，App 闪退：
+   *
+   *   Fragment$InstantiationException: Unable to instantiate fragment
+   *   com.swmansion.rnscreens.ScreenStackFragment
+   *   Caused by: IllegalStateException: Screen fragments should never be restored.
+   *
+   * RN 的界面/导航状态由 JS 侧自己维护（数据在 SQLite / 文件里），不需要系统级恢复，
+   * 所以这里传 null 让 Activity 干净地重新开始。参考：
+   * https://github.com/software-mansion/react-native-screens/issues/17#issuecomment-424704067
+   */
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(null)
+  }
 
   override fun getMainComponentName(): String = "TgImagesDownloader"
 

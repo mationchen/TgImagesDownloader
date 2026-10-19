@@ -115,6 +115,8 @@ __tests__/      Jest 单元测试
 ```sh
 npm start                # 启动 Metro（占用 8081，建议在独立终端）
 npm run android          # 构建并安装 debug 版
+npm run apk:local        # 打 release（全部 ABI）并用 adb 覆盖安装，保留 App 数据
+npm run apk:local:clean  # 同上，但先 gradle clean（改了原生依赖时用）
 npm run ios              # iOS：首次需 bundle install && bundle exec pod install
 npm run lint             # ESLint
 npm test                 # Jest
@@ -149,6 +151,11 @@ cd android
   `AGENTS.md` 第 4 条。
 - **共享目录**：所有下载与解压结果默认落在 `Pictures/TelegraphDownloader`
   （视频在 `Movies/TelegraphDownloader`），且不建子目录。
+- **⚠️ `MainActivity.onCreate` 必须传 `null`**（`super.onCreate(null)`）：进程被系统回收后
+  从最近任务切回时，系统会拿 `savedInstanceState` 重建 Activity，进而尝试恢复
+  `react-native-screens` 的 Fragment，而它**明确禁止被恢复** → 直接闪退
+  （`Screen fragments should never be restored.`）。传 `null` 丢弃系统状态、让 JS 干净重开。
+  **不要"顺手修好"成 `super.onCreate(savedInstanceState)`**，那会把闪退放回来。
 
 ---
 
