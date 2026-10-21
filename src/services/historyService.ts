@@ -48,6 +48,12 @@ export interface HistoryRecord {
    * in download order. Empty for records made before v2.
    */
   savePaths: string[];
+  /** 收藏（v5+）。 */
+  isFavorite: boolean;
+  /** 标记为删除（还没进回收站，仍在列表里显示带标记）。 */
+  isMarkedDeleted: boolean;
+  /** 移入回收站的时间（UTC ms）；0 = 不在回收站。 */
+  trashedAt: number;
 }
 
 export type HistoryStatus = 'done' | 'partial' | 'failed' | 'cancelled';
@@ -83,6 +89,12 @@ export interface HistoryRow {
   savePaths: string[];
 }
 
+/** 所有 history SELECT 共用的列清单（改列时只改这里，rowToRecord 同步）。 */
+const HISTORY_COLUMNS =
+  'id, url, title, image_count, success_count, failed_count, skipped_count, ' +
+  'save_dir, status, image_urls, image_paths, save_paths, created_at, updated_at, ' +
+  'is_favorite, is_marked_deleted, trashed_at';
+
 /** A migration step: brings the schema from `version - 1` to `version`. */
 interface Migration {
   version: number;
@@ -94,7 +106,7 @@ interface Migration {
   up: (db: DB) => Promise<void>;
 }
 
-export const LATEST_SCHEMA_VERSION = 4;
+export const LATEST_SCHEMA_VERSION = 5;
 
 /**
  * Migration manifest (AGENTS.md §4). Add a new entry here for every future
@@ -189,6 +201,34 @@ const MIGRATIONS: Migration[] = [
       // Default '' so existing ledger rows survive the migration (AGENTS.md §4).
       await db.execute(
         `ALTER TABLE downloaded_images ADD COLUMN local_path TEXT NOT NULL DEFAULT '';`,
+      );
+    },
+  },
+  {
+    version: 5,
+    description:
+      'history: 收藏 / 标记删除 / 回收站三列（v1.0.12 收藏与回收站功能）',
+    up: async db => {
+      // 三个纯新增列，全部带默认值，旧记录自动落在「未收藏、未标记、不在回收站」，
+      // 不需要任何数据回填（AGENTS.md §4：新增列必须能给旧数据兜底）。
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0;`,
+      );
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN is_marked_deleted INTEGER NOT NULL DEFAULT 0;`,
+      );
+      // 0 = 不在回收站；> 0 = 移入回收站的时间（UTC ms），用于回收站排序。
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN trashed_at INTEGER NOT NULL DEFAULT 0;`,
+      );
+      // 列表默认过滤 trashed_at = 0，收藏页过滤 is_favorite = 1。
+      await db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_history_trashed_at
+         ON history(trashed_at);`,
+      );
+      await db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_history_favorite
+         ON history(is_favorite);`,
       );
     },
   },
@@ -342,9 +382,7 @@ export async function listHistory(
   const d = getDb();
   const { whereSql, params } = buildHistoryFilter(filter);
   const res = await d.execute(
-    `SELECT id, url, title, image_count, success_count, failed_count,
-            skipped_count, save_dir, status, image_urls, image_paths, save_paths,
-            created_at, updated_at
+    `SELECT ${HISTORY_COLUMNS}
      FROM history
      ${whereSql}
      ORDER BY created_at DESC
@@ -364,20 +402,27 @@ export interface HistoryListFilter {
   createdBeforeMs?: number;
   /** Exact match on the derived run status (done / partial / failed / cancelled). */
   status?: HistoryStatus;
+  /** 只看收藏（收藏页 / 收藏筛选）。 */
+  favoriteOnly?: boolean;
+  /** 只看「标记为删除」（尚未移入回收站）的记录。 */
+  markedDeletedOnly?: boolean;
 }
 
 /**
  * Turn a {@link HistoryListFilter} into a reusable SQL WHERE clause + params.
  * The caller owns the placeholders, so this helper returns only the WHERE
  * text and bound params (no LIMIT/OFFSET).
+ *
+ * 回收站里的记录（trashed_at > 0）**永远**不会出现在这里：下载记录列表、计数、
+ * 收藏页都走这个过滤器；回收站用自己的查询（{@link listTrash}）。
  */
 function buildHistoryFilter(filter?: HistoryListFilter): {
   whereSql: string;
   params: Scalar[];
 } {
-  if (!filter) return { whereSql: '', params: [] };
-  const clauses: string[] = [];
+  const clauses: string[] = ['trashed_at = 0'];
   const params: Scalar[] = [];
+  if (!filter) return { whereSql: `WHERE ${clauses[0]}`, params };
   const title = filter.title?.trim();
   if (title) {
     clauses.push('title LIKE ?');
@@ -397,8 +442,10 @@ function buildHistoryFilter(filter?: HistoryListFilter): {
     clauses.push('status = ?');
     params.push(filter.status);
   }
+  if (filter.favoriteOnly) clauses.push('is_favorite = 1');
+  if (filter.markedDeletedOnly) clauses.push('is_marked_deleted = 1');
   return {
-    whereSql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
+    whereSql: `WHERE ${clauses.join(' AND ')}`,
     params,
   };
 }
@@ -447,7 +494,7 @@ export async function listDailyCounts(
   const d = getDb();
   const res = await d.execute(
     `SELECT created_at FROM history
-     WHERE created_at >= ? AND created_at < ?;`,
+     WHERE created_at >= ? AND created_at < ? AND trashed_at = 0;`,
     [fromStartOfDayMs, toStartOfDayMs],
   );
   const counts = new Map<number, number>();
@@ -473,9 +520,7 @@ export async function getHistory(id: number): Promise<HistoryRecord | null> {
   await initHistoryDatabase();
   const d = getDb();
   const res = await d.execute(
-    `SELECT id, url, title, image_count, success_count, failed_count,
-            skipped_count, save_dir, status, image_urls, image_paths, save_paths,
-            created_at, updated_at
+    `SELECT ${HISTORY_COLUMNS}
      FROM history
      WHERE id = ?
      LIMIT 1;`,
@@ -498,9 +543,7 @@ export async function findHistoryByUrl(
   await initHistoryDatabase();
   const d = getDb();
   const res = await d.execute(
-    `SELECT id, url, title, image_count, success_count, failed_count,
-            skipped_count, save_dir, status, image_urls, image_paths, save_paths,
-            created_at, updated_at
+    `SELECT ${HISTORY_COLUMNS}
      FROM history
      WHERE url = ?
      ORDER BY created_at DESC
@@ -534,9 +577,7 @@ export async function listHistoryByUrls(
   const out = new Map<string, HistoryRecord>();
   for (const url of cleaned) {
     const res = await d.execute(
-      `SELECT id, url, title, image_count, success_count, failed_count,
-              skipped_count, save_dir, status, image_urls, image_paths,
-              save_paths, created_at, updated_at
+      `SELECT ${HISTORY_COLUMNS}
          FROM history
         WHERE url = ?
         ORDER BY created_at DESC
@@ -604,6 +645,124 @@ export async function removeHistory(id: number): Promise<void> {
   await initHistoryDatabase();
   const d = getDb();
   await d.execute('DELETE FROM history WHERE id = ?;', [id]);
+  markHistoryChanged();
+}
+
+/* ------------------------------------------------------------------ */
+/* 收藏 / 标记删除 / 回收站（v5）                                       */
+/* ------------------------------------------------------------------ */
+
+/** 收藏或取消收藏一条记录。 */
+export async function setHistoryFavorite(
+  id: number,
+  favorite: boolean,
+): Promise<void> {
+  await initHistoryDatabase();
+  await getDb().execute(
+    `UPDATE history SET is_favorite = ?, updated_at = ? WHERE id = ?;`,
+    [favorite ? 1 : 0, Date.now(), id],
+  );
+  markHistoryChanged();
+}
+
+/** 标记为删除 / 取消标记（只是打标记，记录仍在下载记录里）。 */
+export async function setHistoryMarkedDeleted(
+  id: number,
+  marked: boolean,
+): Promise<void> {
+  await initHistoryDatabase();
+  await getDb().execute(
+    `UPDATE history SET is_marked_deleted = ?, updated_at = ? WHERE id = ?;`,
+    [marked ? 1 : 0, Date.now(), id],
+  );
+  markHistoryChanged();
+}
+
+/** 「标记为删除」且尚未进回收站的条数（列表按钮的角标）。 */
+export async function countMarkedDeleted(): Promise<number> {
+  await initHistoryDatabase();
+  const res = await getDb().execute(
+    `SELECT COUNT(*) AS n FROM history
+      WHERE is_marked_deleted = 1 AND trashed_at = 0;`,
+  );
+  const row = (res.rows ?? [])[0] as { n?: number } | undefined;
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * 一键把「标记为删除」的记录移入回收站，返回移入条数。
+ * 移入后从下载记录里消失，但数据仍在（回收站可恢复或彻底清空）。
+ */
+export async function moveMarkedToTrash(): Promise<number> {
+  await initHistoryDatabase();
+  const count = await countMarkedDeleted();
+  if (count === 0) return 0;
+  const now = Date.now();
+  await getDb().execute(
+    `UPDATE history
+        SET trashed_at = ?, is_marked_deleted = 0, updated_at = ?
+      WHERE is_marked_deleted = 1 AND trashed_at = 0;`,
+    [now, now],
+  );
+  markHistoryChanged();
+  return count;
+}
+
+/** 回收站列表（按移入时间倒序）。 */
+export async function listTrash(
+  limit = 100,
+  offset = 0,
+): Promise<HistoryRecord[]> {
+  await initHistoryDatabase();
+  const res = await getDb().execute(
+    `SELECT ${HISTORY_COLUMNS}
+       FROM history
+      WHERE trashed_at > 0
+      ORDER BY trashed_at DESC
+      LIMIT ? OFFSET ?;`,
+    [limit, Math.max(0, offset)],
+  );
+  return (res.rows ?? []).map(rowToRecord);
+}
+
+/** 回收站条数。 */
+export async function countTrash(): Promise<number> {
+  await initHistoryDatabase();
+  const res = await getDb().execute(
+    `SELECT COUNT(*) AS n FROM history WHERE trashed_at > 0;`,
+  );
+  const row = (res.rows ?? [])[0] as { n?: number } | undefined;
+  return Number(row?.n ?? 0);
+}
+
+/** 从回收站恢复（回到下载记录列表）。 */
+export async function restoreFromTrash(id: number): Promise<void> {
+  await initHistoryDatabase();
+  await getDb().execute(
+    `UPDATE history
+        SET trashed_at = 0, is_marked_deleted = 0, updated_at = ?
+      WHERE id = ?;`,
+    [Date.now(), id],
+  );
+  markHistoryChanged();
+}
+
+/** 该记录里可删除的本地图片 URI（清空回收站时用来删文件）。 */
+export function recordImageUris(record: HistoryRecord): string[] {
+  return (record.imagePaths ?? []).filter(
+    u => u.startsWith('content://') || u.startsWith('file://'),
+  );
+}
+
+/** 彻底删除若干条记录（不碰文件；文件由调用方先删）。 */
+export async function purgeHistory(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await initHistoryDatabase();
+  const placeholders = ids.map(() => '?').join(',');
+  await getDb().execute(
+    `DELETE FROM history WHERE id IN (${placeholders});`,
+    ids,
+  );
   markHistoryChanged();
 }
 
@@ -687,6 +846,9 @@ function rowToRecord(row: Record<string, unknown>): HistoryRecord {
     savePaths: decodeJsonArray(row.save_paths),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+    isFavorite: Number(row.is_favorite ?? 0) === 1,
+    isMarkedDeleted: Number(row.is_marked_deleted ?? 0) === 1,
+    trashedAt: Number(row.trashed_at ?? 0),
   };
 }
 

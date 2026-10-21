@@ -21,6 +21,8 @@ export type RootStackParamList = {
   Preview: { article: TelegraphArticle };
   Download: { article: TelegraphArticle; images: TelegraphImage[] } | undefined;
   Privacy: undefined;
+  /** 回收站：已标记删除并移入的记录（可恢复 / 一键清空）。 */
+  Trash: undefined;
   /**
    * `ids` is the ordered list the user came from (so the detail screen can be
    * swiped left/right between neighbouring records). Optional: callers that

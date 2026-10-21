@@ -170,9 +170,17 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
    「你提交」。注意本机 git 配了 `http.proxy=127.0.0.1:7897`，代理没起时 push 会报
    `Failed to connect to github.com:443 over proxy`，用
    `git -c http.proxy= -c https.proxy= push origin master` 绕过。
-5. **涉及发版时补上发布命令**：`git tag vX.Y.Z` + `git push origin vX.Y.Z` +
-   `gh release create vX.Y.Z`（附 `app-arm64-v8a-release.apk`、
-   `app-armeabi-v7a-release.apk`、`app-x86_64-release.apk` 三个架构）。
+5. **只要本次升了版本号（`versionCode` / `versionName` 有变化），提交命令里必须一并给出
+   发版命令** —— 不要等用户再问一次：
+   - 先确认 APK 是**用新版本号**打出来的（没打就跑 `npm run apk:local`），
+     并核对 `android/app/build.gradle` 里的 `versionName` 与要发的 tag 一致；
+   - 再给：`git tag vX.Y.Z` → `git push origin vX.Y.Z` →
+     `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file $notes`，
+     附上 `app-arm64-v8a-release.apk`、`app-armeabi-v7a-release.apk`、
+     `app-x86_64-release.apk` 三个架构；
+   - release notes 用 here-string 写到临时文件再 `--notes-file` 引用，避免命令行参数过长；
+   - 若远程已有同名 tag / release，先说明情况再决定是覆盖（`gh release upload`）还是升新版本。
+   **没升版本号时不用发版**，明确写一句「本次不涉及发版」即可。
 6. **同步更新 `README.md`**：总结里提到的功能 / 版本变化，如果 README 有对应描述
    （特性清单、版本号、目录结构、命令），一并改掉，保持文实相符。
 
@@ -184,8 +192,9 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
 
 ## State of the project
 
-A shipped Android app (release **1.0.10**, `versionCode 10`): a web image batch
-downloader, plus a download-history manager and a local archive import feature.
+A shipped Android app (release **1.0.12**, `versionCode 12`): a web image batch
+downloader, plus a download-history manager (favorites / mark-for-delete /
+recycle bin) and a local archive import feature.
 `README.md` is this project's own documentation — read it first for features,
 commands, layout and the release flow.
 
@@ -217,17 +226,29 @@ Feature areas:
 - iOS entry is Swift (`ios/TgImagesDownloader/AppDelegate.swift`) and ships
   `PrivacyInfo.xcprivacy` (required by Apple — don't delete).
 
-The only non-template runtime dependency is `react-native-safe-area-context`
-^5.5.2 — it's already wired up in `App.tsx`. Prefer it over the deprecated
-`SafeAreaView` from `react-native`.
+Runtime dependencies (all in use — don't "clean them up"):
+
+- `react-native-safe-area-context` (prefer it over the deprecated `SafeAreaView`)
+- `@react-navigation/{native,native-stack,bottom-tabs}`, `react-native-screens`
+- `@op-engineering/op-sqlite` — local history/settings DB (schema v5, versioned
+  migrations in `historyService.ts`)
+- `react-native-blob-util` — download transport
+- `@react-native-camera-roll/camera-roll`, `@react-native-clipboard/clipboard`,
+  `@react-native-community/datetimepicker`
+
+Native (Gradle) deps: `commons-compress` + `xz` (zip/7z/tar),
+`me.zhanghai.android.libarchive` (RAR5), `androidx.documentfile`.
 
 ## Commands (npm)
 
-The only npm scripts are the stock set:
+The npm scripts:
 
 - `npm start` — Metro bundler
 - `npm run android` — build & launch on Android (needs Metro running, or it
   will start it)
+- `npm run apk:local` — build the release APK (all ABIs) and `adb install -r`
+  it, keeping app data; `apk:local:clean` adds a `gradle clean` first
+  (both call `scripts/build-local.ps1`)
 - `npm run ios` — build & launch on iOS (needs Metro running)
 - `npm run lint` — ESLint via `@react-native` config (`.eslintrc.js`)
 - `npm test` — Jest via `@react-native/jest-preset`
@@ -258,18 +279,19 @@ hook — they don't exist.
 ## Testing
 
 - Jest is configured (`jest.config.js` → `@react-native/jest-preset`).
-- Only one test exists today: `__tests__/App.test.tsx` — a `react-test-renderer`
-  render check. This project uses **react-test-renderer**, not
+- 16 suites / ~193 tests currently pass (`npx jest`), covering the parsers,
+  resolvers, download queue, history service/status, settings, filename/save-dir
+  and utility helpers. This project uses **react-test-renderer**, not
   `@testing-library/react-native` — don't add RTL imports without also adding
   the dep.
-- No fixtures, no integration tests, no snapshot baseline committed yet.
+- Add a test whenever you add a utils/service function with non-trivial logic;
+  the entity decoder, for example, ships with `__tests__/htmlEntities.test.ts`.
 
 ## Android gotchas
 
-- `android/app/build.gradle` currently uses `signingConfigs.debug` for **release**
-  builds. That's a template default and is **not** safe to ship — generate a
-  real keystore before any production release
-  (https://reactnative.dev/docs/signed-apk-android).
+- `android/app/build.gradle` signs release builds with **`signingConfigs.release`**
+  (`MYAPP_RELEASE_*` properties in `android/gradle.properties`, which is
+  gitignored) — never switch it back to the debug keystore for a shipped build.
 - `enableProguardInReleaseBuilds = false` by default.
 - Architectures built: `armeabi-v7a,arm64-v8a,x86,x86_64`. Trim with
   `./gradlew <task> -PreactNativeArchitectures=arm64-v8a` for faster local
@@ -279,9 +301,10 @@ hook — they don't exist.
 
 ## Conventions observed
 
-- Source layout is flat at the repo root (`App.tsx`, `index.js`). There is no
-  `src/` convention established yet — introduce one deliberately if you split
-  `App.tsx` up.
+- Source lives under `src/` (`screens` / `services` / `components` / `store` /
+  `theme` / `i18n` / `navigation` / `utils` / `types`); `App.tsx` only wires up
+  providers + the navigator. Put new screens in `src/screens`, business logic in
+  `src/services`, and shared helpers in `src/utils`.
 - Functional components only; no class components in template.
 - Imports: RN first, then third-party, then local — matches the template.
 - All generated / state directories are gitignored (`node_modules`, `Pods`,

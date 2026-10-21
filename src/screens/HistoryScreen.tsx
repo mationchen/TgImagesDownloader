@@ -7,6 +7,7 @@ import React, {
 } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Modal,
   Pressable,
@@ -15,6 +16,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  ToastAndroid,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,9 +24,11 @@ import { useFocusEffect } from '@react-navigation/native';
 import { EmptyState } from '../components/EmptyState';
 import {
   countHistory,
+  countMarkedDeleted,
   initHistoryDatabase,
   listDailyCounts,
   listHistory,
+  moveMarkedToTrash,
   type HistoryListFilter,
   type HistoryRecord,
   type HistoryStatus,
@@ -32,6 +36,7 @@ import {
 import type { MainTabScreenProps } from '../navigation/types';
 import { t, useI18n } from '../i18n';
 import { decodeHtmlEntities } from '../utils/htmlEntities';
+import { formatLocalTime } from '../utils/time';
 import { isVideoUri } from '../services/nativeDownloader';
 import { useTheme, useThemedStyles, type ThemeColors } from '../theme';
 import {
@@ -94,6 +99,10 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   const [filterDay, setFilterDay] = useState<Date | null>(null);
   // Download-status filter (enum). null = 全部 / no status predicate.
   const [filterStatus, setFilterStatus] = useState<HistoryStatus | null>(null);
+  /** 只看收藏。 */
+  const [filterFavorite, setFilterFavorite] = useState(false);
+  /** 「标记为删除」且未进回收站的条数（决定「移入回收站」按钮显示）。 */
+  const [markedCount, setMarkedCount] = useState(0);
 
   // Calendar filter modal (custom month grid showing per-day counts).
   const [showCalendar, setShowCalendar] = useState(false);
@@ -110,11 +119,14 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   filterDayRef.current = filterDay;
   const filterStatusRef = useRef(filterStatus);
   filterStatusRef.current = filterStatus;
+  const filterFavoriteRef = useRef(filterFavorite);
+  filterFavoriteRef.current = filterFavorite;
 
   const buildFilter = useCallback((): HistoryListFilter | undefined => {
     const title = queryRef.current.trim();
     const day = filterDayRef.current;
     const status = filterStatusRef.current;
+    const favoriteOnly = filterFavoriteRef.current;
     const filter: HistoryListFilter = {};
     if (title) filter.title = title;
     if (day) {
@@ -123,7 +135,11 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
       filter.createdBeforeMs = dayStart + DAY_MS;
     }
     if (status) filter.status = status;
-    return filter.title || filter.createdAfterMs != null || filter.status
+    if (favoriteOnly) filter.favoriteOnly = true;
+    return filter.title ||
+      filter.createdAfterMs != null ||
+      filter.status ||
+      filter.favoriteOnly
       ? filter
       : undefined;
   }, []);
@@ -137,13 +153,15 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
       const filter = buildFilter();
       try {
         await initHistoryDatabase();
-        const [rows, totalRows] = await Promise.all([
+        const [rows, totalRows, marked] = await Promise.all([
           listHistory(PAGE_SIZE, nextOffset, filter),
           countHistory(filter),
+          countMarkedDeleted(),
         ]);
         setRecords(rows);
         setOffset(nextOffset);
         setTotal(totalRows);
+        setMarkedCount(marked);
         setHasMoreInDb(totalRows > nextOffset + rows.length);
       } catch {
         setLoadError(true);
@@ -156,6 +174,33 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     },
     [buildFilter],
   );
+
+  /** 一键把「标记为删除」的记录移入回收站（确认后执行）。 */
+  const onMoveToTrash = useCallback(() => {
+    if (markedCount <= 0) return;
+    Alert.alert(
+      t('history.moveToTrashTitle'),
+      t('history.moveToTrashMsg', { count: markedCount }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('history.moveToTrash'),
+          style: 'destructive',
+          onPress: () => {
+            moveMarkedToTrash()
+              .then(async moved => {
+                ToastAndroid.show(
+                  t('history.moveToTrashDone', { count: moved }),
+                  ToastAndroid.SHORT,
+                );
+                await reload(0, { silent: true });
+              })
+              .catch(() => undefined);
+          },
+        },
+      ],
+    );
+  }, [markedCount, reload]);
 
   // Pull-to-refresh: reload the newest page without blanking the list.
   const onRefresh = useCallback(async () => {
@@ -238,7 +283,10 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   const showFab = records.length > PAGE_SIZE;
   const showPagination = records.length >= PAGE_BATCH || offset > 0;
   const hasFilter =
-    query.trim().length > 0 || filterDay != null || filterStatus != null;
+    query.trim().length > 0 ||
+    filterDay != null ||
+    filterStatus != null ||
+    filterFavorite;
 
   const openDatePicker = useCallback(() => {
     setShowCalendar(true);
@@ -259,6 +307,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     setQuery('');
     setFilterDay(null);
     setFilterStatus(null);
+    setFilterFavorite(false);
   }, []);
 
   const handleLongPress = useCallback(
@@ -341,6 +390,25 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
           </Text>
         </Pressable>
         <Pressable
+          onPress={() => setFilterFavorite(v => !v)}
+          accessibilityRole="button"
+          accessibilityLabel={t('history.favoriteOnly')}
+          style={({ pressed }) => [
+            styles.statusBtn,
+            filterFavorite && styles.dateBtnActive,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text
+            style={[
+              styles.dateBtnText,
+              filterFavorite && styles.dateBtnTextActive,
+            ]}
+          >
+            ★
+          </Text>
+        </Pressable>
+        <Pressable
           onPress={openDatePicker}
           accessibilityRole="button"
           style={({ pressed }) => [
@@ -357,9 +425,35 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
         </Pressable>
       </View>
 
-      {/* Active filter chips (date and/or status) */}
-      {filterDay || filterStatus ? (
+      {/* 一键把「标记为删除」的记录移入回收站 */}
+      {markedCount > 0 ? (
+        <View style={styles.trashRow}>
+          <Pressable
+            onPress={onMoveToTrash}
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.trashBtn,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.trashBtnText}>
+              🗑 {t('history.moveToTrashCount', { count: markedCount })}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {/* Active filter chips (date / status / favorites) */}
+      {filterDay || filterStatus || filterFavorite ? (
         <View style={styles.chipRow}>
+          {filterFavorite ? (
+            <View style={styles.chip}>
+              <Text style={styles.chipText}>★ {t('history.favoriteOnly')}</Text>
+              <Pressable onPress={() => setFilterFavorite(false)} hitSlop={10}>
+                <Text style={styles.chipClear}>×</Text>
+              </Pressable>
+            </View>
+          ) : null}
           {filterDay ? (
             <View style={styles.chip}>
               <Text style={styles.chipText}>{filterDateLabel}</Text>
@@ -579,6 +673,14 @@ const HistoryRow: React.FC<{
       <View style={styles.rowMain}>
         {/* Full title, wrapping over as many lines as needed (no truncation). */}
         <Text style={styles.rowTitle}>{decodeHtmlEntities(record.title)}</Text>
+        {record.isFavorite || record.isMarkedDeleted ? (
+          <View style={styles.tagRow}>
+            {record.isFavorite ? <Text style={styles.tagFav}>★</Text> : null}
+            {record.isMarkedDeleted ? (
+              <Text style={styles.tagWarn}>{t('history.markedBadge')}</Text>
+            ) : null}
+          </View>
+        ) : null}
         <Text style={styles.rowMeta} numberOfLines={1}>
           {record.failedCount > 0
             ? t('history.itemCountPartial', {
@@ -962,13 +1064,6 @@ function formatDay(date: Date): string {
   )}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-function formatLocalTime(utcMs: number): string {
-  const d = new Date(utcMs);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(
-    d.getMinutes(),
-  ).padStart(2, '0')}`;
-}
-
 function createStyles(c: ThemeColors) {
   return StyleSheet.create({
     safe: { flex: 1, backgroundColor: c.background },
@@ -1134,6 +1229,36 @@ function createStyles(c: ThemeColors) {
     rowMain: { flex: 1, paddingRight: 12 },
     rowTitle: { fontSize: 15, fontWeight: '500', color: c.textPrimary },
     rowMeta: { marginTop: 3, fontSize: 12, color: c.textHint },
+    /** 行内状态标签（收藏星标 / 待删除）。 */
+    tagRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginTop: 3,
+    },
+    tagFav: { fontSize: 13, color: c.primary },
+    tagWarn: {
+      fontSize: 11,
+      color: c.danger,
+      backgroundColor: c.dangerBg,
+      borderRadius: 4,
+      paddingHorizontal: 5,
+      paddingVertical: 1,
+      overflow: 'hidden',
+    },
+    /** 「移入回收站」按钮所在的整行。 */
+    trashRow: {
+      paddingHorizontal: 12,
+      paddingBottom: 8,
+    },
+    trashBtn: {
+      alignSelf: 'flex-start',
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 8,
+      backgroundColor: c.dangerBg,
+    },
+    trashBtnText: { fontSize: 12.5, color: c.danger, fontWeight: '600' },
     rowBadge: {
       width: 24,
       height: 24,

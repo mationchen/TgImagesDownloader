@@ -6,6 +6,7 @@ import { PreviewScreen } from '../screens/PreviewScreen';
 import { DownloadScreen } from '../screens/DownloadScreen';
 import { PrivacyScreen } from '../screens/PrivacyScreen';
 import { HistoryDetailScreen } from '../screens/HistoryDetailScreen';
+import { TrashScreen } from '../screens/TrashScreen';
 import { BatchListScreen } from '../screens/BatchListScreen';
 import { DownloadProvider } from '../store/DownloadContext';
 import { t, useI18n } from '../i18n';
@@ -59,6 +60,11 @@ export const AppNavigator: React.FC = () => {
           name="HistoryDetail"
           component={HistoryDetailScreen}
           options={{ title: t('history.detail.title') }}
+        />
+        <Stack.Screen
+          name="Trash"
+          component={TrashScreen}
+          options={{ title: t('trash.title') }}
         />
         <Stack.Screen
           name="BatchList"

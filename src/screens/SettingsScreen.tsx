@@ -12,6 +12,10 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../navigation/types';
+import { countTrash } from '../services/historyService';
 import { APP_CONFIG } from '../constants/config';
 import { getAppInfo, type AppInfo } from '../services/appInfo';
 import {
@@ -43,6 +47,18 @@ export const SettingsScreen: React.FC = () => {
     colors: themeColors,
   } = useTheme();
   const styles = useThemedStyles(createStyles);
+  // 设置页是 Tab 页，回收站是根 Stack 的页面，所以要冒泡到栈路由。
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  /** 回收站条数（显示在入口按钮上）。 */
+  const [trashCount, setTrashCount] = useState(0);
+  useFocusEffect(
+    useCallback(() => {
+      countTrash()
+        .then(setTrashCount)
+        .catch(() => undefined);
+    }, []),
+  );
 
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
@@ -390,6 +406,27 @@ export const SettingsScreen: React.FC = () => {
                 {migrating
                   ? t('settings.migrate.running')
                   : t('settings.migrate.button')}
+              </Text>
+            </Pressable>
+          </View>
+        </Section>
+
+        <Section title={t('settings.trash.title')}>
+          <View style={styles.row}>
+            <View style={styles.rowMain}>
+              <Text style={styles.rowHint}>{t('settings.trash.hint')}</Text>
+            </View>
+          </View>
+          <View style={styles.folderRow}>
+            <Pressable
+              style={styles.folderBtn}
+              onPress={() => navigation.navigate('Trash')}
+            >
+              <Text style={styles.folderBtnText}>
+                {t('settings.trash.open')}
+                {trashCount > 0
+                  ? ` · ${t('settings.trash.count', { count: trashCount })}`
+                  : ''}
               </Text>
             </Pressable>
           </View>

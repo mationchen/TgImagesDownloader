@@ -32,6 +32,8 @@ import { useThemedStyles, useTheme, type ThemeColors } from '../theme';
 import {
   getHistory,
   reorderHistoryImages,
+  setHistoryFavorite,
+  setHistoryMarkedDeleted,
   type HistoryRecord,
 } from '../services/historyService';
 import {
@@ -162,12 +164,76 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
     });
   }, [currentRecord, navigation]);
 
+  /** 收藏 / 取消收藏：先本地翻转（图标立刻变），再落库。 */
+  const onToggleFavorite = useCallback(() => {
+    if (!currentRecord) return;
+    const next = !currentRecord.isFavorite;
+    setCurrentRecord(prev => (prev ? { ...prev, isFavorite: next } : prev));
+    setHistoryFavorite(currentRecord.id, next).catch(() => undefined);
+  }, [currentRecord]);
+
+  /** 标记删除 / 取消标记：只是打标记，记录仍留在下载记录里。 */
+  const onToggleMarked = useCallback(() => {
+    if (!currentRecord) return;
+    const next = !currentRecord.isMarkedDeleted;
+    setCurrentRecord(prev =>
+      prev ? { ...prev, isMarkedDeleted: next } : prev,
+    );
+    setHistoryMarkedDeleted(currentRecord.id, next).catch(() => undefined);
+  }, [currentRecord]);
+
   // Re-parse / delete live in the navigation title bar.
   useEffect(() => {
     navigation.setOptions({
       headerRight: () =>
         currentRecord ? (
           <View style={styles.headerActions}>
+            <Pressable
+              onPress={onToggleFavorite}
+              accessibilityRole="button"
+              accessibilityLabel={
+                currentRecord.isFavorite
+                  ? t('history.detail.unfavorite')
+                  : t('history.detail.favorite')
+              }
+              hitSlop={6}
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.headerActionText,
+                  currentRecord.isFavorite && styles.headerActionActive,
+                ]}
+              >
+                {currentRecord.isFavorite ? '★' : '☆'}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={onToggleMarked}
+              accessibilityRole="button"
+              accessibilityLabel={
+                currentRecord.isMarkedDeleted
+                  ? t('history.detail.unmarkDelete')
+                  : t('history.detail.markDelete')
+              }
+              hitSlop={6}
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.headerActionText,
+                  currentRecord.isMarkedDeleted && styles.headerActionWarn,
+                ]}
+              >
+                {currentRecord.isMarkedDeleted ? '\u21A9\uFE0F' : '\u{1F6AB}'}
+              </Text>
+            </Pressable>
             <Pressable
               onPress={() => {
                 onReparse().catch(() => undefined);
@@ -208,6 +274,8 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
     reparsing,
     onReparse,
     onDelete,
+    onToggleFavorite,
+    onToggleMarked,
     styles,
     colors.headerTitle,
   ]);
@@ -1024,6 +1092,10 @@ function createStyles(c: ThemeColors) {
       justifyContent: 'center',
     },
     headerActionText: { fontSize: 17 },
+    /** 已收藏的星标用主题色高亮。 */
+    headerActionActive: { color: c.primary },
+    /** 「已标记删除」用警示色。 */
+    headerActionWarn: { color: c.danger },
     url: { marginTop: 6, fontSize: 12, color: c.primary },
     metaRow: {
       flexDirection: 'row',
