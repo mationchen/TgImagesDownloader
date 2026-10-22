@@ -180,29 +180,47 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
    `http.proxy=127.0.0.1:7897`，代理没起时 push 会报
    `Failed to connect to github.com:443 over proxy`，用
    `git -c http.proxy= -c https.proxy= push origin master` 绕过。
-5. **只要本次升了版本号（`versionCode` / `versionName` 有变化），提交命令里必须一并给出
-   发版命令** —— 不要等用户再问一次：
-   - 先确认 APK 是**用新版本号**打出来的（没打就跑 `npm run apk:local`），
-     并核对 `android/app/build.gradle` 里的 `versionName` 与要发的 tag 一致；
-   - 再给：`git tag vX.Y.Z` → `git push origin vX.Y.Z` →
+5. **提交前处理版本号，并在升版本时一并给出发版命令** —— 不要等用户再问一次：
+   - 本次有**用户可见的代码改动**、当天又还没升过版本，就**在这一步升一次**
+     （`versionCode` +1、`versionName` 与要发的 tag 一致，见第 13 条），
+     然后跑 `npm run apk:local` 出包（不要用旧版本号的包发版）；
+   - 已经升过版本号（含当天早些时候升的）→ 直接给发版命令：
+     `git tag vX.Y.Z` → `git push origin vX.Y.Z` →
      `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file $notes`，
      附上 `app-arm64-v8a-release.apk`、`app-armeabi-v7a-release.apk`、
      `app-x86_64-release.apk` 三个架构；
    - release notes 用 here-string 写到临时文件再 `--notes-file` 引用，避免命令行参数过长；
    - 若远程已有同名 tag / release，先说明情况再决定是覆盖（`gh release upload`）还是升新版本。
-   **没升版本号时不用发版**，明确写一句「本次不涉及发版」即可。
-6. **同步更新 `README.md`**：总结里提到的功能 / 版本变化，如果 README 有对应描述
-   （特性清单、版本号、目录结构、命令），一并改掉，保持文实相符。
+   **没有代码改动、也没升版本号时不用发版**，明确写一句「本次不涉及发版」即可。
+6. **同步更新文档版本号**：总结里提到的功能 / 版本变化，如果 `README.md` 或本文件
+   「State of the project」有对应描述（特性清单、版本号、目录结构、命令），一并改掉，
+   保持文实相符。
 
 > 依据是「指令日志 + git 区间」这两份可核对的事实，**不要凭记忆写摘要**。
 > 通用部分（第一原则、触发语、代理绕过）另见本机全局 `AGENTS.md` 第八节。
+
+### 13. 版本号只在提交前升一次（不要每次编译都升版）
+
+- **日常开发 / 调试 / 编译不要动版本号**：改代码、`npm run apk:local` 覆盖安装、
+  跑真机验证，一律沿用当前的 `versionCode` / `versionName`。
+  改完就升版会让手机上的版本号一路膨胀，也把"发版"变成每改一次都要做的事。
+- **只在「当天工作准备提交 git」之前升一次**：即用户说出「总结工作 / 我要提交 git」
+  这类触发语后（见第 12 条），才把 `versionCode` +1、`versionName` 升到当天要发的
+  版本，再 `npm run apk:local` 出一次包，然后给出提交 + 发版命令。
+- 同一天无论提交几次，**只用一个版本号**；当天已经为提交升过版，就不要再升。
+- 例外：用户明确说「现在就升版本 / 换个版本号发一版」时，按用户要求立即执行。
+- 纯文档 / 纯注释 / 纯配置这类**没有用户可见变化**的改动，可以不升版本，
+  并在总结里写明「本次不涉及发版」。
+- ⚠️ 别为了"先测一下"把版本号降回去：手机上已装的版本更高时，
+  `adb install -r` 会报 `INSTALL_FAILED_VERSION_DOWNGRADE`，只能卸载重装
+  （会丢数据）。
 
 
 ---
 
 ## State of the project
 
-A shipped Android app (release **1.0.12**, `versionCode 12`): a web image batch
+A shipped Android app (release **1.0.13**, `versionCode 13`): a web image batch
 downloader, plus a download-history manager (favorites / mark-for-delete /
 recycle bin) and a local archive import feature.
 `README.md` is this project's own documentation — read it first for features,

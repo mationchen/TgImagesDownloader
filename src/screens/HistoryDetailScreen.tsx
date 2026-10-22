@@ -881,10 +881,20 @@ const DetailThumb: React.FC<{
 DetailThumb.displayName = 'DetailThumb';
 DetailThumb.displayName = 'DetailThumb';
 
+/** 挂载窗口半径：当前页左右各保留几页（其余页只占位、不实例化解码组件）。 */
+const VIEWER_WINDOW_RADIUS = 2;
+
 /**
  * Minimal paged viewer for content:// URIs recovered from MediaStore.
  * Lighter than the main ViewerModal (which is wired for TelegraphImage and
  * per-image error/probe state).
+ *
+ * 挂载策略（图片多时点开大图黑屏卡顿的修复）：
+ *   1. 刚打开时**只挂载当前这一张**，首帧成本与图片总数无关，立刻能出图；
+ *   2. 这张显示出来（onLoadEnd，兜底 800ms）之后，才放开到左右各
+ *      {@link VIEWER_WINDOW_RADIUS} 页的窗口，把浏览序列铺开；
+ *   3. 滑动停稳后窗口跟着走，远处的页卸载 —— 避免 50+ 张原图同时解码、
+ *      同时占着内存（那正是原来黑屏卡顿的原因）。
  */
 const ImageViewer: React.FC<{
   visible: boolean;
@@ -903,21 +913,43 @@ const ImageViewer: React.FC<{
   const [zoomed, setZoomed] = useState(false);
   /** 初次定位完成前先不显示，避免闪一下第一张。 */
   const [ready, setReady] = useState(false);
+  /**
+   * 挂载窗口的基准页。只在**滑动停稳**时更新：正常翻页时邻居早已挂好，
+   * 而快速甩过很多页时不会一路挂/卸几十张图（那比黑一下更卡）。
+   */
+  const [anchor, setAnchor] = useState(initialIndex);
+  /** 是否已放开挂载窗口 —— 首图显示出来之后才为 true。 */
+  const [windowOpen, setWindowOpen] = useState(false);
   const scrollRef = useRef<ScrollViewInstance>(null);
+
+  /**
+   * 放开窗口：首图已经画出来之后，再等一小会儿（让弹窗淡入这一帧画完），
+   * 避免挂载邻页的解码工作跟首图抢主线程。
+   */
+  const openWindow = useCallback(() => {
+    setTimeout(() => setWindowOpen(true), 150);
+  }, []);
 
   useEffect(() => {
     if (!visible) {
       setReady(false);
+      setWindowOpen(false);
       return;
     }
     setCurrentIndex(initialIndex);
+    setAnchor(initialIndex);
     setZoomed(false);
+    setWindowOpen(false);
+    // 兜底：视频页不会回调 onLoadEnd，图片解码极慢时也可能迟迟不回调 ——
+    // 800ms 后无条件放开窗口，免得永远只能看第一张。
+    const fallback = setTimeout(openWindow, 800);
     // 先把 ScrollView 滚到目标页，再让内容显示出来 —— 否则会先看到第 1 张。
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ x: initialIndex * width, animated: false });
       setReady(true);
     });
-  }, [visible, initialIndex, width]);
+    return () => clearTimeout(fallback);
+  }, [visible, initialIndex, width, openWindow]);
 
   // Reset zoom whenever the visible page changes (only reachable while at 1x).
   useEffect(() => {
@@ -927,11 +959,11 @@ const ImageViewer: React.FC<{
   const handleScrollEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const idx = Math.round(e.nativeEvent.contentOffset.x / width);
-      if (idx !== currentIndex && idx >= 0 && idx < uris.length) {
-        setCurrentIndex(idx);
-      }
+      if (idx < 0 || idx >= uris.length) return;
+      if (idx !== currentIndex) setCurrentIndex(idx);
+      if (idx !== anchor) setAnchor(idx);
     },
-    [currentIndex, uris.length, width],
+    [currentIndex, anchor, uris.length, width],
   );
 
   if (!visible || uris.length === 0) return null;
@@ -973,21 +1005,36 @@ const ImageViewer: React.FC<{
           scrollEnabled={!zoomed}
           showsHorizontalScrollIndicator={false}
           onMomentumScrollEnd={handleScrollEnd}
-          scrollEventThrottle={16}
+          onScrollEndDrag={handleScrollEnd}
+          scrollEventThrottle={32}
           style={[styles.viewerScroll, !ready && styles.viewerHidden]}
           contentContainerStyle={styles.viewerScrollContent}
         >
-          {uris.map((uri, index) => (
-            <View
-              key={`${index}-${uri}`}
-              style={[styles.viewerPage, { width }]}
-            >
-              <ImageViewerPage
-                uri={uri}
-                onZoomChange={index === safeIndex ? setZoomed : undefined}
-              />
-            </View>
-          ))}
+          {uris.map((uri, index) => {
+            // 窗口外的页只留占位 View（父级是纯黑背景），不实例化 Image /
+            // PanResponder / Animated，几十张一起挂的开销就没有了。
+            const mounted = windowOpen
+              ? Math.abs(index - anchor) <= VIEWER_WINDOW_RADIUS
+              : index === initialIndex;
+            return (
+              <View
+                key={`${index}-${uri}`}
+                style={[styles.viewerPage, { width }]}
+              >
+                {mounted ? (
+                  <ImageViewerPage
+                    uri={uri}
+                    onZoomChange={index === safeIndex ? setZoomed : undefined}
+                    onLoaded={
+                      !windowOpen && index === initialIndex
+                        ? openWindow
+                        : undefined
+                    }
+                  />
+                ) : null}
+              </View>
+            );
+          })}
         </ScrollView>
       </SafeAreaView>
     </Modal>
@@ -997,7 +1044,9 @@ const ImageViewer: React.FC<{
 const ImageViewerPage: React.FC<{
   uri: string;
   onZoomChange?: (zoomed: boolean) => void;
-}> = ({ uri, onZoomChange }) => {
+  /** 首次画出（或确认加载失败）时回调：父组件据此放开挂载窗口。 */
+  onLoaded?: () => void;
+}> = ({ uri, onZoomChange, onLoaded }) => {
   // Subscribe so retry/error strings track the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -1050,7 +1099,12 @@ const ImageViewerPage: React.FC<{
           key={retryKey}
           uri={uri}
           onZoomChange={onZoomChange}
-          onError={() => setFailed(true)}
+          onLoadEnd={onLoaded}
+          onError={() => {
+            setFailed(true);
+            // 失败也要让父组件放开窗口，否则只能看到这一张错误页。
+            onLoaded?.();
+          }}
         />
       )}
     </View>
