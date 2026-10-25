@@ -10,6 +10,7 @@ import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.MediaStore.Images
+import androidx.annotation.RequiresApi
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -400,6 +401,165 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
           promise.resolve(deleted)
         }
         .start()
+  }
+
+  /**
+   * 读取一张媒体是否已在系统「收藏夹」里。
+   *
+   * 系统相册的收藏标记就是 `MediaStore.IS_FAVORITE`（Android 11 / API 30 起才有），
+   * 这里只读，不改任何文件内容。API < 30、或查不到时 resolve null，
+   * JS 侧据此隐藏收藏按钮。
+   */
+  @ReactMethod
+  fun isMediaFavorite(uri: String, promise: Promise) {
+    Thread {
+          var favorite: Boolean? = null
+          try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+              reactApplicationContext.contentResolver
+                  .query(
+                      Uri.parse(uri),
+                      arrayOf(MediaStore.MediaColumns.IS_FAVORITE),
+                      null,
+                      null,
+                      null)
+                  ?.use { cursor ->
+                    if (cursor.moveToFirst() && !cursor.isNull(0)) {
+                      favorite = cursor.getInt(0) == 1
+                    }
+                  }
+            }
+          } catch (_: Throwable) {
+            favorite = null
+          }
+          promise.resolve(favorite)
+        }
+        .start()
+  }
+
+  /**
+   * 把一张图片加入 / 移出系统收藏夹。
+   *
+   * 优先直接改 `IS_FAVORITE`：本 App 自己写进 MediaStore 的媒体在 Android 11+
+   * 允许直接更新，没有弹窗、点一下就好。改不动（例如媒体不是本 App 创建的）
+   * 才退回 `MediaStore.createFavoriteRequest`，由系统弹一次确认框。
+   * API < 30 直接 reject —— 那个版本的系统根本没有收藏夹。
+   */
+  @ReactMethod
+  fun setMediaFavorite(uri: String, favorite: Boolean, promise: Promise) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+      promise.reject(ERR_UNSUPPORTED, "系统没有图片收藏夹（需要 Android 11 及以上）")
+      return
+    }
+    Thread {
+          val parsed = Uri.parse(uri)
+          if (writeFavoriteDirect(parsed, favorite)) {
+            promise.resolve(true)
+            return@Thread
+          }
+          // 直接改不了 → 交给系统确认框。
+          val activity = getCurrentActivity()
+          if (activity == null) {
+            promise.reject(ERR_NO_ACTIVITY, "No current activity to show the favorite dialog")
+            return@Thread
+          }
+          try {
+            val pending = requestFavorite(parsed, favorite)
+            activity.runOnUiThread {
+              try {
+                activity.startIntentSenderForResult(
+                    pending.intentSender, REQ_FAVORITE, null, 0, 0, 0)
+                promise.resolve(true)
+              } catch (e: Throwable) {
+                promise.reject(ERR_UNKNOWN, e.message ?: "Failed to show favorite dialog", e)
+              }
+            }
+          } catch (e: Throwable) {
+            promise.reject(ERR_UNKNOWN, e.message ?: "Favorite request failed", e)
+          }
+        }
+        .start()
+  }
+
+  /**
+   * 直接写 `IS_FAVORITE`。这一列只有 Android 11+ 存在，调用方必须先判版本；
+   * 抽成 `@RequiresApi` 的独立方法是为了让 lint 的 NewApi 检查能对上
+   * （release 构建会跑 lintVital，否则会被拦下）。
+   */
+  @RequiresApi(Build.VERSION_CODES.R)
+  private fun writeFavoriteDirect(uri: Uri, favorite: Boolean): Boolean =
+      try {
+        val values =
+            ContentValues().apply {
+              put(MediaStore.MediaColumns.IS_FAVORITE, if (favorite) 1 else 0)
+            }
+        reactApplicationContext.contentResolver.update(uri, values, null, null) > 0
+      } catch (_: Throwable) {
+        false
+      }
+
+  @RequiresApi(Build.VERSION_CODES.R)
+  private fun requestFavorite(uri: Uri, favorite: Boolean): android.app.PendingIntent =
+      MediaStore.createFavoriteRequest(
+          reactApplicationContext.contentResolver, listOf(uri), favorite)
+
+  /**
+   * 批量判断一组媒体是否在系统收藏夹里，返回其中**已被收藏**的 URI。
+   *
+   * 下载记录列表用它给「这条图集里有收藏过的图片」的行打 ♥ 标记（图集可能有
+   * 几百张，所以这里按 `_ID IN (...)` 分批查，一次列表加载只有几次查询）。
+   * 非 content:// URI、解析不出 id 的条目直接跳过。
+   */
+  @ReactMethod
+  fun listFavoritedUris(uris: ReadableArray, promise: Promise) {
+    Thread {
+          val out = Arguments.createArray()
+          try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+              // _ID -> 原始 URI，最后按这个映射回填（顺序无关，调用方用 Set 判断）。
+              val byId = LinkedHashMap<Long, String>()
+              for (i in 0 until uris.size()) {
+                val raw = uris.getString(i) ?: continue
+                if (!raw.startsWith("content://")) continue
+                val id = raw.substringAfterLast('/').toLongOrNull() ?: continue
+                byId[id] = raw
+              }
+              if (byId.isNotEmpty()) {
+                for (id in collectFavoritedIds(byId.keys.toList())) {
+                  byId[id]?.let { out.pushString(it) }
+                }
+              }
+            }
+          } catch (_: Throwable) {
+            // 查不到就当"没有收藏"，列表只是少一个图标，不该打扰用户。
+          }
+          promise.resolve(out)
+        }
+        .start()
+  }
+
+  /** 分批查 `_ID IN (...)`（SQLite 绑定变量上限 999，取 500 一档）返回已收藏的 id。 */
+  @RequiresApi(Build.VERSION_CODES.R)
+  private fun collectFavoritedIds(ids: List<Long>): List<Long> {
+    if (ids.isEmpty()) return emptyList()
+    val resolver = reactApplicationContext.contentResolver
+    val favorites = ArrayList<Long>()
+    for (chunk in ids.chunked(500)) {
+      val selection = MediaStore.MediaColumns._ID + " IN (" + chunk.joinToString(",") + ")"
+      resolver
+          .query(
+              MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+              arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.IS_FAVORITE),
+              selection,
+              null,
+              null)
+          ?.use { cursor ->
+            while (cursor.moveToNext()) {
+              if (!cursor.isNull(1) && cursor.getInt(1) == 1) favorites.add(cursor.getLong(0))
+            }
+          }
+    }
+    return favorites
   }
 
   /**
@@ -1021,9 +1181,13 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     const val ERR_NO_ACTIVITY = "ERR_NO_ACTIVITY"
     const val ERR_UNKNOWN = "ERR_UNKNOWN"
     const val ERR_HTTP = "ERR_HTTP"
+    /** 系统版本太低（Android < 11），没有图片收藏夹。 */
+    const val ERR_UNSUPPORTED = "ERR_UNSUPPORTED"
 
     const val REQ_PICK_TREE = 0x7744
     const val REQ_PICK_TEXT = 0x7745
+    /** 系统「加入收藏夹」确认框（只在直接改 IS_FAVORITE 失败时才用到）。 */
+    const val REQ_FAVORITE = 0x7746
     const val EVENT_TREE_PICKED = "TelegraphDownloader:treePicked"
 
     // Maximum time to wait for the text-file picker to return before the

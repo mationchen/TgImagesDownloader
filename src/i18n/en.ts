@@ -245,6 +245,13 @@ export const en: Record<ZhKeys, string> = {
     'Records moved to the recycle bin. Restore them, or empty the bin (deleting the gallery files too).',
   'settings.trash.open': 'Open recycle bin',
   'settings.trash.count': '{count}',
+  // Fullscreen viewer → system favorites (Android MediaStore favourite flag)
+  'history.viewer.favorite': 'Add to system favorites',
+  'history.viewer.unfavorite': 'Remove from favorites',
+  'history.viewer.favorited': 'Added to favorites',
+  'history.viewer.unfavorited': 'Removed from favorites',
+  'history.viewer.favoriteFailed': "Couldn't update the favorite state",
+  'history.favoriteBadge': 'Added to system favorites',
   'history.detail.video': 'This is a video',
   'history.detail.openExternal': 'Open with the system player',
   'history.detail.imageCount': '{count} files',

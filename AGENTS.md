@@ -220,7 +220,7 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
 
 ## State of the project
 
-A shipped Android app (release **1.0.13**, `versionCode 13`): a web image batch
+A shipped Android app (release **1.0.14**, `versionCode 14`): a web image batch
 downloader, plus a download-history manager (favorites / mark-for-delete /
 recycle bin) and a local archive import feature.
 `README.md` is this project's own documentation — read it first for features,

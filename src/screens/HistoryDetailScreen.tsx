@@ -376,15 +376,39 @@ const RecordPage: React.FC<{
   const dragPos = useRef(new Animated.ValueXY()).current;
 
   const loadedRecord = record !== 'loading' ? record : null;
-  const baseUris =
-    loadedRecord && (loadedRecord.imagePaths?.length ?? 0) > 0
-      ? loadedRecord.imagePaths
-      : loadedRecord
-      ? fallbackUris
-      : [];
+  const baseUris = useMemo(
+    () =>
+      loadedRecord && (loadedRecord.imagePaths?.length ?? 0) > 0
+        ? loadedRecord.imagePaths
+        : loadedRecord
+        ? fallbackUris
+        : [],
+    [loadedRecord, fallbackUris],
+  );
   /** 实际渲染顺序（拖动中会变）。 */
   const uris = order ? order.map(i => baseUris[i]) : baseUris;
   const remoteUrls = loadedRecord?.imageUrls ?? [];
+  const [favoritedUris, setFavoritedUris] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  // 按 URI 对应每张图片，拖动排序后角标也跟着图片走。
+  // 关闭全屏时重新读取系统状态；清理回调避免旧图集的查询覆盖新图集。
+  useEffect(() => {
+    if (viewerIndex !== null) return;
+    let cancelled = false;
+    setFavoritedUris(new Set());
+    if (baseUris.length > 0 && TelegraphDownloader?.listFavoritedUris) {
+      TelegraphDownloader.listFavoritedUris(baseUris)
+        .then(result => {
+          if (!cancelled) setFavoritedUris(new Set(result));
+        })
+        .catch(() => undefined);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [baseUris, viewerIndex]);
   const size = tileSizeFor(width);
   const cell = size + GAP;
   // 只有「顺序来自记录本身」时才允许拖动 —— 否则改了也存不回数据库。
@@ -631,8 +655,6 @@ const RecordPage: React.FC<{
     );
   }
 
-  const urisEmpty = uris.length === 0;
-
   return (
     <View style={{ width }} ref={rootRef}>
       {sortMode ? (
@@ -690,6 +712,16 @@ const RecordPage: React.FC<{
                 item.startsWith('content://') ? remoteUrls[index] : undefined
               }
             />
+            {favoritedUris.has(item) && !isVideoUri(item) ? (
+              <View
+                pointerEvents="none"
+                style={styles.tileFavoriteBadge}
+                accessibilityRole="image"
+                accessibilityLabel={t('history.favoriteBadge')}
+              >
+                <Text style={styles.tileFavoriteText}>{'\u2665\uFE0E'}</Text>
+              </View>
+            ) : null}
           </View>
         )}
         ListHeaderComponent={<Header record={record} />}
@@ -703,7 +735,7 @@ const RecordPage: React.FC<{
         }
         contentContainerStyle={styles.list}
         // Keep an empty list renderable so ListEmptyComponent still fires.
-        extraData={urisEmpty ? undefined : uris}
+        extraData={favoritedUris}
       />
 
       {/* 拖动时跟随手指的悬浮方块 */}
@@ -930,6 +962,63 @@ const ImageViewer: React.FC<{
     setTimeout(() => setWindowOpen(true), 150);
   }, []);
 
+  /* ---- 系统收藏夹（♥）：Android 11+ 的 MediaStore.IS_FAVORITE ---- */
+
+  // 大图是横向分页的，这里算的是「当前这一页」对应的图片。
+  const viewerUri =
+    uris[Math.min(currentIndex, Math.max(0, uris.length - 1))] ?? '';
+  /** 视频不能收藏；原生侧没有该方法（iOS / 旧安装包）时也不显示按钮。 */
+  const canFavorite =
+    viewerUri.length > 0 &&
+    !isVideoUri(viewerUri) &&
+    TelegraphDownloader?.setMediaFavorite != null;
+  /** 系统收藏夹状态：null = 未知 / 不支持。 */
+  const [isFavorite, setIsFavorite] = useState<boolean | null>(null);
+  const [favoriteBusy, setFavoriteBusy] = useState(false);
+
+  // 换页 / 重新打开时读一次系统收藏状态（DB 里没有这个信息，只能问系统）。
+  useEffect(() => {
+    if (!visible || !canFavorite) {
+      setIsFavorite(null);
+      return;
+    }
+    let cancelled = false;
+    TelegraphDownloader?.isMediaFavorite?.(viewerUri)
+      .then(v => {
+        if (!cancelled) setIsFavorite(v);
+      })
+      .catch(() => {
+        if (!cancelled) setIsFavorite(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, viewerUri, canFavorite]);
+
+  /** 加入 / 取消系统收藏夹：先乐观翻转图标，失败再翻回来。 */
+  const onToggleFavorite = useCallback(() => {
+    if (!canFavorite || favoriteBusy) return;
+    // 还没读到系统状态时按「加入」处理（写入的是"收藏 = 是"，重复写无副作用）。
+    const next = isFavorite !== true;
+    setIsFavorite(next);
+    setFavoriteBusy(true);
+    TelegraphDownloader?.setMediaFavorite?.(viewerUri, next)
+      .then(() => {
+        ToastAndroid.show(
+          t(next ? 'history.viewer.favorited' : 'history.viewer.unfavorited'),
+          ToastAndroid.SHORT,
+        );
+      })
+      .catch(() => {
+        setIsFavorite(!next);
+        ToastAndroid.show(
+          t('history.viewer.favoriteFailed'),
+          ToastAndroid.SHORT,
+        );
+      })
+      .finally(() => setFavoriteBusy(false));
+  }, [canFavorite, favoriteBusy, isFavorite, viewerUri]);
+
   useEffect(() => {
     if (!visible) {
       setReady(false);
@@ -996,7 +1085,35 @@ const ImageViewer: React.FC<{
               total: uris.length,
             })}
           </Text>
-          <View style={styles.viewerPlaceholder} />
+          {canFavorite ? (
+            <Pressable
+              onPress={onToggleFavorite}
+              disabled={favoriteBusy}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel={
+                isFavorite
+                  ? t('history.viewer.unfavorite')
+                  : t('history.viewer.favorite')
+              }
+              style={({ pressed }) => [
+                styles.viewerCloseBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.viewerFavText,
+                  isFavorite && styles.viewerFavTextOn,
+                ]}
+              >
+                {isFavorite ? '\u2665\uFE0E' : '\u2661'}
+              </Text>
+            </Pressable>
+          ) : (
+            // 不支持系统收藏夹（iOS / Android < 11 / 视频）时保持对称留白。
+            <View style={styles.viewerPlaceholder} />
+          )}
         </View>
         <ScrollView
           ref={scrollRef}
@@ -1284,6 +1401,21 @@ function createStyles(c: ThemeColors) {
       fontVariant: ['tabular-nums'],
     },
     viewerPlaceholder: { width: 40 },
+    tileFavoriteBadge: {
+      position: 'absolute',
+      top: 6,
+      right: 6,
+      width: 26,
+      height: 26,
+      borderRadius: 13,
+      backgroundColor: 'rgba(0,0,0,0.6)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    tileFavoriteText: { fontSize: 18, lineHeight: 22, color: '#FF4D6D' },
+    /** 系统收藏夹按钮（♥ / ♡）。用文字呈现变体 U+FE0E，颜色才能自定义。 */
+    viewerFavText: { fontSize: 24, lineHeight: 28, color: '#fff' },
+    viewerFavTextOn: { color: '#FF4D6D' },
     viewerScroll: { flex: 1 },
     viewerScrollContent: { alignItems: 'center' },
     viewerPage: {

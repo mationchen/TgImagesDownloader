@@ -242,6 +242,13 @@ export const zhCN = {
     '已移入回收站的下载记录；可恢复，或一键清空（连带删除相册文件）。',
   'settings.trash.open': '打开回收站',
   'settings.trash.count': '{count} 条',
+  // 全屏大图 → 系统收藏夹（Android 系统的图片收藏标记）
+  'history.viewer.favorite': '加入系统收藏夹',
+  'history.viewer.unfavorite': '取消系统收藏',
+  'history.viewer.favorited': '已加入系统收藏夹',
+  'history.viewer.unfavorited': '已取消系统收藏',
+  'history.viewer.favoriteFailed': '收藏失败，系统不允许修改这张图片',
+  'history.favoriteBadge': '已加入系统收藏夹',
   'history.detail.video': '这是一个视频',
   'history.detail.openExternal': '用系统播放器打开',
   'history.detail.imageCount': '文件 {count} 个',

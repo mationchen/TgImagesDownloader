@@ -104,6 +104,21 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
        * when unavailable). Needed to render video tiles.
        */
       loadMediaThumbnail?(uri: string, size: number): Promise<string | null>;
+      /**
+       * 系统相册的「收藏」状态（`MediaStore.IS_FAVORITE`）。
+       * Android 11+ 才有这个标记；不支持或查不到时返回 null。
+       */
+      isMediaFavorite?(uri: string): Promise<boolean | null>;
+      /**
+       * 把媒体加入 / 移出系统收藏夹。本 App 自己的图片直接改标记（无弹窗），
+       * 改不动时由系统弹一次确认框。Android < 11 reject `ERR_UNSUPPORTED`。
+       */
+      setMediaFavorite?(uri: string, favorite: boolean): Promise<boolean>;
+      /**
+       * 批量判断哪些媒体已在系统收藏夹里（返回其中被收藏的 URI）。
+       * 下载记录列表据此显示 ♥（图集里有任意一张被收藏即可）。
+       */
+      listFavoritedUris?(uris: string[]): Promise<string[]>;
     }
   | undefined;
 
