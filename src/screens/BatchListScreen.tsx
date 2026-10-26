@@ -216,6 +216,30 @@ export const BatchListScreen: React.FC = () => {
     setItems(prev => prev.filter((_, i) => i !== index));
   }, []);
 
+  /**
+   * 清除整个 URL 列表（返回「选择 txt 文件 / 选择压缩包」的空状态）。
+   * 只清队列，不动已经下载下来的图片，所以要二次确认。
+   */
+  const handleClearList = useCallback(() => {
+    if (items.length === 0 || running) return;
+    Alert.alert(
+      t('batch.clearTitle'),
+      t('batch.clearBody', { count: items.length }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('batch.clear'),
+          style: 'destructive',
+          onPress: () => {
+            setItems([]);
+            setPaused(false);
+            setShowSummary(false);
+          },
+        },
+      ],
+    );
+  }, [items.length, running]);
+
   /** Row currently being extracted, so progress events land on the right row. */
   const archiveRowRef = useRef<number | null>(null);
 
@@ -757,6 +781,19 @@ export const BatchListScreen: React.FC = () => {
                   {t('archive.pickArchives')}
                 </Text>
               </Pressable>
+              <Pressable
+                onPress={handleClearList}
+                accessibilityRole="button"
+                accessibilityLabel={t('batch.clear')}
+                style={({ pressed }) => [
+                  styles.repickBtn,
+                  pressed && styles.pressed,
+                  running && styles.pressedDisabled,
+                ]}
+                disabled={running}
+              >
+                <Text style={styles.repickBtnDanger}>{t('batch.clear')}</Text>
+              </Pressable>
             </View>
             <FlatList
               data={items}
@@ -903,6 +940,10 @@ function createStyles(c: ThemeColors) {
       backgroundColor: c.surfaceStrong,
     },
     repickBtnText: { color: c.textPrimary, fontSize: 12, fontWeight: '500' },
+    /** 「清除」用警示色，和旁边两个普通操作区分开。 */
+    repickBtnDanger: { color: c.danger, fontSize: 12, fontWeight: '500' },
+    /** 运行中禁用的浅色状态（清除 / 重新选择都靠它）。 */
+    pressedDisabled: { opacity: 0.45 },
     list: { flex: 1 },
     listContent: { paddingBottom: 8 },
     row: {

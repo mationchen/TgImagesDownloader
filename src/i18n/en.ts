@@ -330,6 +330,7 @@ export const en: Record<ZhKeys, string> = {
   'common.retry': 'Retry',
   'common.loading': 'Loading...',
   'common.back': 'Back',
+  'common.pressBackAgain': 'Press back again to exit',
   // Network / download confirmation
   'network.wifiWarning.title': 'Not on Wi-Fi',
   'network.wifiWarning.body':
@@ -379,6 +380,10 @@ export const en: Record<ZhKeys, string> = {
     'Pick a url.txt file (one URL per line). URLs will be processed one by one. Tap a row to preview the images parsed from that link.',
   'batch.pickFile': 'Choose url.txt',
   'batch.repickFile': 'Choose again',
+  'batch.clear': 'Clear',
+  'batch.clearTitle': 'Clear list',
+  'batch.clearBody':
+    'This removes {count} link(s) from the list. Downloaded images are kept.',
   'batch.empty': 'No URLs yet. Tap the button below to pick a url.txt file.',
   'batch.start': 'Start',
   'batch.pause': 'Pause',

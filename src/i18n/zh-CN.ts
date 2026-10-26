@@ -330,6 +330,7 @@ export const zhCN = {
   'common.retry': '重试',
   'common.loading': '加载中。',
   'common.back': '返回',
+  'common.pressBackAgain': '再按一次返回键退出',
   // Network / download confirmation
   'network.wifiWarning.title': '未连接 Wi-Fi',
   'network.wifiWarning.body':
@@ -378,6 +379,9 @@ export const zhCN = {
     '选择一个 url.txt，每行一个 URL，逐个依次下载。点击某一行可预览该链接解析出的图片。',
   'batch.pickFile': '选择 url.txt 文件',
   'batch.repickFile': '重新选择',
+  'batch.clear': '清除',
+  'batch.clearTitle': '清除列表',
+  'batch.clearBody': '将从列表中移除 {count} 条链接，不会删除已下载的图片。',
   'batch.empty': '还没有 URL。点击下方按钮选择 url.txt。',
   'batch.start': '开始',
   'batch.pause': '暂停',

@@ -153,16 +153,22 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
       const filter = buildFilter();
       try {
         await initHistoryDatabase();
-        const [rows, totalRows, marked] = await Promise.all([
-          listHistory(PAGE_SIZE, nextOffset, filter),
-          countHistory(filter),
+        // 先取总数再算偏移：记录变少（删除 / 移入回收站）后当前页可能已越界，
+        // 这时落到最后一页，而不是给用户一个空白页。
+        const totalRows = await countHistory(filter);
+        const safeOffset =
+          nextOffset > 0 && totalRows > 0 && nextOffset >= totalRows
+            ? Math.floor((totalRows - 1) / PAGE_SIZE) * PAGE_SIZE
+            : Math.max(0, nextOffset);
+        const [rows, marked] = await Promise.all([
+          listHistory(PAGE_SIZE, safeOffset, filter),
           countMarkedDeleted(),
         ]);
         setRecords(rows);
-        setOffset(nextOffset);
+        setOffset(safeOffset);
         setTotal(totalRows);
         setMarkedCount(marked);
-        setHasMoreInDb(totalRows > nextOffset + rows.length);
+        setHasMoreInDb(totalRows > safeOffset + rows.length);
       } catch {
         setLoadError(true);
         setRecords([]);
@@ -173,6 +179,19 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
       }
     },
     [buildFilter],
+  );
+
+  /** 当前页偏移的镜像：刷新回调里读最新值，避免闭包拿到过期页码。 */
+  const offsetRef = useRef(offset);
+  offsetRef.current = offset;
+
+  /**
+   * 重新加载**用户当前所在的那一页**。
+   * 下拉刷新、从详情页返回都用它 —— 页码不该被重置回第一页。
+   */
+  const refreshCurrentPage = useCallback(
+    (opts?: { silent?: boolean }) => reload(offsetRef.current, opts),
+    [reload],
   );
 
   /** 一键把「标记为删除」的记录移入回收站（确认后执行）。 */
@@ -193,24 +212,24 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
                   t('history.moveToTrashDone', { count: moved }),
                   ToastAndroid.SHORT,
                 );
-                await reload(0, { silent: true });
+                await refreshCurrentPage({ silent: true });
               })
               .catch(() => undefined);
           },
         },
       ],
     );
-  }, [markedCount, reload]);
+  }, [markedCount, refreshCurrentPage]);
 
-  // Pull-to-refresh: reload the newest page without blanking the list.
+  // Pull-to-refresh: 刷新当前页（不回到第一页，列表也不闪）。
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await reload(0, { silent: true });
+      await refreshCurrentPage({ silent: true });
     } finally {
       setRefreshing(false);
     }
-  }, [reload]);
+  }, [refreshCurrentPage]);
 
   // Initial load. Also re-runs immediately when the date / status filter changes.
   useEffect(() => {
@@ -328,8 +347,9 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   // current page/scroll position instead of jumping back to page 1.
   useFocusEffect(
     useCallback(() => {
-      if (consumeHistoryChanged()) reload(0);
-    }, [reload]),
+      // 有变化时只刷新**当前页**：看完详情返回不该把人甩回第一页。
+      if (consumeHistoryChanged()) refreshCurrentPage({ silent: true });
+    }, [refreshCurrentPage]),
   );
 
   const pageFrom = offset + 1;

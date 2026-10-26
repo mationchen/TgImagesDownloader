@@ -1262,7 +1262,7 @@ function createStyles(c: ThemeColors) {
       alignItems: 'center',
       justifyContent: 'center',
     },
-    headerActionText: { fontSize: 17 },
+    headerActionText: { fontSize: 17, color: c.headerTitle },
     /** 已收藏的星标用主题色高亮。 */
     headerActionActive: { color: c.primary },
     /** 「已标记删除」用警示色。 */
