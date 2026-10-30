@@ -88,11 +88,15 @@ android {
         }
     }
     defaultConfig {
-        applicationId "com.acstd.tgimagesdownloader"
+        // Application ID 刻意保留 `.release` 后缀：手机上的正式版一直是这个包名，
+        // 历史数据（下载记录库、设置）都挂在这个包下面。改成别的一律等于换 App，
+        // 老数据会读不到。debug / release 两个变体**共用这一个 ID**，
+        // 见 buildTypes 里的说明。
+        applicationId "com.acstd.tgimagesdownloader.release"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 15
-        versionName "1.0.15"
+        versionCode 17
+        versionName "1.0.17"
     }
     signingConfigs {
         debug {
@@ -110,19 +114,26 @@ android {
     }
     buildTypes {
         debug {
-            signingConfig signingConfigs.debug
-            // Display name suffix so the two launchers are visually distinct
+            // 调试版与正式版**同包名 + 同正式签名**（参考 iWorkDaily 的做法）：
+            //   npx react-native run-android → 用 debug 覆盖当前安装，保留 App 数据
+            //   npm run apk:local            → 用 release 覆盖当前安装，保留 App 数据
+            // 代价：两者不能同时安装（同一包名只能存在一个），这正是想要的
+            //       「调试时用 debug、日常用 release」。
+            // 注意：**绝不能**为了调试把它改回 signingConfigs.debug ——
+            //       签名一变就没法覆盖安装，只能卸载（会清空全部下载记录）。
+            signingConfig signingConfigs.release
+            // Display name suffix so the launcher is visually distinct
             resValue "string", "app_name", "网页图片批量下载器 Debug"
             versionNameSuffix "-debug"
         }
         release {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
-	    signingConfig signingConfigs.release
-            applicationIdSuffix ".release"
+            // 不再用 applicationIdSuffix：包名由 defaultConfig 统一给出，
+            // 与 debug 一致才能覆盖安装并共用同一份数据。
         }
     }
 }

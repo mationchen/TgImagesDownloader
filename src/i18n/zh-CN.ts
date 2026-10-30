@@ -191,6 +191,14 @@ export const zhCN = {
   'history.detail.notFound': '记录不存在',
   'history.detail.title': '下载记录详情',
   'history.detail.noDetail': '此记录没有图片详情',
+  'history.detail.edgeFirst': '已经是第一条记录',
+  'history.detail.edgePrevPage': '已是本页第一条，返回列表翻到上一页再试',
+  'history.detail.edgeNextPage': '已是本页最后一条，返回列表翻到下一页再试',
+  'history.detail.edgeLoadMore': '已是本页最后一条，返回列表继续加载后再试',
+  'history.detail.edgeLast': '已经是最后一条记录',
+  'history.detail.failedCount':
+    '{count} 张图片加载失败（可能已从相册删除），已隐藏',
+  'history.detail.position': '第 {position} / {total} 条',
   'history.mediaPerm.title': '需要照片访问权限',
   'history.mediaPerm.body':
     '部分记录的图片保存在系统相册中，需要授予「照片和视频」访问权限才能显示。Android 14 及以上可在系统设置中仅选择部分照片。',
@@ -225,10 +233,18 @@ export const zhCN = {
   'history.moveToTrashMsg':
     '将把 {count} 条标记为删除的记录移入回收站，之后不再显示在下载记录里。\n可在「设置 → 回收站」里恢复或彻底清空。',
   'history.moveToTrashDone': '已移入回收站：{count} 条',
+  'history.moveToTrashMsgPartial':
+    '将把 {count} 条标记为删除的记录移入回收站，但回收站只剩 {room} 个名额，超出的部分会留在下载记录里（仍带待删除标记）。',
+  'history.firstPage': '已经是第一页',
+  'history.lastPage': '已经是最后一页',
   'trash.title': '回收站',
   'trash.empty': '回收站是空的',
   'trash.emptyHint':
     '在下载记录详情页点「标记为删除」，再在列表点「移入回收站」，记录就会出现在这里。',
+  'trash.capacity': '已存 {count} / {capacity} 条 · 满后需先清空才能继续移入',
+  'trash.fullTitle': '回收站已满',
+  'trash.fullMsg':
+    '回收站最多保留 {capacity} 条记录，请先清空或恢复部分记录，再继续移入。',
   'trash.clear': '一键清空',
   'trash.clearTitle': '清空回收站',
   'trash.clearMsg':
@@ -236,6 +252,7 @@ export const zhCN = {
   'trash.clearDone': '已清空 {count} 条记录',
   'trash.restore': '恢复',
   'trash.restoreHint': '恢复到下载记录',
+  'trash.openHint': '打开详情确认',
   'trash.trashedAt': '移入于 {time}',
   'settings.trash.title': '回收站',
   'settings.trash.hint':

@@ -690,22 +690,49 @@ export async function countMarkedDeleted(): Promise<number> {
 }
 
 /**
- * 一键把「标记为删除」的记录移入回收站，返回移入条数。
- * 移入后从下载记录里消失，但数据仍在（回收站可恢复或彻底清空）。
+ * 回收站容量上限。
+ *
+ * 超过后不再接收新的记录：回收站列表本身按这个上限取数，如果放任无限堆积，
+ * 用户会看到一个「被静默截断」的列表，而且清空时也会漏掉超出的部分。
  */
-export async function moveMarkedToTrash(): Promise<number> {
+export const TRASH_CAPACITY = 500;
+
+/** {@link moveMarkedToTrash} 的结果。 */
+export interface TrashMoveResult {
+  /** 真正移入回收站的条数。 */
+  moved: number;
+  /** 因回收站已满被拒绝的条数（仍留在下载记录里，标记保持）。 */
+  skipped: number;
+}
+
+/**
+ * 一键把「标记为删除」的记录移入回收站。
+ * 移入后从下载记录里消失，但数据仍在（回收站可恢复或彻底清空）。
+ * **保留 `is_marked_deleted`**：还原回来时删除标记还在（用户要求）。
+ * 回收站达到 {@link TRASH_CAPACITY} 时只移入剩余名额，其余原样保留。
+ */
+export async function moveMarkedToTrash(): Promise<TrashMoveResult> {
   await initHistoryDatabase();
   const count = await countMarkedDeleted();
-  if (count === 0) return 0;
+  if (count === 0) return { moved: 0, skipped: 0 };
+  const trashed = await countTrash();
+  const room = Math.max(0, TRASH_CAPACITY - trashed);
+  if (room === 0) return { moved: 0, skipped: count };
   const now = Date.now();
   await getDb().execute(
     `UPDATE history
-        SET trashed_at = ?, is_marked_deleted = 0, updated_at = ?
-      WHERE is_marked_deleted = 1 AND trashed_at = 0;`,
-    [now, now],
+        SET trashed_at = ?, updated_at = ?
+      WHERE id IN (
+        SELECT id FROM history
+         WHERE is_marked_deleted = 1 AND trashed_at = 0
+         ORDER BY created_at DESC
+         LIMIT ?
+      );`,
+    [now, now, room],
   );
   markHistoryChanged();
-  return count;
+  const moved = Math.min(room, count);
+  return { moved, skipped: count - moved };
 }
 
 /** 回收站列表（按移入时间倒序）。 */
@@ -735,12 +762,13 @@ export async function countTrash(): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
-/** 从回收站恢复（回到下载记录列表）。 */
+/** 从回收站恢复（回到下载记录列表）。**保留「标记为删除」的状态** —— 还原只是
+ * 撤销「移入回收站」这一步，用户之前打的删除意图还在，列表里仍会显示待删除徽章。 */
 export async function restoreFromTrash(id: number): Promise<void> {
   await initHistoryDatabase();
   await getDb().execute(
     `UPDATE history
-        SET trashed_at = 0, is_marked_deleted = 0, updated_at = ?
+        SET trashed_at = 0, updated_at = ?
       WHERE id = ?;`,
     [Date.now(), id],
   );

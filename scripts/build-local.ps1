@@ -4,9 +4,12 @@
 #       写代码时用 debug（npx react-native run-android，走 Metro 热更新），
 #       平时打开用 release。
 #
-# 注意（与 iWorkDaily 的差异）：本项目的 release 带 applicationIdSuffix ".release"，
-#       与 debug 是**两个不同的包**，所以 release 覆盖安装的是 release 那份，
-#       debug 那份不受影响、两者可共存。
+# 包名与签名（2026-10-30 起，与 iWorkDaily 的做法一致）：
+#   debug 与 release **同包名 com.acstd.tgimagesdownloader.release + 同正式签名**，
+#   所以两者互相覆盖安装都会保留 App 数据（下载记录库 / 设置）。
+#   代价：同一时间只能装一个，装 release 会替换掉 debug，反之亦然。
+#   ⚠️ 绝不要为了调试把 debug 改回 debug.keystore —— 签名一变就只能卸载重装，
+#      会清空全部下载记录。
 #
 # 用法：
 #   pwsh scripts/build-local.ps1                # 打 release 并用 adb 覆盖安装
@@ -83,7 +86,9 @@ if ($LASTEXITCODE -ne 0 -or ($installOut -join "`n") -match 'FAILED') {
   Write-Host ''
   Write-Host '[失败] 覆盖安装被拒绝。最常见原因是签名不一致：' -ForegroundColor Red
   Write-Host '  Android 要求「同包名 + 同签名」才能覆盖安装。' -ForegroundColor Red
-  Write-Host '  若设备上装的是旧签名的同包名 App，需要先卸载（会清空该 App 数据）：' -ForegroundColor Red
+  Write-Host '  正常配置下 debug / release 都用正式签名（见 android/app/build.gradle），' -ForegroundColor Red
+  Write-Host '  出现本错误说明签名或包名被改过，先检查 gradle 配置，别急着卸载。' -ForegroundColor Red
+  Write-Host '  （卸载会清空全部下载记录，确认无救才可执行下面这条）' -ForegroundColor Red
   Write-Host '    adb uninstall com.acstd.tgimagesdownloader.release' -ForegroundColor Yellow
   exit 1
 }

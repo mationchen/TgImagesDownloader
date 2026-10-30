@@ -6,117 +6,93 @@
 
 | 项 | 内容 |
 |---|---|
-| 项目 | 网页图片批量下载器（TgImagesDownloader）—— 网页图片批量下载 + 下载记录管理 + 压缩包导入 |
+| 项目 | 网页图片批量下载器（TgImagesDownloader）—— 批量下载 + 下载记录管理 + 压缩包导入 |
 | 仓库路径 | `D:\Android\TgImagesDownloader` |
-| 最后更新 | `2026-10-27 01:56`（本地时区） / 会话：收尾 1.0.15 + 工具链维护 |
-| 分支 / 工作区 | `master` / **有 1 个未提交改动**（`开发相关资源/历史迭代指令汇总.md`，+16 行） |
-| 当前版本 | `1.0.15（versionCode 15）`，已发布 **v1.0.15（Latest，2026-10-26 16:37Z）** |
+| 最后更新 | `2026-10-30 20:40`（本地时区） / 会话：debug 与 release 统一为同一安装（保留 release 数据） |
+| 分支 / 工作区 | `master` / 本轮改动未提交（见 §3） |
+| 当前版本 | `1.0.17（versionCode 17）`，已构建并覆盖安装，**待发版** |
 | 数据库 schema | v5（迁移在 `src/services/historyService.ts`） |
-| 运行环境 | Node 22.23.2；RN 0.87.1（Hermes + New Arch）；实测机 2509FPN0BC / Android 16（API 36）；**当前 adb 未连接** |
+| 运行环境 | Node 22.23.2；RN 0.87.1（Hermes + New Arch）；实测机 2509FPN0BC / Android 16（API 36） |
 
 ## 1. 这一轮的目标
 
-收尾 1.0.15 的验证与发布，并把「换会话怎么不丢上下文」制度化（全局规则 + 模板 + 命令）；
-顺带排查 OpenCode 变慢的原因。
+修下载记录分页的错位/闪烁，补回收站容量与预览，并解决详情页左右滑动闪退。
 
-## 2. 已完成（上次提交 `7c99bf4` 之后）
+## 2. 已完成（上次提交 `1129bf7` 之后）
 
 | 改动 | 涉及文件 | 怎么验证的 / 结果 |
 |---|---|---|
-| 全局新增「会话交接」硬规则 | `C:\Users\Administrator\.config\opencode\AGENTS.md` §十二 | 读回文件确认小节存在（264 → 308 行），备份 `AGENTS.md.20261027_012812.bak` |
-| 通用交接模板 | `C:\Users\Administrator\.config\opencode\templates\HANDOVER.md` | 写入后 `Test-Path` = True，71 行 |
-| 两个全局命令 `/handover`、`/resume` | `~\.config\opencode\commands\{handover,resume}.md` | `opencode api get /api/command` 返回列表里已含 handover / resume ✅ |
-| npm 全局 CLI 从 V1 换到 V2 | 全局 npm | `opencode --version` → `opencode v2.1.4`；`opencode service status` → `http://127.0.0.1:28894` ✅ |
-| OpenCode 变慢原因定位 | — | 仅诊断，未改数据：会话 5,990 条 / 124 MB（其中 80.5 MB 是截图）、DB 4.05 GB（2.05 GB 空闲页）、WAL 187 MB、`opencode-cli` 1.15 GB |
-| 补齐 10-27 指令日志 | `开发相关资源/历史迭代指令汇总.md` | 追加 7 条，`git diff` 显示 +16 行（未提交） |
-
-### 2.1 更早的成果（已提交，只用 `git log` 概括）
-
-| 提交 | 内容 |
-|---|---|
-| `7c99bf4` 1.0.15 | 翻页刷新/返回不跳回第一页；一级页面双击返回退出；修复黑夜模式收藏星标不可见；URL 列表新增清除 |
-| `50d8448` 1.0.14 | 大图新增「加入系统收藏夹」♥；图片网格标记已收藏的图 |
-| `3c8a234` 1.0.13 | 大图查看器改按窗口挂载，修 50+ 张黑屏卡顿；AGENTS 新增「版本号只在提交前升」 |
-| `3ad1719` | AGENTS 第一原则：禁止自动 `add/commit/push` |
-| `6661c47` 1.0.12 | 收藏 / 标记删除 / 回收站（恢复 + 一键清空）；DB v5 迁移 |
+| 分页错位：越界回退按页大小对齐、翻页一次取满 100 条、末页禁用「下一页」 | `utils/pagination.ts`（新）、`HistoryScreen.tsx`、`__tests__/pagination.test.ts`（新） | 真机 889 条：翻页即时 `101-200`；末页 `801-889` 且按钮 disabled；`npx jest` 9 条新用例 |
+| 第二页下拉闪烁：翻页前滚回顶部 + `loadMore` 并发闸门 | `HistoryScreen.tsx` | 第二页快速滑到底，页码恒定、无重复 key 警告 |
+| 分页边界 Toast（列表） | 同上 | 第一页点「上一页」/末页点「下一页」→ `dumpsys window` 出现 Toast |
+| 回收站容量 500：满后拒绝移入 + 顶部说明 + 空态也显示 | `historyService.ts`、`TrashScreen.tsx`、`HistoryScreen.tsx` | 空态/有数据两种状态均显示 `已存 N / 500 条` |
+| 回收站缩略图 + 整行进详情 | `TrashScreen.tsx` | 56dp 缩略图节点可见；点击进详情，可左右滑相邻记录 |
+| 还原保留删除标记 | `historyService.ts` | 标记 → 移入 → 恢复，列表仍显示「移入回收站（1）」 |
+| **详情页滑动闪退**（Fabric `addViewAt`）| `HistoryDetailScreen.tsx` | 第二页 201 项图集起滑，**80 次有效滑动**（每 10 次校验标题变化）无崩溃，内存 290-390 MB 稳定 |
+| 详情页边界提示（当前页首/末条） | 同上 | 「完成」后 Toast：`已经是第一条` / `返回列表翻页` 等四种文案 |
+| 退出详情后列表回到该条 | `utils/lastViewed.ts`（新）、`HistoryScreen.tsx` | 日志 `target=929 → found at section=3 item=0`，列表命中 |
+| 详情页序号徽章 + 路径徽章 + 失败图片改文字提示 | `HistoryDetailScreen.tsx`、`navigation/types.ts`、i18n | 徽章行：`✓ 完成 | 第 1 / 876 条 | Pictures/TelegraphDownloader` |
+| 详情页/列表「图片打不开」：文件其实是 WebP 却登记成 image/jpeg | `TelegraphDownloaderModule.kt`（新增 `sniffMimeType()` 按文件头判类型）、`HistoryDetailScreen.tsx`、`HistoryScreen.tsx`、`TrashScreen.tsx` | 拉库文件确认 `RIFF…WEBP` 头；新下载按真实类型入库；全屏 / 详情网格 / 列表 / 回收站共 4 处均改为「本地失败→远程兜底」 |
+| debug 与 release 统一为一个安装（同包名 + 同正式签名） | `android/app/build.gradle`、`scripts/build-local.ps1`、`README.md`、`AGENTS.md` | 验签一致（SHA-256 `AD:DF:…:05:06`）；release→debug→release 双向覆盖，889 行数据始终未变；旧 debug 包已卸载（库备份在 `backup/`） |
 
 ## 3. 当前状态
 
-- **能不能跑**：能。手机上已装 1.0.15（release，覆盖安装，数据保留）。
-- **卡点**：无。
-- **未提交**：`开发相关资源/历史迭代指令汇总.md`（今日 7 条指令）。源码与文档均已提交。
-- **测试是否污染数据**：没有。测试时切换过系统主题（深色 → 已还原「跟随系统」）、切换过一条记录的 ★ 收藏（已还原）；临时文件 `/sdcard/Download/urls_test.txt` 已删除。
+- **能不能跑**：能。手机当前装的是 **release 1.0.17**（包名 `com.acstd.tgimagesdownloader.release`），
+  已实测列表「共 876 条」。要调试就 `npx react-native run-android --no-packager`（会换成 debug，数据不变）。
+  Metro 仍在独立窗口运行（端口 8081），收工可直接关掉那个窗口。
+- **未提交**：`HistoryScreen.tsx`、`HistoryDetailScreen.tsx`、`TrashScreen.tsx`、`historyService.ts`、`navigation/types.ts`、`i18n/{zh-CN,en}.ts`、`README.md`、`AGENTS.md`、`android/app/build.gradle`、`scripts/build-local.ps1`、`TelegraphDownloaderModule.kt`、指令日志、`HANDOVER.md`；新增 `utils/pagination.ts`、`utils/lastViewed.ts`、`__tests__/pagination.test.ts`。
+- **数据现状**：库 `tgdownloader.sqlite` 共 889 行，回收站 13 条（未清空），无「待删除」标记、无收藏。
 
-## 4. 关键决策（为什么这么做）
+## 4. 关键决策
 
-- **翻页刷新保持当前页**：`refreshCurrentPage()` 用 `offsetRef` 读当前 offset，且 `reload()` 改成「先 `countHistory` 再取数」，越界时回落到最后一页。
-  - 放弃「刷新回第 1 页」，因为用户翻到第 2 页看详情回来会被甩回顶部，体验很差。
-  - 代价：每次刷新多一次 `COUNT(*)`（实测 <10 ms）。
-- **双击返回只在 Tab 页生效**：`BackHandler` 监听挂在 `MainTabs` 的 `useFocusEffect` 里，栈上有详情页时自动卸载。
-  - 放弃在 App 根统一拦截，因为会干扰二级页面正常返回。
-- **星标颜色用主题变量**：`headerActionText: { color: c.headerTitle }`，而不是写死白色。
-  - 代价：emoji 按钮不受影响（emoji 自带颜色），只有 ☆/★ 这类文字符号受益。
-- **系统收藏优先直改 `IS_FAVORITE`**：本 App 自己写入的媒体可直接 `ContentResolver.update`，无弹窗；失败才回退 `MediaStore.createFavoriteRequest`。
-  - 代价：回退路径会弹系统确认框，且此时 JS 侧只能乐观显示。
-- **大图查看器 ±2 页窗口 + 首图先出**：打开只挂当前一张，`onLoadEnd` 后再放开窗口。
-  - 放弃「全部一次加载」，201 张同时解码会黑屏数秒（实测内存只 +25 MB，旧实现会爆）。
-- **版本号只在提交前升一次**（AGENTS §13）：日常构建沿用当前版本号。
-  - 代价：本地构建的版本号可能与已发布版本同号；**严禁降版本号**（会 `INSTALL_FAILED_VERSION_DOWNGRADE`）。
+- **详情页 pager 弃用 FlatList**：Fabric 下虚拟化会在滑动时 remove/add cell，抛 `addViewAt: failed to insert view ...`。改成 ScrollView + 固定 N 个占位 View（子节点永不增删），只挂「当前页 ±1」。
+- **网格弃用 `numColumns`**：`index=4 count=3` 的越界正来自 numColumns 分组；改成「一行一个 cell、行内固定 3 格」，每行结构恒定。
+- **不要加 `removeClippedSubviews`**：同属那条崩溃路径，加了必崩（实测）。
+- **回收站移入/还原都不清 `is_marked_deleted`**：用户要求还原后保留删除意图；`countMarkedDeleted()` 已带 `trashed_at = 0`，不会重复计数。
+- **序号用全局位置**（offset + 页内 index + 1），与分页条的 `101-200` 对齐；从回收站进的详情不显示序号。
+- **debug / release 统一成一个安装（2026-10-30）**：两者都用 applicationId
+  `com.acstd.tgimagesdownloader.release` + `signingConfigs.release`，互相覆盖安装保留数据，
+  不能再共存。`.release` 后缀是历史包袱（手机数据挂在这个包下），不是为了区分变体。
+  参照 iWorkDaily 的同类配置。
 
-## 5. 已知坑（现象 → 原因 → 绕法）
+## 5. 已知坑
 
-- **`gradle` 卡在 `Downloading gradle-9.4.1-bin.zip failed`** → OpenCode 的 shell 读不到机器级 `GRADLE_USER_HOME`，回落到 C 盘残留目录 → 构建前显式设置：`$env:GRADLE_USER_HOME='D:\Android\.gradle'`（`npm run apk:local` 内部也会调 gradle）。
-- **Metro 在独立窗口里会自己退出**（多次观察）→ 调试改用 release 包（`npm run apk:local`，JS 已打包，不依赖 Metro）。
-- **Kotlin 报 `Unresolved reference 'currentActivity'`** → 该类里属性语法不可用 → 显式调用 `getCurrentActivity()`。
-- **RN 0.87 访问 `InteractionManager` 会打 deprecation** → 用 `setTimeout`/`requestAnimationFrame` 延后即可。
-- **手机截图黑屏不一定是崩溃** → 小米安全键盘 / 部分页面置 `FLAG_SECURE` → 改用 `uiautomator dump` 读文本与 bounds（不受影响）。
-- **`adb install -r` 报 `INSTALL_FAILED_USER_RESTRICTED`** → 多半是息屏/锁屏 → 唤醒解锁后重试。
-- **标题仍可能出现 `&amp;#8211;`** → `src/utils/htmlEntities.ts` 的 `decodeHtmlEntities` 只解一次（第 72 行，单次 `replace`）→ 二次编码的标题解不干净，见「下一步」。
-- **PowerShell 输出中文乱码** → 控制台是 936 代码页 → 写 UTF-8 文件再用 read 工具看，或 `[Console]::Out.WriteLine()`。
-- **`adb screencap` 提示 `Multiple displays were found`** → 无害，可加 `-d` 指定 display 消除。
+- **别把 debug 的 signingConfig 改回 `signingConfigs.debug`** → 签名一变就无法覆盖安装，
+  只能 `adb uninstall`，而卸载会清空 889 条记录的全部数据。
+- **debug 首次启动会弹系统「Android 应用兼容性」对话框**（Android 16 对 debuggable 应用
+  的 16 KB 页对齐检查；release 不会弹）→ 点「不再显示」即可继续，不是崩溃。
+- **Fabric `addViewAt` 闪退** → FlatList 虚拟化 / numColumns / removeClippedSubviews 三处都可能触发 → 详情页已全部绕开，别再改回去。
+- **横向 ScrollView 的占位子 View 只给 width 会塌成 0 高** → 整页白屏；必须 `width + height:'100%'`。
+- **ScrollView 的 `contentOffset` 在 Android 不保证生效** → 用 ref `scrollTo` 兜底，否则停在空占位页（白页）。
+- **慢速拖动只触发 `onScrollEndDrag`**，不触发 `onMomentumScrollEnd` → 分页回调两个都要挂。
+- **无线调试灭屏即断**（实测 30 秒 offline、2.5 分钟 TCP 断），端口随之变化；`adb mdns` 在本机不可用（5353 被 svchost/chrome 占），只能手动 `adb connect IP:端口`。
+- 其余沿用上一版：`GRADLE_USER_HOME` 需显式指定、`&amp;#8211;` 二次编码未修。
 
-## 6. 下一步（可执行）
+## 6. 下一步
 
-1. [ ] **修二次编码标题**：把 `D:\Android\TgImagesDownloader\src\utils\htmlEntities.ts` 的 `decodeHtmlEntities` 改成「最多循环 3 次直到结果不再变化」，并在 `__tests__/htmlEntities.test.ts` 补一条 `&amp;#8211;` 用例；验证：`npx jest __tests__/htmlEntities.test.ts`。
-2. [ ] **决定 `开发相关资源/page.html` 去留**：它是图片链接提取器的临时产物、已被 git 跟踪（`git ls-files` 可见）。要么删除并加进 `.gitignore`，要么明确保留 —— 需你拍板。
-3. [ ] **提交本轮唯一未提交文件**：`开发相关资源/历史迭代指令汇总.md`（下次提交一起带上即可）。
-4. [ ] **（可选）回收数据库空间**：停 OpenCode 服务后 `sqlite3 E:\OpenCodeCache\opencode\opencode.db "VACUUM;"`，可回收约 2 GB；先备份 `opencode.db`。
-5. [ ] **（可选）重新连接手机**：当前 `adb devices` 为空，做真机验证前先插线或 `adb connect 192.168.31.242:36677`。
+1. [ ] 发版 v1.0.17（tag + release，三个架构 APK；v1.0.16 已于 2026-10-30 00:31 发过）
+2. [ ] 修 `src/utils/htmlEntities.ts` 的二次编码（最多解 3 次），补 `&amp;#8211;` 用例
+3. [ ] 可选：扫存量图片、按文件头纠正 MediaStore 里的 MIME（老记录断网时仍打不开，现在只靠远程兜底）
+4. [ ] 决定 `开发相关资源/page.html` 去留
+5. [ ] 可选：回收站详情页也显示序号（按回收站内位置）
 
-## 7. 常用命令（照抄即跑）
+## 7. 常用命令
 
 ```powershell
-# 构建 + 覆盖安装（release，保留数据）
 cd D:\Android\TgImagesDownloader
 $env:GRADLE_USER_HOME='D:\Android\.gradle'
-npm run apk:local
-
-# 校验
-npx tsc --noEmit
-npx eslint src/
-npx jest
-
-# Metro（长时进程，独立窗口启动，端口 8081）
-npm start
-
-# 真机取证
-adb devices
-adb shell uiautomator dump /sdcard/ui.xml; adb pull /sdcard/ui.xml .
-adb shell dumpsys meminfo com.acstd.tgimagesdownloader.release
+npm start                  # Metro（必须在独立可见窗口）
+npx react-native run-android --no-packager   # 调试：装 debug，覆盖当前安装、保留数据
+npm run apk:local          # 日常：装 release，覆盖 debug、同样保留数据
+npx tsc --noEmit; npx jest; npx eslint src/
+adb shell uiautomator dump /sdcard/ui.xml   # 真机取证（截图可能被 FLAG_SECURE 拦）
 ```
 
 ## 8. 环境与外部依赖
 
-- 设备：`2509FPN0BC` / Android 16（API 36）；adb 曾通过 Wi-Fi `192.168.31.242:36677` 连接，**当前未连接**。
-- 端口：Metro `8081`（用前先确认空闲）；OpenCode 服务 `127.0.0.1:28894`。
-- 目录：备份 `backup/`（已 gitignore）；缓存 `E:\OpenCodeCache`（npm / pip / temp / OpenCode DB）。
-- 签名：`MYAPP_RELEASE_*` 在 `android/gradle.properties`（gitignore，**勿提交**）。
-- 凭据：发版需要已登录的 `gh`（GitHub）与 git 代理配置；**本文件不记录任何密钥**。
-- 包名：debug `com.acstd.tgimagesdownloader` / release `com.acstd.tgimagesdownloader.release`（**禁止 uninstall release**，会丢用户数据）。
-
-## 9. 相关链接
-
-- 指令日志：`D:\Android\TgImagesDownloader\开发相关资源\历史迭代指令汇总.md`
-- 项目规范：`D:\Android\TgImagesDownloader\AGENTS.md`、`README.md`
-- 交接规范：`C:\Users\Administrator\.config\opencode\AGENTS.md` §十二
-- 交接模板：`C:\Users\Administrator\.config\opencode\templates\HANDOVER.md`
+- 设备 `2509FPN0BC` / Android 16；adb 走 Wi-Fi（`192.168.31.172`，端口会变）。
+- 包名**只有一个**：`com.acstd.tgimagesdownloader.release`（debug 也是它）。
+  旧的独立 debug 包 `com.acstd.tgimagesdownloader` 已于 2026-10-30 卸载，
+  其数据库（7 条记录）备份在 `backup/old-debug-tgdownloader-*.sqlite`。
+  **禁止 uninstall**：一卸载数据全没。
+- 签名 `MYAPP_RELEASE_*` 在 `android/gradle.properties`（gitignore）。

@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -19,26 +20,34 @@ import {
   recordImageUris,
   removeDownloadedImages,
   restoreFromTrash,
+  TRASH_CAPACITY,
   type HistoryRecord,
 } from '../services/historyService';
 import {
   TelegraphDownloader,
   isDownloaderAvailable,
+  isVideoUri,
 } from '../services/nativeDownloader';
 import { t, useI18n } from '../i18n';
 import { useThemedStyles, type ThemeColors } from '../theme';
 import { decodeHtmlEntities } from '../utils/htmlEntities';
 import { formatLocalDateTime } from '../utils/time';
+import type { RootStackScreenProps } from '../navigation/types';
+
+type Props = RootStackScreenProps<'Trash'>;
 
 /**
  * 回收站。
  *
  * 「下载记录」里被标记为删除、再点「移入回收站」的记录会到这里；它们不再出现在
  * 下载记录列表里，但数据和图片都还在。这里可以：
+ *   - 点进详情页再确认一遍（查看图片、长按操作）
  *   - 单条恢复（回到下载记录）
  *   - 一键清空：删记录 + 删相册文件（不可撤销）
+ *
+ * 容量上限见 {@link TRASH_CAPACITY}：满了之后不再接收新的记录。
  */
-export const TrashScreen: React.FC = () => {
+export const TrashScreen: React.FC<Props> = ({ navigation }) => {
   useI18n();
   const styles = useThemedStyles(createStyles);
 
@@ -139,6 +148,10 @@ export const TrashScreen: React.FC = () => {
         <View style={styles.center}>
           <EmptyState title={t('trash.empty')} />
           <Text style={styles.emptyHint}>{t('trash.emptyHint')}</Text>
+          {/* 空的时候也要说清容量规则，否则用户不知道「满 500 条就进不来」 */}
+          <Text style={styles.emptyCapacity}>
+            {t('trash.capacity', { count: 0, capacity: TRASH_CAPACITY })}
+          </Text>
         </View>
       ) : (
         <>
@@ -161,38 +174,35 @@ export const TrashScreen: React.FC = () => {
               </Text>
             </Pressable>
           </View>
+          {/* 容量说明：满了之后下载记录那边会拒绝继续移入 */}
+          <Text
+            style={[
+              styles.capacityHint,
+              count >= TRASH_CAPACITY && styles.capacityHintFull,
+            ]}
+          >
+            {t('trash.capacity', { count, capacity: TRASH_CAPACITY })}
+          </Text>
           <FlatList
             data={records}
             keyExtractor={item => String(item.id)}
             contentContainerStyle={styles.list}
+            // 缩略图 + 长列表：只挂可视区附近的几屏，避免一次解码几百张图
+            // （不要加 removeClippedSubviews —— Fabric 下会 addViewAt 越界崩溃）
+            initialNumToRender={8}
+            maxToRenderPerBatch={8}
+            windowSize={5}
             renderItem={({ item }) => (
-              <View style={styles.row}>
-                <View style={styles.rowMain}>
-                  <Text style={styles.rowTitle} numberOfLines={2}>
-                    {decodeHtmlEntities(item.title)}
-                  </Text>
-                  <Text style={styles.rowMeta} numberOfLines={1}>
-                    {t('history.itemCount', { count: item.imageCount })} ·{' '}
-                    {t('trash.trashedAt', {
-                      time: formatLocalDateTime(item.trashedAt),
-                    })}
-                  </Text>
-                </View>
-                <Pressable
-                  onPress={() => onRestore(item)}
-                  accessibilityRole="button"
-                  accessibilityLabel={t('trash.restoreHint')}
-                  hitSlop={6}
-                  style={({ pressed }) => [
-                    styles.restoreBtn,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.restoreBtnText}>
-                    {t('trash.restore')}
-                  </Text>
-                </Pressable>
-              </View>
+              <TrashRow
+                record={item}
+                onPress={() =>
+                  navigation.navigate('HistoryDetail', {
+                    id: item.id,
+                    ids: records.map(r => r.id),
+                  })
+                }
+                onRestore={() => onRestore(item)}
+              />
             )}
           />
         </>
@@ -200,6 +210,82 @@ export const TrashScreen: React.FC = () => {
     </SafeAreaView>
   );
 };
+
+/**
+ * 回收站里的一行：缩略图 + 标题 + 移入时间 + 恢复按钮。
+ * 整行点进详情页（会带着回收站的 id 列表，可以左右滑动相邻记录）。
+ */
+const TrashRow: React.FC<{
+  record: HistoryRecord;
+  onPress: () => void;
+  onRestore: () => void;
+}> = React.memo(({ record, onPress, onRestore }) => {
+  useI18n();
+  const styles = useThemedStyles(createStyles);
+  // 与下载记录列表一致：本地打不开时退到远程，两张都失败才显示占位。
+  const localPreview = record.imagePaths?.[0] ?? null;
+  const remotePreview = record.imageUrls?.[0] ?? null;
+  const [previewPhase, setPreviewPhase] = useState<'local' | 'remote' | 'failed'>(
+    'local',
+  );
+  const previewUri =
+    previewPhase === 'remote' && remotePreview
+      ? remotePreview
+      : localPreview ?? remotePreview;
+  const previewIsVideo = previewUri ? isVideoUri(previewUri) : false;
+  const showPreview =
+    !!previewUri && !previewIsVideo && previewPhase !== 'failed';
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityHint={t('trash.openHint')}
+      style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+    >
+      {showPreview ? (
+        <Image
+          source={{ uri: previewUri }}
+          style={styles.rowThumb}
+          resizeMode="cover"
+          onError={() => {
+            if (previewPhase === 'local' && remotePreview && localPreview) {
+              setPreviewPhase('remote');
+            } else {
+              setPreviewPhase('failed');
+            }
+          }}
+        />
+      ) : (
+        <View style={[styles.rowThumb, styles.rowThumbEmpty]}>
+          <Text style={styles.rowThumbIcon}>
+            {previewIsVideo ? '🎬' : '🖼'}
+          </Text>
+        </View>
+      )}
+      <View style={styles.rowMain}>
+        <Text style={styles.rowTitle} numberOfLines={2}>
+          {decodeHtmlEntities(record.title)}
+        </Text>
+        <Text style={styles.rowMeta} numberOfLines={1}>
+          {t('history.itemCount', { count: record.imageCount })} ·{' '}
+          {t('trash.trashedAt', {
+            time: formatLocalDateTime(record.trashedAt),
+          })}
+        </Text>
+      </View>
+      <Pressable
+        onPress={onRestore}
+        accessibilityRole="button"
+        accessibilityLabel={t('trash.restoreHint')}
+        hitSlop={6}
+        style={({ pressed }) => [styles.restoreBtn, pressed && styles.pressed]}
+      >
+        <Text style={styles.restoreBtnText}>{t('trash.restore')}</Text>
+      </Pressable>
+    </Pressable>
+  );
+});
+TrashRow.displayName = 'TrashRow';
 
 const createStyles = (c: ThemeColors) =>
   StyleSheet.create({
@@ -217,6 +303,12 @@ const createStyles = (c: ThemeColors) =>
       textAlign: 'center',
       lineHeight: 19,
     },
+    emptyCapacity: {
+      marginTop: 4,
+      fontSize: 12,
+      color: c.textHint,
+      textAlign: 'center',
+    },
     toolbar: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -228,6 +320,14 @@ const createStyles = (c: ThemeColors) =>
       gap: 12,
     },
     countText: { fontSize: 13, color: c.textSecondary },
+    capacityHint: {
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      fontSize: 12,
+      color: c.textHint,
+      backgroundColor: c.surface,
+    },
+    capacityHintFull: { color: c.danger, fontWeight: '600' },
     clearBtn: {
       paddingHorizontal: 14,
       paddingVertical: 8,
@@ -248,6 +348,14 @@ const createStyles = (c: ThemeColors) =>
       gap: 12,
     },
     rowMain: { flex: 1 },
+    rowThumb: {
+      width: 56,
+      height: 56,
+      borderRadius: 8,
+      backgroundColor: c.surface,
+    },
+    rowThumbEmpty: { alignItems: 'center', justifyContent: 'center' },
+    rowThumbIcon: { fontSize: 22 },
     rowTitle: { fontSize: 14.5, color: c.textPrimary, fontWeight: '500' },
     rowMeta: { marginTop: 4, fontSize: 12, color: c.textHint },
     restoreBtn: {

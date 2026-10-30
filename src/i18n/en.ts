@@ -193,6 +193,17 @@ export const en: Record<ZhKeys, string> = {
   'history.detail.notFound': 'Record not found',
   'history.detail.title': 'Download history detail',
   'history.detail.noDetail': 'No image details for this record',
+  'history.detail.edgeFirst': 'This is the first record',
+  'history.detail.edgePrevPage':
+    'First record of this page — go back and switch to the previous page',
+  'history.detail.edgeNextPage':
+    'Last record of this page — go back and switch to the next page',
+  'history.detail.edgeLoadMore':
+    'Last loaded record — go back and load more first',
+  'history.detail.edgeLast': 'This is the last record',
+  'history.detail.failedCount':
+    '{count} image(s) failed to load (maybe deleted from the gallery) and are hidden',
+  'history.detail.position': '{position} of {total}',
   'history.mediaPerm.title': 'Photo access required',
   'history.mediaPerm.body':
     'Some recorded images live in the system gallery. Grant the "Photos and videos" permission to display them here. On Android 14+ you may select only some photos.',
@@ -228,10 +239,18 @@ export const en: Record<ZhKeys, string> = {
   'history.moveToTrashMsg':
     'This moves {count} record(s) marked for deletion into the recycle bin. They will no longer appear in the download history.\nYou can restore or empty them in Settings → Recycle bin.',
   'history.moveToTrashDone': 'Moved to trash: {count}',
+  'history.moveToTrashMsgPartial':
+    'This moves {count} record(s) marked for deletion into the recycle bin, but only {room} slot(s) are left. The rest stay in the download history, still marked for deletion.',
+  'history.firstPage': 'Already on the first page',
+  'history.lastPage': 'Already on the last page',
   'trash.title': 'Recycle bin',
   'trash.empty': 'The recycle bin is empty',
   'trash.emptyHint':
     'Mark a record for deletion on its detail page, then tap “Move to trash” in the list — it will show up here.',
+  'trash.capacity': '{count} / {capacity} records · empty the bin to make room',
+  'trash.fullTitle': 'Recycle bin is full',
+  'trash.fullMsg':
+    'The recycle bin keeps at most {capacity} records. Empty it or restore some records before moving more in.',
   'trash.clear': 'Empty bin',
   'trash.clearTitle': 'Empty recycle bin',
   'trash.clearMsg':
@@ -239,6 +258,7 @@ export const en: Record<ZhKeys, string> = {
   'trash.clearDone': 'Deleted {count} record(s)',
   'trash.restore': 'Restore',
   'trash.restoreHint': 'Restore to the download history',
+  'trash.openHint': 'Open details to review',
   'trash.trashedAt': 'Moved in {time}',
   'settings.trash.title': 'Recycle bin',
   'settings.trash.hint':

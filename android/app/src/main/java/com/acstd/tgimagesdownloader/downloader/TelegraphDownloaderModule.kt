@@ -1113,7 +1113,55 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
     output.flush()
   }
 
+  /**
+   * 读文件头判断真实媒体类型（只认特征最明确的几种二进制魔数）。
+   * 返回 null = 「没把握」，调用方继续按扩展名推断。
+   */
+  private fun sniffMimeType(file: File): String? {
+    if (!file.isFile || file.length() < 12L) return null
+    return try {
+      val head = ByteArray(16)
+      java.io.FileInputStream(file).use { stream ->
+        var read = 0
+        while (read < head.size) {
+          val n = stream.read(head, read, head.size - read)
+          if (n <= 0) break
+          read += n
+        }
+      }
+      fun at(i: Int): Int = head[i].toInt() and 0xFF
+      when {
+        at(0) == 0xFF && at(1) == 0xD8 && at(2) == 0xFF -> "image/jpeg"
+        at(0) == 0x89 && at(1) == 0x50 && at(2) == 0x4E && at(3) == 0x47 -> "image/png"
+        at(0) == 0x47 && at(1) == 0x49 && at(2) == 0x46 -> "image/gif"
+        at(0) == 0x42 && at(1) == 0x4D -> "image/bmp"
+        at(0) == 0x52 && at(1) == 0x49 && at(2) == 0x46 && at(3) == 0x46 &&
+          at(8) == 0x57 && at(9) == 0x45 && at(10) == 0x42 && at(11) == 0x50 -> "image/webp"
+        at(4) == 0x66 && at(5) == 0x74 && at(6) == 0x79 && at(7) == 0x70 -> {
+          // ISO BMFF：第 8..11 字节是主 brand
+          val brand = String(head, 8, 4, Charsets.US_ASCII)
+          when {
+            brand.startsWith("avi") -> "image/avif"
+            brand.startsWith("heic") || brand.startsWith("heix") ||
+              brand.startsWith("mif1") || brand.startsWith("msf1") -> "image/heif"
+            brand.startsWith("isom") || brand.startsWith("iso2") ||
+              brand.startsWith("mp42") -> "video/mp4"
+            else -> null
+          }
+        }
+        else -> null
+      }
+    } catch (_: Exception) {
+      null
+    }
+  }
+
   private fun inferMimeType(filename: String, source: File): String {
+    // 先看**内容**的真实类型：everia 这类站点会把 WebP 当作原图返回，而 URL
+    // 往往没有扩展名，上层会退回 `.jpg`。按扩展名登记的话 MediaStore 记录成
+    // image/jpeg，系统就会用 jpeg 解码器去解 WebP → 详情页网格能显示（有远程
+    // 兜底），全屏查看器直接报「图片加载失败」。
+    sniffMimeType(source)?.let { return it }
     val ext = filename.substringAfterLast('.', "").lowercase()
     return when (ext) {
       "jpg",

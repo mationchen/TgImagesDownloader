@@ -14,6 +14,16 @@ export type MainTabParamList = {
   Settings: undefined;
 };
 
+/** 详情页左右滑到当前页第一条 / 最后一条时，告诉用户下一步能做什么。 */
+export interface HistoryEdgeInfo {
+  /** 本页不是第一页（前面还有更靠前的记录）。 */
+  hasPrevPage: boolean;
+  /** 后面还有下一页。 */
+  hasNextPage: boolean;
+  /** 本页还没加载满、但数据库里还有更多（回列表继续加载即可）。 */
+  canLoadMore: boolean;
+}
+
 /** Root stack — covers the whole screen (Preview / Download / Privacy). */
 export type RootStackParamList = {
   Splash: undefined;
@@ -28,8 +38,19 @@ export type RootStackParamList = {
    * swiped left/right between neighbouring records). Optional: callers that
    * only have a single id (e.g. the Home duplicate-link alert) omit it and the
    * screen shows a single, non-swipeable page.
+   *
+   * `edges` tells the detail screen what lies beyond the first / last id so a
+   * swipe past the edge can explain the next step instead of silently stopping.
    */
-  HistoryDetail: { id: number; ids?: number[] };
+  HistoryDetail: {
+    id: number;
+    ids?: number[];
+    edges?: HistoryEdgeInfo;
+    /** 列表当前页的起始偏移：详情页用它显示「第 N / 共 M 条」的全局序号。 */
+    baseOffset?: number;
+    /** 列表命中的总条数（同上）。 */
+    total?: number;
+  };
   BatchList: undefined;
 };
 

@@ -52,6 +52,7 @@ import {
 import { confirmDeleteRecord, reparseRecord } from '../utils/historyRowActions';
 import { useMediaReadPermission } from '../utils/mediaPermission';
 import { decodeHtmlEntities } from '../utils/htmlEntities';
+import { markLastViewedHistory } from '../utils/lastViewed';
 import { t, useI18n } from '../i18n';
 
 type Props = RootStackScreenProps<'HistoryDetail'>;
@@ -99,7 +100,7 @@ function playExternally(uri: string): void {
  * duplicate-link alert) omit it and get a single, non-swipeable page.
  */
 export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
-  const { id, ids } = route.params;
+  const { id, ids, edges, baseOffset = 0, total: totalCount } = route.params;
   const styles = useThemedStyles(createStyles);
   const { colors } = useTheme();
   const { width } = useWindowDimensions();
@@ -128,6 +129,24 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
   const [reparsing, setReparsing] = useState(false);
 
   const currentId = pageIds[currentIndex] ?? id;
+
+  // 退出详情时把「最后看的那一条」记下来，列表回到前台就能滚到它，
+  // 用户滑了几十条也不用再翻找。
+  //
+  // 用卸载 cleanup 而不是只挂 beforeRemove：手势返回 / 系统返回 / 代码 goBack
+  // 三条路都会走到卸载，cleanup 是唯一必定执行的时机。
+  const currentIdRef = useRef(currentId);
+  currentIdRef.current = currentId;
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', () => {
+      markLastViewedHistory(currentIdRef.current);
+    });
+    return () => {
+      unsubscribe();
+      // 卸载兜底（与 beforeRemove 重复写入是幂等的）
+      markLastViewedHistory(currentIdRef.current);
+    };
+  }, [navigation]);
 
   useEffect(() => {
     let cancelled = false;
@@ -280,35 +299,108 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
     colors.headerTitle,
   ]);
 
+  /**
+   * 当前停在的页（用于挂载窗口）。只在**滑动停稳**时更新：
+   * 快速甩过很多页时不会一路挂/卸几十个页面。
+   */
+  const [pagerIndex, setPagerIndex] = useState(initialIndex);
+  const pagerRef = useRef<ScrollViewInstance>(null);
+
+  // 初始定位到打开时的那条记录。
+  // Android 上 ScrollView 的 `contentOffset` 不保证生效：页面会停在第 0 页，
+  // 而挂载窗口在 initialIndex 上 → 那一页是空占位，整屏白页。
+  // 这里用 scrollTo 兜底（contentOffset 仍保留，用来抢首帧）。
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      pagerRef.current?.scrollTo({
+        x: width * initialIndex,
+        y: 0,
+        animated: false,
+      });
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [width, initialIndex]);
+  /** 上一次弹过的边界提示，避免同一侧反复弹。 */
+  const edgeHintRef = useRef<'start' | 'end' | null>(null);
+
   const onPagerScrollEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const index = Math.round(e.nativeEvent.contentOffset.x / width);
-      setCurrentIndex(Math.max(0, Math.min(pageIds.length - 1, index)));
+      const index = Math.max(
+        0,
+        Math.min(pageIds.length - 1, Math.round(e.nativeEvent.contentOffset.x / width)),
+      );
+      setCurrentIndex(index);
+      setPagerIndex(index);
+      // 滑到当前页的第一条 / 最后一条：说清楚下一步该怎么做，
+      // 而不是让用户对着滑不动的页面发呆。
+      if (index === 0 && edgeHintRef.current !== 'start') {
+        edgeHintRef.current = 'start';
+        ToastAndroid.show(
+          edges?.hasPrevPage
+            ? t('history.detail.edgePrevPage')
+            : t('history.detail.edgeFirst'),
+          ToastAndroid.SHORT,
+        );
+      } else if (
+        index === pageIds.length - 1 &&
+        edgeHintRef.current !== 'end'
+      ) {
+        edgeHintRef.current = 'end';
+        ToastAndroid.show(
+          edges?.hasNextPage
+            ? t('history.detail.edgeNextPage')
+            : edges?.canLoadMore
+            ? t('history.detail.edgeLoadMore')
+            : t('history.detail.edgeLast'),
+          ToastAndroid.SHORT,
+        );
+      } else if (index !== 0 && index !== pageIds.length - 1) {
+        edgeHintRef.current = null;
+      }
     },
-    [width, pageIds.length],
+    [width, pageIds.length, edges],
   );
 
   return (
     <SafeAreaView style={styles.safe} edges={['left', 'right']}>
-      <FlatList
+      {/*
+        为什么不用 FlatList：Fabric（新架构）下 FlatList 的虚拟化会在滑动时
+        remove/add cell，触发 `addViewAt: failed to insert view ... index=6
+        count=5` 直接闪退（ReactClippingViewManager.addView 的索引竞态）。
+        这里改成 ScrollView + **固定数量的占位 View**：ScrollView 的子节点
+        永远是 pageIds.length 个，不增不删，recycle 竞态从根上消失；
+        只有「当前页 ± 1」真正挂载 RecordPage，内存与原来一致。
+      */}
+      <ScrollView
+        ref={pagerRef}
         style={styles.pager}
-        data={pageIds}
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
-        initialScrollIndex={initialIndex}
         onMomentumScrollEnd={onPagerScrollEnd}
-        getItemLayout={(_, index) => ({
-          length: width,
-          offset: width * index,
-          index,
-        })}
-        keyExtractor={pageId => String(pageId)}
-        extraData={width}
-        renderItem={({ item }) => (
-          <RecordPage id={item} width={width} mediaTick={mediaTick} />
-        )}
-      />
+        // Android 上慢速拖动只触发 onScrollEndDrag（没有惯性），
+        // 只挂 momentum 会漏掉一半的翻页 —— 边界提示也就弹不出来。
+        onScrollEndDrag={onPagerScrollEnd}
+        contentOffset={{ x: width * initialIndex, y: 0 }}
+        scrollEventThrottle={16}
+      >
+        {pageIds.map((pageId, index) => (
+          // height 必须显式给：横向 ScrollView 的占位子 View 没有内容高度，
+          // 只给 width 会塌成 0 高 → 整页白屏（FlatList 的 cell 会自动拉伸，
+          // ScrollView 的普通 child 不会）。
+          <View key={String(pageId)} style={{ width, height: '100%' }}>
+            {Math.abs(index - pagerIndex) <= 1 ? (
+              <RecordPage
+                id={pageId}
+                width={width}
+                mediaTick={mediaTick}
+                position={baseOffset + index + 1}
+                total={totalCount}
+              />
+            ) : null}
+          </View>
+        ))}
+      </ScrollView>
     </SafeAreaView>
   );
 };
@@ -322,7 +414,11 @@ const RecordPage: React.FC<{
   id: number;
   width: number;
   mediaTick: number;
-}> = React.memo(({ id, width, mediaTick }) => {
+  /** 当前记录在列表里的全局序号（从 1 开始）。 */
+  position?: number;
+  /** 列表命中的总条数。 */
+  total?: number;
+}> = React.memo(({ id, width, mediaTick, position, total }) => {
   // Subscribe so this page re-renders in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -334,6 +430,22 @@ const RecordPage: React.FC<{
   const [fallbackUris, setFallbackUris] = useState<string[]>([]);
   // Index of the image tapped in the grid; null = fullscreen viewer closed.
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  /**
+   * 加载失败的图片（URI 集合）。
+   * 以前每张失败图都画一个红叉占位，一屏几个红叉很难看；改成页面顶部
+   * 一行「N 张加载失败」，格子里留空。
+   */
+  const [failedUris, setFailedUris] = useState<Set<string>>(new Set());
+  const handleThumbStatus = useCallback((uri: string, ok: boolean) => {
+    setFailedUris(prev => {
+      const has = prev.has(uri);
+      if (ok === !has) return prev; // 状态没变，别触发重渲染
+      const next = new Set(prev);
+      if (ok) next.delete(uri);
+      else next.add(uri);
+      return next;
+    });
+  }, []);
 
   /* ---------------- 手动排序（长按拖动） ---------------- */
 
@@ -387,6 +499,17 @@ const RecordPage: React.FC<{
   );
   /** 实际渲染顺序（拖动中会变）。 */
   const uris = order ? order.map(i => baseUris[i]) : baseUris;
+  /**
+   * 按 COLS 切成「行」：列表一行一个 cell，行内固定 COLS 格。
+   * 不用 FlatList 的 numColumns —— Fabric 下它的分组逻辑会崩（见下面的注释）。
+   */
+  const gridRows = useMemo(() => {
+    const out: { index: number; cells: string[] }[] = [];
+    for (let i = 0; i < uris.length; i += COLS) {
+      out.push({ index: i, cells: uris.slice(i, i + COLS) });
+    }
+    return out;
+  }, [uris]);
   const remoteUrls = loadedRecord?.imageUrls ?? [];
   const [favoritedUris, setFavoritedUris] = useState<Set<string>>(
     () => new Set(),
@@ -421,6 +544,11 @@ const RecordPage: React.FC<{
   useEffect(() => {
     urisRef.current = uris;
   }, [uris]);
+
+  // 换了记录（或重解析后图片列表变了）就重置失败统计，别把上一条的失败带过来。
+  useEffect(() => {
+    setFailedUris(new Set());
+  }, [baseUris]);
 
   /** 把拖动的结果落库，并把本地记录改成新顺序（避免重复应用）。 */
   const persistOrder = useCallback(
@@ -656,7 +784,15 @@ const RecordPage: React.FC<{
   }
 
   return (
-    <View style={{ width }} ref={rootRef}>
+    <View style={{ width, flex: 1 }} ref={rootRef}>
+      {/* 加载失败的图片不再逐格画红叉，统一在这里说一句 */}
+      {failedUris.size > 0 ? (
+        <View style={styles.failedBar}>
+          <Text style={styles.failedBarText}>
+            {t('history.detail.failedCount', { count: failedUris.size })}
+          </Text>
+        </View>
+      ) : null}
       {sortMode ? (
         <View style={styles.sortBar}>
           <Text style={styles.sortBarText}>{t('history.detail.sortHint')}</Text>
@@ -676,55 +812,80 @@ const RecordPage: React.FC<{
       ) : null}
       <FlatList
         style={styles.pageScroll}
-        data={uris}
-        // mediaTick in the key: when the media permission is granted after
-        // first render, every tile remounts and retries its image instead
-        // of keeping the stale red ×.
-        // key 里**不能带下标**：拖动排序会改变下标，导致所有格子重新挂载（78 张图
-        // 一次全重挂会直接卡死）。用 URI + mediaTick 做 key，排序时只是位置变化，
-        // 组件会被复用。mediaTick 用于权限授予后强制重挂以重试图。
-        keyExtractor={uri => `${mediaTick}-${uri}`}
-        numColumns={COLS}
+        data={gridRows}
+        // 一行一个 cell、行内固定 COLS 格。
+        // **不要用 numColumns**：Fabric 下分组逻辑会往已满的行里插第 4 个格子，
+        // 抛 `addViewAt: failed to insert view ... index=4 count=3` 直接闪退。
+        keyExtractor={(_, index) => `row-${index}`}
         // 排序模式下禁掉列表滚动，手势从按下起就由格子全权处理。
         scrollEnabled={!sortMode}
-        renderItem={({ item, index }) => (
-          // 手势挂在格子外层 View 上：点击 / 长按 / 拖动都在这里判定（见 pan）。
-          <View
-            ref={node => {
-              tileRefs.current[index] = node;
-            }}
-            {...pan.panHandlers}
-            onStartShouldSetResponderCapture={() => {
-              pressIndexRef.current = index;
-              return true;
-            }}
-            style={[
-              styles.tileOuter,
-              { width: size, height: size },
-              dragIndex === index && styles.tileLifted,
-              dragTarget === index && styles.tileTarget,
-              pressedIndex === index && styles.tilePressed,
-            ]}
-          >
-            <DetailThumb
-              uri={item}
-              fallbackUri={
-                item.startsWith('content://') ? remoteUrls[index] : undefined
-              }
-            />
-            {favoritedUris.has(item) && !isVideoUri(item) ? (
-              <View
-                pointerEvents="none"
-                style={styles.tileFavoriteBadge}
-                accessibilityRole="image"
-                accessibilityLabel={t('history.favoriteBadge')}
-              >
-                <Text style={styles.tileFavoriteText}>{'\u2665\uFE0E'}</Text>
-              </View>
-            ) : null}
+        // 一页可能有上百张图：只渲染可视区附近，其余延后。
+        // 注意：**不要**加 removeClippedSubviews —— 同样会触发 addViewAt 越界。
+        initialNumToRender={3}
+        maxToRenderPerBatch={3}
+        windowSize={5}
+        renderItem={({ item: row }) => (
+          <View style={styles.gridRow}>
+            {row.cells.map((uri, k) => {
+              const index = row.index + k;
+              return (
+                // 手势挂在格子外层 View 上：点击 / 长按 / 拖动都在这里判定（见 pan）。
+                <View
+                  key={`${mediaTick}-${uri}`}
+                  ref={node => {
+                    tileRefs.current[index] = node;
+                  }}
+                  {...pan.panHandlers}
+                  onStartShouldSetResponderCapture={() => {
+                    pressIndexRef.current = index;
+                    return true;
+                  }}
+                  style={[
+                    styles.tileOuter,
+                    { width: size, height: size },
+                    dragIndex === index && styles.tileLifted,
+                    dragTarget === index && styles.tileTarget,
+                    pressedIndex === index && styles.tilePressed,
+                  ]}
+                >
+                  <DetailThumb
+                    uri={uri}
+                    fallbackUri={
+                      uri.startsWith('content://')
+                        ? remoteUrls[index]
+                        : undefined
+                    }
+                    onStatus={handleThumbStatus}
+                  />
+                  {favoritedUris.has(uri) && !isVideoUri(uri) ? (
+                    <View
+                      pointerEvents="none"
+                      style={styles.tileFavoriteBadge}
+                      accessibilityRole="image"
+                      accessibilityLabel={t('history.favoriteBadge')}
+                    >
+                      <Text style={styles.tileFavoriteText}>
+                        {'\u2665\uFE0E'}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+            {/* 末行不足 3 格时补空位，保证每一行宽度一致 */}
+            {Array.from({ length: Math.max(0, COLS - row.cells.length) }).map(
+              (_, k) => (
+                <View
+                  key={`pad-${k}`}
+                  style={[styles.tileOuter, { width: size, height: size }]}
+                />
+              ),
+            )}
           </View>
         )}
-        ListHeaderComponent={<Header record={record} />}
+        ListHeaderComponent={
+          <Header record={record} position={position} total={total} />
+        }
         ListEmptyComponent={
           <View style={styles.emptyBlock}>
             <Text style={styles.emptyText}>{t('history.detail.noDetail')}</Text>
@@ -762,6 +923,7 @@ const RecordPage: React.FC<{
       <ImageViewer
         visible={viewerIndex !== null}
         uris={uris}
+        remoteUris={remoteUrls}
         initialIndex={viewerIndex ?? 0}
         onClose={closeViewer}
       />
@@ -770,7 +932,13 @@ const RecordPage: React.FC<{
 });
 RecordPage.displayName = 'RecordPage';
 
-const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
+const Header: React.FC<{
+  record: HistoryRecord;
+  /** 当前记录在整个列表里的序号（从 1 开始）。 */
+  position?: number;
+  /** 列表命中的总条数。 */
+  total?: number;
+}> = React.memo(({ record, position, total }) => {
   // Subscribe so meta labels re-render in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -818,8 +986,14 @@ const Header: React.FC<{ record: HistoryRecord }> = React.memo(({ record }) => {
             HISTORY_STATUS_LABEL_KEY[record.status],
           )}`}
         />
+        {position != null && total != null ? (
+          <MetaChip
+            label={t('history.detail.position', { position, total })}
+          />
+        ) : null}
+        {/* 保存路径也做成徽章：原来单独占一行，右边还有大片空白 */}
+        {record.saveDir ? <MetaChip label={record.saveDir} /> : null}
       </View>
-      <Text style={styles.saveDir}>{record.saveDir}</Text>
       <View style={{ height: GAP }} />
     </View>
   );
@@ -843,7 +1017,12 @@ const DetailThumb: React.FC<{
   uri: string;
   /** Optional remote URL to retry with when a local URI fails to open. */
   fallbackUri?: string;
-}> = React.memo(({ uri, fallbackUri }) => {
+  /**
+   * 上报这张图最终是否加载成功（外层据此在页面顶部统计失败数量）。
+   * 失败时格子里留空，不再画红叉。
+   */
+  onStatus?: (uri: string, ok: boolean) => void;
+}> = React.memo(({ uri, fallbackUri, onStatus }) => {
   const styles = useThemedStyles(createStyles);
   const [failed, setFailed] = useState(false);
   // When a recorded local content:// URI cannot be opened (e.g. the file was
@@ -887,21 +1066,28 @@ const DetailThumb: React.FC<{
   }
 
   const source = failed && fallbackUri && !usingFallback ? fallbackUri : uri;
+  const broken = failed && (!fallbackUri || usingFallback);
   return (
     <View style={styles.tile}>
-      {failed && (!fallbackUri || usingFallback) ? (
-        <View style={styles.tileFallback}>
-          <Text style={styles.tileFallbackText}>×</Text>
-        </View>
+      {broken ? (
+        // 不画红叉：留一块浅色空位，失败数量统一在页面顶部说明。
+        <View style={styles.tileBroken} />
       ) : (
         <Image
           source={{ uri: source }}
           style={styles.image}
           resizeMode="cover"
+          // Android: 按控件尺寸解码，别把 4000×3000 的原图整张塞进内存
+          // （一页几十张缩略图时这是主要的 OOM 来源）。iOS 上是 no-op。
+          resizeMethod="resize"
+          onLoad={() => onStatus?.(uri, true)}
           onError={() => {
             if (failed && fallbackUri && !usingFallback) {
-              // The fallback also failed: show the placeholder.
+              // 兜底 URL 也失败了：彻底放弃这张，交给顶部统计。
               setUsingFallback(true);
+              onStatus?.(uri, false);
+            } else if (!fallbackUri) {
+              onStatus?.(uri, false);
             }
             setFailed(true);
           }}
@@ -910,7 +1096,6 @@ const DetailThumb: React.FC<{
     </View>
   );
 });
-DetailThumb.displayName = 'DetailThumb';
 DetailThumb.displayName = 'DetailThumb';
 
 /** 挂载窗口半径：当前页左右各保留几页（其余页只占位、不实例化解码组件）。 */
@@ -932,8 +1117,10 @@ const ImageViewer: React.FC<{
   visible: boolean;
   uris: string[];
   initialIndex: number;
+  /** 与 uris 一一对应的远程地址：本地打不开时回退（老记录存在 WebP 存成 .jpg 的情况）。 */
+  remoteUris?: string[];
   onClose: () => void;
-}> = ({ visible, uris, initialIndex, onClose }) => {
+}> = ({ visible, uris, initialIndex, remoteUris, onClose }) => {
   // The viewer chrome stays black in both themes; the subscription only
   // forces fresh counter/error strings on locale change.
   useI18n();
@@ -1141,6 +1328,7 @@ const ImageViewer: React.FC<{
                 {mounted ? (
                   <ImageViewerPage
                     uri={uri}
+                    fallbackUri={remoteUris?.[index]}
                     onZoomChange={index === safeIndex ? setZoomed : undefined}
                     onLoaded={
                       !windowOpen && index === initialIndex
@@ -1160,15 +1348,20 @@ const ImageViewer: React.FC<{
 
 const ImageViewerPage: React.FC<{
   uri: string;
+  /** 本地地址打不开时的远程兜底（老记录里存在 WebP 存成 .jpg 的情况）。 */
+  fallbackUri?: string;
   onZoomChange?: (zoomed: boolean) => void;
   /** 首次画出（或确认加载失败）时回调：父组件据此放开挂载窗口。 */
   onLoaded?: () => void;
-}> = ({ uri, onZoomChange, onLoaded }) => {
+}> = ({ uri, fallbackUri, onZoomChange, onLoaded }) => {
   // Subscribe so retry/error strings track the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
-  const [failed, setFailed] = useState(false);
+  /** local → 本地地址；remote → 已切到远程兜底；error → 两张都失败。 */
+  const [phase, setPhase] = useState<'local' | 'remote' | 'error'>('local');
   const [retryKey, setRetryKey] = useState(0);
+  const source = phase === 'remote' && fallbackUri ? fallbackUri : uri;
+  const failed = phase === 'error';
 
   // Videos can't be rendered by the image viewer, so offer the system player.
   if (isVideoUri(uri)) {
@@ -1199,7 +1392,7 @@ const ImageViewerPage: React.FC<{
           <Text style={styles.errorText}>{t('preview.imageLoadFailed')}</Text>
           <Pressable
             onPress={() => {
-              setFailed(false);
+              setPhase('local');
               setRetryKey(k => k + 1);
               onZoomChange?.(false);
             }}
@@ -1213,12 +1406,17 @@ const ImageViewerPage: React.FC<{
         </View>
       ) : (
         <ZoomableImage
-          key={retryKey}
-          uri={uri}
+          key={`${retryKey}-${phase}`}
+          uri={source}
           onZoomChange={onZoomChange}
           onLoadEnd={onLoaded}
           onError={() => {
-            setFailed(true);
+            // 本地打不开先换远程再试一次；只有两张都失败才显示错误页。
+            if (phase === 'local' && fallbackUri) {
+              setPhase('remote');
+              return;
+            }
+            setPhase('error');
             // 失败也要让父组件放开窗口，否则只能看到这一张错误页。
             onLoaded?.();
           }}
@@ -1279,8 +1477,11 @@ function createStyles(c: ThemeColors) {
       paddingVertical: 3,
       borderRadius: 6,
       backgroundColor: c.surfaceStrong,
+      // 路径可能很长：允许收缩 + 省略号，别把整行撑出屏幕
+      flexShrink: 1,
+      maxWidth: '100%',
     },
-    chipText: { fontSize: 11, color: c.textSecondary },
+    chipText: { fontSize: 11, color: c.textSecondary, flexShrink: 1 },
     saveDir: { marginTop: 10, fontSize: 11, color: c.textHint },
     emptyBlock: {
       alignItems: 'center',
@@ -1354,6 +1555,19 @@ function createStyles(c: ThemeColors) {
       justifyContent: 'center',
       backgroundColor: c.dangerBg,
     },
+    /** 一行 3 格（替代 FlatList 的 numColumns） */
+    gridRow: { flexDirection: 'row' },
+    /** 加载失败的格子：留一块浅色空位，不再画红叉。 */
+    tileBroken: { flex: 1, backgroundColor: c.surfaceStrong },
+    /** 页面顶部「N 张图片加载失败」条（固定、不随网格滚动）。 */
+    failedBar: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      backgroundColor: c.surface,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    failedBarText: { fontSize: 12, color: c.textHint },
     tileFallbackText: { fontSize: 22, color: c.danger, fontWeight: '700' },
     /** Video tile placeholder (before/without a MediaStore thumbnail). */
     tileVideo: { flex: 1, backgroundColor: c.surfaceStrong },

@@ -145,13 +145,18 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
 本机 Windows 控制台代码页是 **936（GBK）**，而 opencode 按 **UTF-8** 解码命令输出，
 因此把中文直接打到 stdout 会出现乱码（如 `δ��Forewise`）。必须遵守：
 
-1. **Python 一律加 `-X utf8`**（或先设 `$env:PYTHONIOENCODING='utf-8'`）。
-2. **PowerShell 输出中文**时：先执行
-   `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`，并且中文**必须经**
-   `| ForEach-Object { [Console]::Out.WriteLine($_) }` 输出 —— 只设编码对
-   `Write-Output` / `Write-Host` / 裸字符串**无效**（已实测）。
+1. **每条 shell 命令开头统一加这两行**（缺一不可，已实测）：
+   ```powershell
+   chcp 65001 > $null
+   [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+   ```
+   - 只 `chcp 65001`：原生程序（adb / powercfg / git）正常，PowerShell 自己打的字符串仍乱码
+   - 只设 `OutputEncoding`：PowerShell 正常，原生程序仍按 936 输出 → 乱码
+   - ⚠️ OpenCode 用 `pwsh -NoProfile` 启动，**写 `$PROFILE` 不会生效**
+2. **Python 再加 `-X utf8`**（或 `$env:PYTHONIOENCODING='utf-8'`），否则
+   `UnicodeEncodeError: 'gbk' codec can't encode character`；Node 默认 UTF-8，无需处理。
 3. 中文内容较多时，**优先写入 UTF-8 文件，再用 read 工具查看**。
-4. **不要**用 `Select-String` / `Get-Content` / Python 默认编码把中文直接打印到 stdout。
+4. `uiautomator dump` 等 XML 里的中文同上：先设编码，或写文件再读。
 5. `git status` 的中文路径被转义成八进制属正常现象，不是乱码。
 
 ### 12. 「总结工作 + 提交 git」的标准流程
@@ -220,7 +225,7 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
 
 ## State of the project
 
-A shipped Android app (release **1.0.15**, `versionCode 15`): a web image batch
+A shipped Android app (release **1.0.17**, `versionCode 17`): a web image batch
 downloader, plus a download-history manager (favorites / mark-for-delete /
 recycle bin) and a local archive import feature.
 `README.md` is this project's own documentation — read it first for features,
@@ -250,7 +255,14 @@ Feature areas:
 - `node` >= 22.11.0 (enforced via `engines` in package.json)
 - Hermes + New Architecture are enabled (`android/gradle.properties`):
   `newArchEnabled=true`, `hermesEnabled=true`, `edgeToEdgeEnabled=true`
-- Android namespace / applicationId: `com.tgimagesdownloader`
+- Android namespace `com.acstd.tgimagesdownloader`; applicationId
+  `com.acstd.tgimagesdownloader.release` for **both** debug and release (the
+  `.release` id is historical — the phone's real data lives under it). Both
+  variants sign with `signingConfigs.release`, so
+  `npx react-native run-android` (debug) and `npm run apk:local` (release)
+  overwrite each other while keeping app data; they cannot coexist. Never
+  switch the debug variant back to the debug keystore — a signature change
+  forces an uninstall, which wipes all download history.
 - iOS entry is Swift (`ios/TgImagesDownloader/AppDelegate.swift`) and ships
   `PrivacyInfo.xcprivacy` (required by Apple — don't delete).
 

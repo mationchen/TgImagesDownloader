@@ -25,10 +25,12 @@ import { EmptyState } from '../components/EmptyState';
 import {
   countHistory,
   countMarkedDeleted,
+  countTrash,
   initHistoryDatabase,
   listDailyCounts,
   listHistory,
   moveMarkedToTrash,
+  TRASH_CAPACITY,
   type HistoryListFilter,
   type HistoryRecord,
   type HistoryStatus,
@@ -48,6 +50,12 @@ import {
   consumeHistoryChanged,
   showHistoryRowActions,
 } from '../utils/historyRowActions';
+import {
+  clampPageOffset,
+  hasNextPage as computeHasNextPage,
+} from '../utils/pagination';
+import { consumeLastViewedHistory } from '../utils/lastViewed';
+import type { HistoryEdgeInfo } from '../navigation/types';
 
 type Props = MainTabScreenProps<'History'>;
 
@@ -110,6 +118,8 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   const [showStatusPicker, setShowStatusPicker] = useState(false);
 
   const listRef = useRef<SectionList<HistoryRecord, Section> | null>(null);
+  /** onEndReached 的并发闸门（state 更新是异步的，光靠 loadingMore 拦不住同帧连发）。 */
+  const loadMoreBusyRef = useRef(false);
 
   // Keep the latest filter values in refs so the memoised `reload` never
   // closes over a stale query/date.
@@ -145,7 +155,10 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const reload = useCallback(
-    async (nextOffset: number, opts?: { silent?: boolean }) => {
+    async (
+      nextOffset: number,
+      opts?: { silent?: boolean; limit?: number },
+    ) => {
       // `silent` keeps the current list on screen (pull-to-refresh) instead of
       // swapping it for the full-screen spinner.
       if (!opts?.silent) setLoading(true);
@@ -156,12 +169,13 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
         // 先取总数再算偏移：记录变少（删除 / 移入回收站）后当前页可能已越界，
         // 这时落到最后一页，而不是给用户一个空白页。
         const totalRows = await countHistory(filter);
-        const safeOffset =
-          nextOffset > 0 && totalRows > 0 && nextOffset >= totalRows
-            ? Math.floor((totalRows - 1) / PAGE_SIZE) * PAGE_SIZE
-            : Math.max(0, nextOffset);
+        // 越界时按**整页**对齐回落，避免出现 `881-889` 这种和翻页按钮对不上的区间。
+        const safeOffset = clampPageOffset(nextOffset, totalRows, PAGE_BATCH);
+        // 取多少条由调用方决定：翻页 / 刷新取满一整页（页码区间立刻稳定），
+        // 首屏与滚动追加仍按 PAGE_SIZE 分批，避免一次渲染过多行。
+        const limit = Math.max(1, Math.floor(opts?.limit ?? PAGE_SIZE));
         const [rows, marked] = await Promise.all([
-          listHistory(PAGE_SIZE, safeOffset, filter),
+          listHistory(limit, safeOffset, filter),
           countMarkedDeleted(),
         ]);
         setRecords(rows);
@@ -184,41 +198,76 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   /** 当前页偏移的镜像：刷新回调里读最新值，避免闭包拿到过期页码。 */
   const offsetRef = useRef(offset);
   offsetRef.current = offset;
+  /** 当前已加载条数的镜像：刷新时按「原来显示多少条」重新取，页码区间才不会缩水。 */
+  const loadedCountRef = useRef(records.length);
+  loadedCountRef.current = records.length;
 
   /**
    * 重新加载**用户当前所在的那一页**。
-   * 下拉刷新、从详情页返回都用它 —— 页码不该被重置回第一页。
+   * 下拉刷新、从详情页返回都用它 —— 页码不该被重置回第一页，
+   * 展示的区间也不该从 `101-200` 缩成 `101-120`。
    */
   const refreshCurrentPage = useCallback(
-    (opts?: { silent?: boolean }) => reload(offsetRef.current, opts),
+    (opts?: { silent?: boolean }) =>
+      reload(offsetRef.current, {
+        ...opts,
+        limit: Math.max(PAGE_SIZE, loadedCountRef.current),
+      }),
     [reload],
   );
 
   /** 一键把「标记为删除」的记录移入回收站（确认后执行）。 */
   const onMoveToTrash = useCallback(() => {
     if (markedCount <= 0) return;
-    Alert.alert(
-      t('history.moveToTrashTitle'),
-      t('history.moveToTrashMsg', { count: markedCount }),
-      [
-        { text: t('common.cancel'), style: 'cancel' },
-        {
-          text: t('history.moveToTrash'),
-          style: 'destructive',
-          onPress: () => {
-            moveMarkedToTrash()
-              .then(async moved => {
-                ToastAndroid.show(
-                  t('history.moveToTrashDone', { count: moved }),
-                  ToastAndroid.SHORT,
-                );
-                await refreshCurrentPage({ silent: true });
-              })
-              .catch(() => undefined);
+    // 先看回收站还剩多少名额：满了就直接拦下，别让用户点完确认才发现没进去。
+    (async () => {
+      let trashed = 0;
+      try {
+        trashed = await countTrash();
+      } catch {
+        return;
+      }
+      if (trashed >= TRASH_CAPACITY) {
+        Alert.alert(
+          t('trash.fullTitle'),
+          t('trash.fullMsg', { capacity: TRASH_CAPACITY }),
+        );
+        return;
+      }
+      const room = TRASH_CAPACITY - trashed;
+      Alert.alert(
+        t('history.moveToTrashTitle'),
+        room >= markedCount
+          ? t('history.moveToTrashMsg', { count: markedCount })
+          : t('history.moveToTrashMsgPartial', { count: markedCount, room }),
+        [
+          { text: t('common.cancel'), style: 'cancel' },
+          {
+            text: t('history.moveToTrash'),
+            style: 'destructive',
+            onPress: () => {
+              moveMarkedToTrash()
+                .then(async res => {
+                  if (res.moved > 0) {
+                    ToastAndroid.show(
+                      t('history.moveToTrashDone', { count: res.moved }),
+                      ToastAndroid.SHORT,
+                    );
+                  }
+                  if (res.skipped > 0) {
+                    ToastAndroid.show(
+                      t('trash.fullMsg', { capacity: TRASH_CAPACITY }),
+                      ToastAndroid.LONG,
+                    );
+                  }
+                  await refreshCurrentPage({ silent: true });
+                })
+                .catch(() => undefined);
+            },
           },
-        },
-      ],
-    );
+        ],
+      );
+    })();
   }, [markedCount, refreshCurrentPage]);
 
   // Pull-to-refresh: 刷新当前页（不回到第一页，列表也不闪）。
@@ -245,9 +294,12 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   }, [query, reload]);
 
   const loadMore = useCallback(async () => {
-    if (loading || loadingMore) return;
+    if (loading || loadingMore || loadMoreBusyRef.current) return;
     if (!hasMoreInDb) return;
     if (records.length >= PAGE_BATCH) return; // page is full → pagination buttons take over
+    // onEndReached 可能在同一个帧里连续触发（内容不足一屏时尤其明显），
+    // 用 ref 兜住并发：否则会追加重复的行、重复 key 会让列表上下闪。
+    loadMoreBusyRef.current = true;
     setLoadingMore(true);
     setLoadError(false);
     const filter = buildFilter();
@@ -259,6 +311,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     } catch {
       setLoadError(true);
     } finally {
+      loadMoreBusyRef.current = false;
       setLoadingMore(false);
     }
   }, [
@@ -271,28 +324,126 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     buildFilter,
   ]);
 
+  /**
+   * 滚回列表顶部（翻页 / 回到顶部按钮共用）。
+   *
+   * 用底层 ScrollView 的 `scrollTo` 而不是 `scrollToLocation`：后者在目标行
+   * 未渲染、又没有 `getItemLayout` 时会静默失效 —— 翻页时列表正停在底部，
+   * 第一行十有八九没渲染出来。
+   */
+  const scrollListToTop = useCallback((animated: boolean) => {
+    try {
+      listRef.current?.getScrollResponder()?.scrollTo({ y: 0, animated });
+    } catch {
+      // 列表尚未完成布局时可能抛错，忽略即可。
+    }
+  }, []);
+
+  /**
+   * 翻页前先把旧页滚回顶部。
+   * 否则切页后列表会停在「旧滚动位置被夹到新页底部」的状态，
+   * 立刻满足 onEndReached，导致新页连续追加数据（就是第二页上下闪的根因）。
+   */
   const gotoPrevPage = useCallback(() => {
+    // 已经在第一页：按钮看起来是灰的，但仍然点得动 —— 给一句提示，
+    // 免得用户以为是按钮坏了。
+    if (offset <= 0) {
+      ToastAndroid.show(t('history.firstPage'), ToastAndroid.SHORT);
+      return;
+    }
     const prev = Math.max(0, offset - PAGE_BATCH);
-    reload(prev);
-  }, [offset, reload]);
+    scrollListToTop(false);
+    reload(prev, { limit: PAGE_BATCH });
+  }, [offset, reload, scrollListToTop]);
 
   const gotoNextPage = useCallback(() => {
-    if (!hasMoreInDb) return;
-    reload(offset + PAGE_BATCH);
-  }, [offset, hasMoreInDb, reload]);
+    if (!computeHasNextPage(offset, total, PAGE_BATCH)) {
+      ToastAndroid.show(t('history.lastPage'), ToastAndroid.SHORT);
+      return;
+    }
+    scrollListToTop(false);
+    reload(offset + PAGE_BATCH, { limit: PAGE_BATCH });
+  }, [offset, total, reload, scrollListToTop]);
 
   const scrollToTop = useCallback(() => {
-    listRef.current?.scrollToLocation({
-      sectionIndex: 0,
-      itemIndex: 0,
-      viewPosition: 0,
-      animated: true,
-    });
-  }, []);
+    scrollListToTop(true);
+  }, [scrollListToTop]);
 
   const sections = useMemo<Section[]>(
     () => groupByLocalDate(records),
     [records],
+  );
+  /** 最新分组数据的镜像：focus 回调里定位「上次查看的记录」时用。 */
+  const sectionsRef = useRef<Section[]>(sections);
+  sectionsRef.current = sections;
+
+  /** 详情页返回时要定位的记录 id（scrollToIndexFailed 后重试用）。 */
+  const pendingScrollIdRef = useRef<number | null>(null);
+
+  /**
+   * 把列表滚到指定记录。
+   * 目标常常在当前渲染窗口之外（用户可能滑了几十条），
+   * `scrollToLocation` 失败时由 {@link onScrollToIndexFailed} 估算位置后重试。
+   */
+  const scrollToRecordId = useCallback((recordId: number) => {
+    const list = listRef.current;
+    const groups = sectionsRef.current;
+    if (!list) return;
+    for (let si = 0; si < groups.length; si += 1) {
+      const ii = groups[si].data.findIndex(r => r.id === recordId);
+      if (ii >= 0) {
+        pendingScrollIdRef.current = recordId;
+        try {
+          list.scrollToLocation({
+            sectionIndex: si,
+            itemIndex: ii,
+            viewPosition: 0,
+            animated: false,
+          });
+        } catch {
+          // 交给 onScrollToIndexFailed 兜底
+        }
+        return;
+      }
+    }
+  }, []);
+
+  const onScrollToIndexFailed = useCallback(
+    (info: { index: number; averageItemLength: number }) => {
+      const list = listRef.current;
+      if (!list) return;
+      // 先按平均行高跳到大致位置，等目标进入渲染窗口后再精确定位。
+      list
+        .getScrollResponder()
+        ?.scrollTo({
+          y: Math.max(0, info.averageItemLength * info.index),
+          animated: false,
+        });
+      const id = pendingScrollIdRef.current;
+      if (id == null) return;
+      setTimeout(() => {
+        const groups = sectionsRef.current;
+        const current = listRef.current;
+        if (!current) return;
+        for (let si = 0; si < groups.length; si += 1) {
+          const ii = groups[si].data.findIndex(r => r.id === id);
+          if (ii >= 0) {
+            try {
+              current.scrollToLocation({
+                sectionIndex: si,
+                itemIndex: ii,
+                viewPosition: 0,
+                animated: false,
+              });
+            } catch {
+              // 仍然失败就保持大致位置
+            }
+            break;
+          }
+        }
+      }, 160);
+    },
+    [],
   );
 
   // Ordered ids of the currently loaded records, handed to the detail screen so
@@ -349,13 +500,34 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     useCallback(() => {
       // 有变化时只刷新**当前页**：看完详情返回不该把人甩回第一页。
       if (consumeHistoryChanged()) refreshCurrentPage({ silent: true });
-    }, [refreshCurrentPage]),
+      // 又从详情页滑了几十条？回到列表直接停在最后看的那一条。
+      const lastViewed = consumeLastViewedHistory();
+      if (lastViewed == null) return undefined;
+      // 等返回动画结束、列表完成布局再定位：立刻滚的话目标还没测量出来，
+      // scrollToLocation 会静默落空。
+      const timer = setTimeout(() => {
+        scrollToRecordId(lastViewed);
+      }, 350);
+      return () => clearTimeout(timer);
+    }, [refreshCurrentPage, scrollToRecordId]),
   );
 
   const pageFrom = offset + 1;
-  const pageTo = offset + records.length;
+  // 已加载条数不会超过总数，但仍夹一次，避免删除并发时出现 `1-100 / 共 89`。
+  const pageTo = Math.min(offset + records.length, total);
   const showPrevPage = offset > 0;
-  const showNextPage = hasMoreInDb;
+  // 下一页的**起点**必须还在总数内才可点：`801-889` 这种最后的不完整页要禁用，
+  // 否则会点出 `881-889`，再回退又变成 `781-800` 这种对不上的区间。
+  const showNextPage = computeHasNextPage(offset, total, PAGE_BATCH);
+  /** 详情页滑到本页第一条/最后一条时，用这些信息告诉用户下一步怎么做。 */
+  const detailEdges = useMemo<HistoryEdgeInfo>(
+    () => ({
+      hasPrevPage: offset > 0,
+      hasNextPage: computeHasNextPage(offset, total, PAGE_BATCH),
+      canLoadMore: hasMoreInDb && records.length < PAGE_BATCH,
+    }),
+    [offset, total, hasMoreInDb, records.length],
+  );
   const filterDateLabel = filterDay
     ? t('history.filterDateSelected', {
         date: formatDay(filterDay),
@@ -506,14 +678,14 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
       {/* Pagination bar (appears after a page is fully loaded) */}
       {showPagination ? (
         <View style={styles.pageBar}>
+          {/* 边界时按钮只是变灰，**不禁用** —— 点一下会 Toast 说明原因。 */}
           <Pressable
             onPress={gotoPrevPage}
-            disabled={!showPrevPage}
             hitSlop={8}
             style={({ pressed }) => [
               styles.pageBtn,
               !showPrevPage && styles.pageBtnDisabled,
-              pressed && showPrevPage && styles.pressed,
+              pressed && styles.pressed,
             ]}
           >
             <Text
@@ -530,12 +702,11 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
           </Text>
           <Pressable
             onPress={gotoNextPage}
-            disabled={!showNextPage}
             hitSlop={8}
             style={({ pressed }) => [
               styles.pageBtn,
               !showNextPage && styles.pageBtnDisabled,
-              pressed && showNextPage && styles.pressed,
+              pressed && styles.pressed,
             ]}
           >
             <Text
@@ -572,6 +743,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
           stickySectionHeadersEnabled
           onEndReached={loadMore}
           onEndReachedThreshold={0.5}
+          onScrollToIndexFailed={onScrollToIndexFailed}
           renderSectionHeader={({ section }) => (
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>{section.title}</Text>
@@ -584,6 +756,9 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
                 navigation.navigate('HistoryDetail', {
                   id: item.id,
                   ids: recordIds,
+                  edges: detailEdges,
+                  baseOffset: offset,
+                  total,
                 })
               }
               onLongPress={() => handleLongPress(item)}
@@ -667,10 +842,19 @@ const HistoryRow: React.FC<{
   const visual = historyStatusVisual(record.status);
   const badge = statusBadgeColors(colors, visual.tone);
   const statusLabel = t(HISTORY_STATUS_LABEL_KEY[record.status]);
-  // 图集预览：优先本地已存的第一张，没有本地路径时退回远程 URL。
-  const previewUri = record.imagePaths?.[0] ?? record.imageUrls?.[0] ?? null;
+  // 图集预览：优先本地已存的第一张，本地打不开（老记录 WebP 存成 .jpg、
+  // 或文件被删除）时自动换远程 URL 再试一次，两张都失败才显示占位图标。
+  const localPreview = record.imagePaths?.[0] ?? null;
+  const remotePreview = record.imageUrls?.[0] ?? null;
+  const [previewPhase, setPreviewPhase] = useState<'local' | 'remote' | 'failed'>(
+    'local',
+  );
+  const previewUri =
+    previewPhase === 'remote' && remotePreview
+      ? remotePreview
+      : localPreview ?? remotePreview;
   const previewIsVideo = previewUri ? isVideoUri(previewUri) : false;
-  const [previewFailed, setPreviewFailed] = useState(false);
+  const showPreview = !!previewUri && !previewIsVideo && previewPhase !== 'failed';
   return (
     <Pressable
       onPress={onPress}
@@ -678,12 +862,18 @@ const HistoryRow: React.FC<{
       delayLongPress={350}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
-      {previewUri && !previewIsVideo && !previewFailed ? (
+      {showPreview ? (
         <Image
           source={{ uri: previewUri }}
           style={styles.rowThumb}
           resizeMode="cover"
-          onError={() => setPreviewFailed(true)}
+          onError={() => {
+            if (previewPhase === 'local' && remotePreview && localPreview) {
+              setPreviewPhase('remote');
+            } else {
+              setPreviewPhase('failed');
+            }
+          }}
         />
       ) : (
         <View style={[styles.rowThumb, styles.rowThumbEmpty]}>
