@@ -223,7 +223,8 @@ const TrashRow: React.FC<{
   useI18n();
   const styles = useThemedStyles(createStyles);
   // 与下载记录列表一致：本地打不开时退到远程，两张都失败才显示占位。
-  const localPreview = record.imagePaths?.[0] ?? null;
+  // 封面优先（详情页全屏里可以「设为封面」），否则退回第一张。
+  const localPreview = record.coverUri || record.imagePaths?.[0] || null;
   const remotePreview = record.imageUrls?.[0] ?? null;
   const [previewPhase, setPreviewPhase] = useState<'local' | 'remote' | 'failed'>(
     'local',

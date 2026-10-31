@@ -203,6 +203,26 @@ export const en: Record<ZhKeys, string> = {
   'history.detail.edgeLast': 'This is the last record',
   'history.detail.failedCount':
     '{count} image(s) failed to load (maybe deleted from the gallery) and are hidden',
+  'history.detail.failedTitle': 'Failed to load: {count}',
+  'history.detail.failedHint':
+    'These images are missing from the gallery (probably deleted), so they are hidden.',
+  'history.reparseConfirmTitle': 'Re-fetch this gallery?',
+  'history.reparseConfirmBody':
+    'The whole article will be fetched again and this record\u2019s image list replaced. Files already saved in the gallery are kept.',
+  'history.viewer.setCover': 'Set as cover',
+  'history.viewer.coverSet': 'Cover updated',
+  'history.viewer.cover': 'Cover',
+  'history.viewer.favOff': 'Save',
+  'history.viewer.favOn': 'Saved',
+  'history.viewer.coverIsDefault': 'The first image is the default cover',
+  'history.viewer.coverCleared': 'Default cover restored (first image)',
+  'history.jumpTitle': 'Jump to page',
+  'history.jumpFirst': 'First',
+  'history.jumpLast': 'Last',
+  'history.jumpPlaceholder': 'Page number',
+  'history.jumpGo': 'Go',
+  'history.pageLabel': 'Page {page} of {pages}',
+  'history.pageRange': 'Page {page} · {from}-{to}',
   'history.detail.position': '{position} of {total}',
   'history.mediaPerm.title': 'Photo access required',
   'history.mediaPerm.body':

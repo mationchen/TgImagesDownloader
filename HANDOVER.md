@@ -8,91 +8,91 @@
 |---|---|
 | 项目 | 网页图片批量下载器（TgImagesDownloader）—— 批量下载 + 下载记录管理 + 压缩包导入 |
 | 仓库路径 | `D:\Android\TgImagesDownloader` |
-| 最后更新 | `2026-10-30 20:40`（本地时区） / 会话：debug 与 release 统一为同一安装（保留 release 数据） |
+| 最后更新 | `2026-10-31 23:20`（本地时区） / 会话：分页改版、详情页稳定性、封面功能 |
 | 分支 / 工作区 | `master` / 本轮改动未提交（见 §3） |
-| 当前版本 | `1.0.17（versionCode 17）`，已构建并覆盖安装，**待发版** |
-| 数据库 schema | v5（迁移在 `src/services/historyService.ts`） |
+| 当前版本 | `1.0.18（versionCode 18）`，已构建并覆盖安装，**待发版** |
+| 数据库 schema | **v6**（迁移在 `src/services/historyService.ts`，v6 新增 `cover_uri`） |
 | 运行环境 | Node 22.23.2；RN 0.87.1（Hermes + New Arch）；实测机 2509FPN0BC / Android 16（API 36） |
 
 ## 1. 这一轮的目标
 
-修下载记录分页的错位/闪烁，补回收站容量与预览，并解决详情页左右滑动闪退。
+修「第二页滑到底闪烁」「详情页再次崩溃」「失败图片留黑块」，并按用户要求把分页改成固定 50 条 + 页码跳转、加封面功能、锁竖屏。
 
-## 2. 已完成（上次提交 `1129bf7` 之后）
+## 2. 已完成（上次提交 `07b264e` 之后）
 
 | 改动 | 涉及文件 | 怎么验证的 / 结果 |
 |---|---|---|
-| 分页错位：越界回退按页大小对齐、翻页一次取满 100 条、末页禁用「下一页」 | `utils/pagination.ts`（新）、`HistoryScreen.tsx`、`__tests__/pagination.test.ts`（新） | 真机 889 条：翻页即时 `101-200`；末页 `801-889` 且按钮 disabled；`npx jest` 9 条新用例 |
-| 第二页下拉闪烁：翻页前滚回顶部 + `loadMore` 并发闸门 | `HistoryScreen.tsx` | 第二页快速滑到底，页码恒定、无重复 key 警告 |
-| 分页边界 Toast（列表） | 同上 | 第一页点「上一页」/末页点「下一页」→ `dumpsys window` 出现 Toast |
-| 回收站容量 500：满后拒绝移入 + 顶部说明 + 空态也显示 | `historyService.ts`、`TrashScreen.tsx`、`HistoryScreen.tsx` | 空态/有数据两种状态均显示 `已存 N / 500 条` |
-| 回收站缩略图 + 整行进详情 | `TrashScreen.tsx` | 56dp 缩略图节点可见；点击进详情，可左右滑相邻记录 |
-| 还原保留删除标记 | `historyService.ts` | 标记 → 移入 → 恢复，列表仍显示「移入回收站（1）」 |
-| **详情页滑动闪退**（Fabric `addViewAt`）| `HistoryDetailScreen.tsx` | 第二页 201 项图集起滑，**80 次有效滑动**（每 10 次校验标题变化）无崩溃，内存 290-390 MB 稳定 |
-| 详情页边界提示（当前页首/末条） | 同上 | 「完成」后 Toast：`已经是第一条` / `返回列表翻页` 等四种文案 |
-| 退出详情后列表回到该条 | `utils/lastViewed.ts`（新）、`HistoryScreen.tsx` | 日志 `target=929 → found at section=3 item=0`，列表命中 |
-| 详情页序号徽章 + 路径徽章 + 失败图片改文字提示 | `HistoryDetailScreen.tsx`、`navigation/types.ts`、i18n | 徽章行：`✓ 完成 | 第 1 / 876 条 | Pictures/TelegraphDownloader` |
-| 详情页/列表「图片打不开」：文件其实是 WebP 却登记成 image/jpeg | `TelegraphDownloaderModule.kt`（新增 `sniffMimeType()` 按文件头判类型）、`HistoryDetailScreen.tsx`、`HistoryScreen.tsx`、`TrashScreen.tsx` | 拉库文件确认 `RIFF…WEBP` 头；新下载按真实类型入库；全屏 / 详情网格 / 列表 / 回收站共 4 处均改为「本地失败→远程兜底」 |
-| debug 与 release 统一为一个安装（同包名 + 同正式签名） | `android/app/build.gradle`、`scripts/build-local.ps1`、`README.md`、`AGENTS.md` | 验签一致（SHA-256 `AD:DF:…:05:06`）；release→debug→release 双向覆盖，889 行数据始终未变；旧 debug 包已卸载（库备份在 `backup/`） |
+| 列表分页：**取消「先 20 条、下滑追加」**，固定 50 条/页，翻页栏常显 | `HistoryScreen.tsx` | 打开即 `第 1-50 条`；下一页 `51-100`；末页 `851-876` |
+| 页码快速跳转（第一页 / 最后一页 / 数字输入 / 可滚动列表） | `HistoryScreen.tsx`、i18n | `最后一页`→851-876；输入 `5`→201-250 |
+| 页码弹窗改**居中**卡片（原来贴底会误触手势条） | 同上 | 截图确认卡片垂直居中 |
+| 页码 `▾` 加大加粗 | 同上 | 层级里成为独立节点 `[777,468][797,528]` |
+| **详情页崩溃（第二次）**：`removeViewAt: Unable to find parentView` | `HistoryDetailScreen.tsx` | 页面改为**常挂 + `active` 只控制图片加载**；连滑 60 页无崩溃，内存 425 MB 稳定 |
+| 失败图片**从网格移除**（不留黑块），全屏查看器也排除 | 同上 | 网格格子连续无空洞；全屏显示 `1 / 30`（31 张里排除失败那张） |
+| 失败数量并入「失败 N」徽章 + 点击弹说明 | 同上、i18n | 徽章实时从 `失败 0` → `失败 1`；弹窗标题「加载失败：1 张」 |
+| 详情页「重新获取」加确认弹窗 | 同上、i18n | 点 🔄 → 「重新获取这篇图集？」+ 取消/重新解析 |
+| **封面功能**：全屏「收藏 / 封面」文字按钮、`cover_uri` 列、列表/回收站缩略图优先用封面 | `historyService.ts`(v6)、`HistoryDetailScreen.tsx`、`HistoryScreen.tsx`、`TrashScreen.tsx`、i18n | 设为封面→库里写入；再点→清空回默认；默认（第一张）自动点亮 |
+| 锁竖屏 | `AndroidManifest.xml`、`ios/.../Info.plist` | 强制 `user_rotation=1` 后截图仍是 1200×2608，`overrideOrientation=SCREEN_ORIENTATION_PORTRAIT` |
+| 顶栏图标风格统一 | `HistoryDetailScreen.tsx` | 收藏 `⭐/☆`、标记删除 🚫/↩️、重新获取 🔄、删除 🗑 同为 18px |
 
 ## 3. 当前状态
 
-- **能不能跑**：能。手机当前装的是 **release 1.0.17**（包名 `com.acstd.tgimagesdownloader.release`），
-  已实测列表「共 876 条」。要调试就 `npx react-native run-android --no-packager`（会换成 debug，数据不变）。
-  Metro 仍在独立窗口运行（端口 8081），收工可直接关掉那个窗口。
-- **未提交**：`HistoryScreen.tsx`、`HistoryDetailScreen.tsx`、`TrashScreen.tsx`、`historyService.ts`、`navigation/types.ts`、`i18n/{zh-CN,en}.ts`、`README.md`、`AGENTS.md`、`android/app/build.gradle`、`scripts/build-local.ps1`、`TelegraphDownloaderModule.kt`、指令日志、`HANDOVER.md`；新增 `utils/pagination.ts`、`utils/lastViewed.ts`、`__tests__/pagination.test.ts`。
-- **数据现状**：库 `tgdownloader.sqlite` 共 889 行，回收站 13 条（未清空），无「待删除」标记、无收藏。
+- **能不能跑**：能。手机上是 **release 1.0.18**（`npm run apk:local` 覆盖安装，数据保留）。
+- **数据**：库 `tgdownloader.sqlite` 889 行（列表 876 + 回收站 13），schema 6，封面全为空。
+- **未提交**：`AGENTS.md`、`HANDOVER.md`、`README.md`、`android/app/build.gradle`、
+  `android/app/src/main/AndroidManifest.xml`、`ios/TgImagesDownloader/Info.plist`、
+  `src/i18n/{zh-CN,en}.ts`、`src/screens/{HistoryScreen,HistoryDetailScreen,TrashScreen}.tsx`、
+  `src/services/{historyService,imageDownloader}.ts`、`android/.../TelegraphDownloaderModule.kt`、指令日志。
+- **测试残留**：无（测试设过的 3 个封面已用 App 功能清掉；系统收藏也已切回未收藏）。
 
 ## 4. 关键决策
 
-- **详情页 pager 弃用 FlatList**：Fabric 下虚拟化会在滑动时 remove/add cell，抛 `addViewAt: failed to insert view ...`。改成 ScrollView + 固定 N 个占位 View（子节点永不增删），只挂「当前页 ±1」。
-- **网格弃用 `numColumns`**：`index=4 count=3` 的越界正来自 numColumns 分组；改成「一行一个 cell、行内固定 3 格」，每行结构恒定。
-- **不要加 `removeClippedSubviews`**：同属那条崩溃路径，加了必崩（实测）。
-- **回收站移入/还原都不清 `is_marked_deleted`**：用户要求还原后保留删除意图；`countMarkedDeleted()` 已带 `trashed_at = 0`，不会重复计数。
-- **序号用全局位置**（offset + 页内 index + 1），与分页条的 `101-200` 对齐；从回收站进的详情不显示序号。
-- **debug / release 统一成一个安装（2026-10-30）**：两者都用 applicationId
-  `com.acstd.tgimagesdownloader.release` + `signingConfigs.release`，互相覆盖安装保留数据，
-  不能再共存。`.release` 后缀是历史包袱（手机数据挂在这个包下），不是为了区分变体。
-  参照 iWorkDaily 的同类配置。
+- **详情页 pager 常挂所有页**：`{近邻 ? <RecordPage/> : null}` 这种在横向 ScrollView 里动态增删子节点，
+  Fabric 会抛 `addViewAt` / `removeViewAt` 两类崩溃。现在改成始终挂载、用 `active` 控制是否渲染图片网格，
+  内存仍只保留当前页 ±1 的图。
+- **失败图片直接不渲染**：不做占位、不做红叉；`visibleUris` 过滤掉失败项，`oi` 保留在 `uris` 里的原下标，
+  拖动排序换算仍正确。
+- **不做「单张补下」**：实测老记录的 `imageUrls[i]` 与图片并不可靠对应（例：id=660 的 index 5 指向站点 logo，
+  且返回 502），补下会往相册塞错图。故只提示、不提供入口；相关代码已删除。
+- **分页固定 50 条**：不再滚动追加，页码区间与「上一页/下一页」永远对得上；页数多时用输入框直达。
+- **封面语义**：`cover_uri` 为空 = 用第一张（默认）；全屏按钮三态：默认第一张→提示 / 已自定义→取消 / 其他→设为封面。
+- **锁竖屏**：Android `screenOrientation="portrait"` + iOS 仅 Portrait。
 
 ## 5. 已知坑
 
-- **别把 debug 的 signingConfig 改回 `signingConfigs.debug`** → 签名一变就无法覆盖安装，
-  只能 `adb uninstall`，而卸载会清空 889 条记录的全部数据。
-- **debug 首次启动会弹系统「Android 应用兼容性」对话框**（Android 16 对 debuggable 应用
-  的 16 KB 页对齐检查；release 不会弹）→ 点「不再显示」即可继续，不是崩溃。
-- **Fabric `addViewAt` 闪退** → FlatList 虚拟化 / numColumns / removeClippedSubviews 三处都可能触发 → 详情页已全部绕开，别再改回去。
-- **横向 ScrollView 的占位子 View 只给 width 会塌成 0 高** → 整页白屏；必须 `width + height:'100%'`。
-- **ScrollView 的 `contentOffset` 在 Android 不保证生效** → 用 ref `scrollTo` 兜底，否则停在空占位页（白页）。
-- **慢速拖动只触发 `onScrollEndDrag`**，不触发 `onMomentumScrollEnd` → 分页回调两个都要挂。
-- **无线调试灭屏即断**（实测 30 秒 offline、2.5 分钟 TCP 断），端口随之变化；`adb mdns` 在本机不可用（5353 被 svchost/chrome 占），只能手动 `adb connect IP:端口`。
-- 其余沿用上一版：`GRADLE_USER_HOME` 需显式指定、`&amp;#8211;` 二次编码未修。
+- **Fabric 挂载竞态**：详情页 pager / 网格都不要动态增删子节点，也不要 `numColumns`、不要
+  `removeClippedSubviews`（三条都实测崩过）。
+- **横向 ScrollView 占位子 View 只给 width 会塌成 0 高** → 白页；必须 `width + height:'100%'`。
+- **`contentOffset` 在 Android 不保证生效** → 用 ref `scrollTo` 兜底。
+- **慢速拖动只触发 `onScrollEndDrag`** → 分页回调两个都要挂。
+- **老记录的 URL/图片对不齐**（`imagePaths` 与 `savePaths` 长度都可能不同）→ 任何「按 URL 补图」的功能都不可靠。
+- **gh 上传无进度**，取消会留下 `state=starter` 的空壳附件（占名字但网页不显示）→ 见 AGENTS §14。
+- **无线调试灭屏即断**；`adb md5`/mdns 不可用；输入法弹出时底部 tab 点击无效（先收键盘）。
+- **screenrecord 抓不到闪烁瞬间**，验证列表稳定性要用「截图 + PIL 逐帧比对，且排除状态栏」。
 
 ## 6. 下一步
 
-1. [ ] 发版 v1.0.17（tag + release，三个架构 APK；v1.0.16 已于 2026-10-30 00:31 发过）
-2. [ ] 修 `src/utils/htmlEntities.ts` 的二次编码（最多解 3 次），补 `&amp;#8211;` 用例
-3. [ ] 可选：扫存量图片、按文件头纠正 MediaStore 里的 MIME（老记录断网时仍打不开，现在只靠远程兜底）
+1. [ ] 发版 v1.0.18（tag 必须在 commit 之后打；附件用 `curl --progress-bar` 传，见 AGENTS §14）
+2. [ ] 可选：修 `src/utils/htmlEntities.ts` 的二次编码（`&amp;#8211;` 仍会残留在标题里）
+3. [ ] 可选：老记录 URL 错位的存量修复（需要重新解析那一篇，不能靠 index 猜）
 4. [ ] 决定 `开发相关资源/page.html` 去留
-5. [ ] 可选：回收站详情页也显示序号（按回收站内位置）
 
 ## 7. 常用命令
 
 ```powershell
 cd D:\Android\TgImagesDownloader
 $env:GRADLE_USER_HOME='D:\Android\.gradle'
-npm start                  # Metro（必须在独立可见窗口）
-npx react-native run-android --no-packager   # 调试：装 debug，覆盖当前安装、保留数据
-npm run apk:local          # 日常：装 release，覆盖 debug、同样保留数据
+npm start                                      # Metro（独立可见窗口）
+npx react-native run-android --no-packager     # 调试：装 debug，保留数据
+npm run apk:local                              # 日常：装 release，保留数据
 npx tsc --noEmit; npx jest; npx eslint src/
-adb shell uiautomator dump /sdcard/ui.xml   # 真机取证（截图可能被 FLAG_SECURE 拦）
+adb shell uiautomator dump /sdcard/ui.xml      # 真机取证（截图可能被 FLAG_SECURE 拦）
 ```
 
 ## 8. 环境与外部依赖
 
 - 设备 `2509FPN0BC` / Android 16；adb 走 Wi-Fi（`192.168.31.172`，端口会变）。
-- 包名**只有一个**：`com.acstd.tgimagesdownloader.release`（debug 也是它）。
-  旧的独立 debug 包 `com.acstd.tgimagesdownloader` 已于 2026-10-30 卸载，
-  其数据库（7 条记录）备份在 `backup/old-debug-tgdownloader-*.sqlite`。
+- 包名**只有一个**：`com.acstd.tgimagesdownloader.release`（debug 也是它，共用一个安装位）。
   **禁止 uninstall**：一卸载数据全没。
-- 签名 `MYAPP_RELEASE_*` 在 `android/gradle.properties`（gitignore）。
+- 签名 `MYAPP_RELEASE_*` 在 `android/gradle.properties`（gitignore），keystore 是
+  `android/app/TgImagesDownloader.keystore`（相对 app 模块目录）。
+- 数据库备份：`backup/db-before-v6-*.sqlite`（迁移前）、`backup/db-before-cover-cleanup-*.sqlite`。

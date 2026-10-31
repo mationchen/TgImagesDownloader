@@ -32,6 +32,7 @@ import { useThemedStyles, useTheme, type ThemeColors } from '../theme';
 import {
   getHistory,
   reorderHistoryImages,
+  setHistoryCover,
   setHistoryFavorite,
   setHistoryMarkedDeleted,
   type HistoryRecord,
@@ -59,6 +60,11 @@ type Props = RootStackScreenProps<'HistoryDetail'>;
 
 const COLS = 3;
 const GAP = 2;
+/**
+ * 窗口外页面用的空数组常量。
+ * 必须是**稳定引用**：每次传新 `[]` 会让 FlatList 认为数据变了而重新渲染。
+ */
+const EMPTY_ROWS: { index: number; cells: { uri: string; oi: number }[] }[] = [];
 
 /** 原生 View 实例类型（RN 0.87 通过组件 ref 暴露）。 */
 type HostView = React.ComponentRef<typeof View>;
@@ -227,7 +233,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
                   currentRecord.isFavorite && styles.headerActionActive,
                 ]}
               >
-                {currentRecord.isFavorite ? '★' : '☆'}
+                {currentRecord.isFavorite ? '\u2B50' : '\u2606'}
               </Text>
             </Pressable>
             <Pressable
@@ -250,12 +256,27 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
                   currentRecord.isMarkedDeleted && styles.headerActionWarn,
                 ]}
               >
-                {currentRecord.isMarkedDeleted ? '\u21A9\uFE0F' : '\u{1F6AB}'}
+                {currentRecord.isMarkedDeleted
+                  ? '\u21A9\uFE0F'
+                  : '\u{1F6AB}'}
               </Text>
             </Pressable>
             <Pressable
               onPress={() => {
-                onReparse().catch(() => undefined);
+                // 重新解析会重新抓整篇文章、覆盖记录的图片列表，先确认再执行。
+                Alert.alert(
+                  t('history.reparseConfirmTitle'),
+                  t('history.reparseConfirmBody'),
+                  [
+                    { text: t('common.cancel'), style: 'cancel' },
+                    {
+                      text: t('history.reparse'),
+                      onPress: () => {
+                        onReparse().catch(() => undefined);
+                      },
+                    },
+                  ],
+                );
               }}
               disabled={reparsing}
               accessibilityRole="button"
@@ -269,7 +290,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
               {reparsing ? (
                 <ActivityIndicator size="small" color={colors.headerTitle} />
               ) : (
-                <Text style={styles.headerActionText}>🔄</Text>
+                <Text style={styles.headerActionText}>{'\u{1F504}'}</Text>
               )}
             </Pressable>
             <Pressable
@@ -282,7 +303,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
                 pressed && styles.pressed,
               ]}
             >
-              <Text style={styles.headerActionText}>🗑</Text>
+              <Text style={styles.headerActionText}>{'\u{1F5D1}'}</Text>
             </Pressable>
           </View>
         ) : null,
@@ -388,16 +409,22 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
           // height 必须显式给：横向 ScrollView 的占位子 View 没有内容高度，
           // 只给 width 会塌成 0 高 → 整页白屏（FlatList 的 cell 会自动拉伸，
           // ScrollView 的普通 child 不会）。
+          //
+          // ⚠️ 这里**永远挂 RecordPage，不再按窗口换成 null**：
+          // 之前是 `{近邻 ? <RecordPage/> : null}`，滑动时在 ScrollView 里
+          // 动态增删子节点，触发 Fabric 的
+          // `removeViewAt: Unable to find parentView for tag ...`
+          // （1.0.17 实测崩溃）。改成常挂 + `active` 控制是否加载图片：
+          // 结构恒定，内存仍只保留当前页 ±1 的图片。
           <View key={String(pageId)} style={{ width, height: '100%' }}>
-            {Math.abs(index - pagerIndex) <= 1 ? (
-              <RecordPage
-                id={pageId}
-                width={width}
-                mediaTick={mediaTick}
-                position={baseOffset + index + 1}
-                total={totalCount}
-              />
-            ) : null}
+            <RecordPage
+              id={pageId}
+              width={width}
+              mediaTick={mediaTick}
+              active={Math.abs(index - pagerIndex) <= 1}
+              position={baseOffset + index + 1}
+              total={totalCount}
+            />
           </View>
         ))}
       </ScrollView>
@@ -418,7 +445,12 @@ const RecordPage: React.FC<{
   position?: number;
   /** 列表命中的总条数。 */
   total?: number;
-}> = React.memo(({ id, width, mediaTick, position, total }) => {
+  /**
+   * 是否在「当前页 ±1」的窗口内。false 时**不渲染图片网格**（不占解码内存），
+   * 但组件本身保持挂载 —— 见 pager 里关于 Fabric removeViewAt 崩溃的注释。
+   */
+  active?: boolean;
+}> = React.memo(({ id, width, mediaTick, position, total, active = true }) => {
   // Subscribe so this page re-renders in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -500,17 +532,42 @@ const RecordPage: React.FC<{
   /** 实际渲染顺序（拖动中会变）。 */
   const uris = order ? order.map(i => baseUris[i]) : baseUris;
   /**
+   * 打不开的图片直接从网格里去掉（用户要求：不要留黑块占位，也不要红叉）。
+   * `uris` 仍保留全量 + 顺序，拖动排序换算时用得到。
+   */
+  const visibleUris = useMemo(
+    () => uris.filter(u => !failedUris.has(u)),
+    [uris, failedUris],
+  );
+  const visibleRef = useRef<string[]>([]);
+  visibleRef.current = visibleUris;
+  const remoteUrls = useMemo(
+    () => loadedRecord?.imageUrls ?? [],
+    [loadedRecord],
+  );
+  /** 与 visibleUris 一一对应的远程兜底地址（隐藏的图片不参与）。 */
+  const visibleRemoteUrls = useMemo(
+    () => visibleUris.map(u => remoteUrls[uris.indexOf(u)] ?? ''),
+    [visibleUris, uris, remoteUrls],
+  );
+  /**
    * 按 COLS 切成「行」：列表一行一个 cell，行内固定 COLS 格。
+   * `oi` 是这张图在 `uris`（全量顺序）里的下标 —— 手势与排序都用它，
+   * 这样隐藏掉几张图也不会把下标错位。
    * 不用 FlatList 的 numColumns —— Fabric 下它的分组逻辑会崩（见下面的注释）。
    */
   const gridRows = useMemo(() => {
-    const out: { index: number; cells: string[] }[] = [];
-    for (let i = 0; i < uris.length; i += COLS) {
-      out.push({ index: i, cells: uris.slice(i, i + COLS) });
+    const out: { index: number; cells: { uri: string; oi: number }[] }[] = [];
+    for (let i = 0; i < visibleUris.length; i += COLS) {
+      out.push({
+        index: i,
+        cells: visibleUris
+          .slice(i, i + COLS)
+          .map(uri => ({ uri, oi: uris.indexOf(uri) })),
+      });
     }
     return out;
-  }, [uris]);
-  const remoteUrls = loadedRecord?.imageUrls ?? [];
+  }, [visibleUris, uris]);
   const [favoritedUris, setFavoritedUris] = useState<Set<string>>(
     () => new Set(),
   );
@@ -587,9 +644,9 @@ const RecordPage: React.FC<{
     targetRef.current = null;
     if (from == null || to == null || from === to) return;
     // 松手后才真正重排 + 落库
-    const total = urisRef.current.length;
+    const imageCount = urisRef.current.length;
     const current =
-      orderRef.current ?? Array.from({ length: total }, (_, i) => i);
+      orderRef.current ?? Array.from({ length: imageCount }, (_, i) => i);
     const next = current.slice();
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
@@ -616,14 +673,16 @@ const RecordPage: React.FC<{
   sortModeRef.current = sortMode;
   const moveTo = useCallback(
     (x: number, y: number) => {
-      const total = urisRef.current.length;
-      const from = dragIndexRef.current;
-      if (from == null || total === 0) return;
+      // 手指坐标 → 网格第几格。网格只画「没失败」的图，所以要换算回 uris 下标，
+      // 否则隐藏过图片之后拖动会落到错误的位置。
+      const visible = visibleRef.current;
+      if (dragIndexRef.current == null || visible.length === 0) return;
       const origin = gridOriginRef.current;
       const col = Math.floor((x - origin.x) / cell);
       const row = Math.floor((y - origin.y) / cell);
-      const to = Math.max(0, Math.min(row * COLS + col, total - 1));
-      if (to === targetRef.current) return;
+      const visIdx = Math.max(0, Math.min(row * COLS + col, visible.length - 1));
+      const to = urisRef.current.indexOf(visible[visIdx]);
+      if (to < 0 || to === targetRef.current) return;
       targetRef.current = to;
       setDragTarget(to);
     },
@@ -759,11 +818,65 @@ const RecordPage: React.FC<{
     };
   }, [id]);
 
-  const onThumbPress = useCallback((idx: number) => {
-    setViewerIndex(idx);
+  const onThumbPress = useCallback((oi: number) => {
+    // `oi` 是 uris（全量）下标，查看器用的是「过滤掉失败图片」后的列表，
+    // 这里换算成可见下标，否则点第 6 张可能打开第 5 张。
+    const uri = urisRef.current[oi];
+    const vi = visibleRef.current.indexOf(uri);
+    setViewerIndex(vi >= 0 ? vi : null);
   }, []);
   pressHandlerRef.current = onThumbPress;
   const closeViewer = useCallback(() => setViewerIndex(null), []);
+
+  /** 点「失败 N」徽章：说明这些图为什么被隐藏。 */
+  const showFailedHint = useCallback(() => {
+    Alert.alert(
+      t('history.detail.failedTitle', { count: failedUris.size }),
+      t('history.detail.failedHint'),
+    );
+  }, [failedUris.size]);
+
+  /** 默认封面 = 图集第一张；列表在没有自定义封面时也用它。 */
+  const defaultCoverUri = baseUris[0] ?? '';
+  /** 实际生效的封面：自定义优先，否则第一张。 */
+  const effectiveCoverUri = (loadedRecord?.coverUri || '') || defaultCoverUri;
+
+  /** 全屏里点「封面」：已自定义 → 取消；否则设为这张（第一张本身就是默认）。 */
+  const onCoverPress = useCallback(
+    (uri: string) => {
+      const custom = loadedRecord?.coverUri ?? '';
+      if (!custom && uri === defaultCoverUri) {
+        ToastAndroid.show(
+          t('history.viewer.coverIsDefault'),
+          ToastAndroid.SHORT,
+        );
+        return;
+      }
+      if (custom && uri === custom) {
+        setRecord(prev =>
+          prev && prev !== 'loading' ? { ...prev, coverUri: '' } : prev,
+        );
+        setHistoryCover(id, '').catch(() => undefined);
+        ToastAndroid.show(
+          t('history.viewer.coverCleared'),
+          ToastAndroid.SHORT,
+        );
+        return;
+      }
+      setRecord(prev =>
+        prev && prev !== 'loading' ? { ...prev, coverUri: uri } : prev,
+      );
+      setHistoryCover(id, uri)
+        .then(() => {
+          ToastAndroid.show(
+            t('history.viewer.coverSet'),
+            ToastAndroid.SHORT,
+          );
+        })
+        .catch(() => undefined);
+    },
+    [defaultCoverUri, id, loadedRecord?.coverUri],
+  );
 
   if (record === 'loading') {
     return (
@@ -785,14 +898,7 @@ const RecordPage: React.FC<{
 
   return (
     <View style={{ width, flex: 1 }} ref={rootRef}>
-      {/* 加载失败的图片不再逐格画红叉，统一在这里说一句 */}
-      {failedUris.size > 0 ? (
-        <View style={styles.failedBar}>
-          <Text style={styles.failedBarText}>
-            {t('history.detail.failedCount', { count: failedUris.size })}
-          </Text>
-        </View>
-      ) : null}
+      {/* 失败图片不再有常驻横幅：数量进「失败」徽章，点了才解释（见 Header）。 */}
       {sortMode ? (
         <View style={styles.sortBar}>
           <Text style={styles.sortBarText}>{t('history.detail.sortHint')}</Text>
@@ -812,7 +918,9 @@ const RecordPage: React.FC<{
       ) : null}
       <FlatList
         style={styles.pageScroll}
-        data={gridRows}
+        // 窗口外的页给空数组：组件仍挂着（避免 Fabric 动态增删子节点），
+        // 但不实例化任何图片，内存与原来「只挂当前页 ±1」一致。
+        data={active ? gridRows : EMPTY_ROWS}
         // 一行一个 cell、行内固定 COLS 格。
         // **不要用 numColumns**：Fabric 下分组逻辑会往已满的行里插第 4 个格子，
         // 抛 `addViewAt: failed to insert view ... index=4 count=3` 直接闪退。
@@ -826,8 +934,8 @@ const RecordPage: React.FC<{
         windowSize={5}
         renderItem={({ item: row }) => (
           <View style={styles.gridRow}>
-            {row.cells.map((uri, k) => {
-              const index = row.index + k;
+            {row.cells.map(({ uri, oi }) => {
+              const index = oi;
               return (
                 // 手势挂在格子外层 View 上：点击 / 长按 / 拖动都在这里判定（见 pan）。
                 <View
@@ -857,6 +965,16 @@ const RecordPage: React.FC<{
                     }
                     onStatus={handleThumbStatus}
                   />
+                  {record.coverUri === uri ? (
+                    <View
+                      pointerEvents="none"
+                      style={styles.tileCoverBadge}
+                      accessibilityRole="image"
+                      accessibilityLabel={t('history.viewer.setCover')}
+                    >
+                      <Text style={styles.tileCoverText}>{'★'}</Text>
+                    </View>
+                  ) : null}
                   {favoritedUris.has(uri) && !isVideoUri(uri) ? (
                     <View
                       pointerEvents="none"
@@ -884,7 +1002,13 @@ const RecordPage: React.FC<{
           </View>
         )}
         ListHeaderComponent={
-          <Header record={record} position={position} total={total} />
+          <Header
+            record={record}
+            position={position}
+            total={total}
+            failedCount={failedUris.size}
+            onFailedPress={showFailedHint}
+          />
         }
         ListEmptyComponent={
           <View style={styles.emptyBlock}>
@@ -922,8 +1046,12 @@ const RecordPage: React.FC<{
 
       <ImageViewer
         visible={viewerIndex !== null}
-        uris={uris}
-        remoteUris={remoteUrls}
+        // 只把「能打开」的图片给查看器：失败的那张直接不出现，用户左右滑也不会
+        // 撞到一张黑屏。
+        uris={visibleUris}
+        remoteUris={visibleRemoteUrls}
+        coverUri={effectiveCoverUri}
+        onCoverPress={onCoverPress}
         initialIndex={viewerIndex ?? 0}
         onClose={closeViewer}
       />
@@ -938,7 +1066,11 @@ const Header: React.FC<{
   position?: number;
   /** 列表命中的总条数。 */
   total?: number;
-}> = React.memo(({ record, position, total }) => {
+  /** 当前实际打不开的图片数（0 = 全部正常）。 */
+  failedCount?: number;
+  /** 点「失败」徽章时弹出的说明。 */
+  onFailedPress?: () => void;
+}> = React.memo(({ record, position, total, failedCount = 0, onFailedPress }) => {
   // Subscribe so meta labels re-render in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -978,9 +1110,18 @@ const Header: React.FC<{
         <MetaChip
           label={t('history.detail.success', { count: record.successCount })}
         />
-        <MetaChip
-          label={t('history.detail.failed', { count: record.failedCount })}
-        />
+        {/* 「失败」= 当前实际打不开的图片数；有才可点，点了解释为什么被隐藏 */}
+        <Pressable
+          onPress={failedCount > 0 ? onFailedPress : undefined}
+          disabled={failedCount === 0}
+          hitSlop={6}
+        >
+          <MetaChip
+            label={t('history.detail.failed', {
+              count: failedCount > 0 ? failedCount : record.failedCount,
+            })}
+          />
+        </Pressable>
         <MetaChip
           label={`${historyStatusVisual(record.status).icon} ${t(
             HISTORY_STATUS_LABEL_KEY[record.status],
@@ -1119,8 +1260,12 @@ const ImageViewer: React.FC<{
   initialIndex: number;
   /** 与 uris 一一对应的远程地址：本地打不开时回退（老记录存在 WebP 存成 .jpg 的情况）。 */
   remoteUris?: string[];
+  /** 实际生效的封面（自定义优先，否则是第一张）——用于按钮的点亮状态。 */
+  coverUri?: string;
+  /** 点「封面」按钮（设为 / 取消由上层判断）。 */
+  onCoverPress?: (uri: string) => void;
   onClose: () => void;
-}> = ({ visible, uris, initialIndex, remoteUris, onClose }) => {
+}> = ({ visible, uris, initialIndex, remoteUris, coverUri, onCoverPress, onClose }) => {
   // The viewer chrome stays black in both themes; the subscription only
   // forces fresh counter/error strings on locale change.
   useI18n();
@@ -1266,41 +1411,72 @@ const ImageViewer: React.FC<{
           >
             <Text style={styles.viewerCloseText}>×</Text>
           </Pressable>
-          <Text style={styles.viewerCounter}>
-            {t('preview.viewerIndex', {
-              current: safeIndex + 1,
-              total: uris.length,
-            })}
-          </Text>
-          {canFavorite ? (
-            <Pressable
-              onPress={onToggleFavorite}
-              disabled={favoriteBusy}
-              hitSlop={12}
-              accessibilityRole="button"
-              accessibilityLabel={
-                isFavorite
-                  ? t('history.viewer.unfavorite')
-                  : t('history.viewer.favorite')
-              }
-              style={({ pressed }) => [
-                styles.viewerCloseBtn,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.viewerFavText,
-                  isFavorite && styles.viewerFavTextOn,
+          {/* 页码绝对居中：左右两侧的按钮多少都不影响它的位置 */}
+          <View pointerEvents="none" style={styles.viewerCounterWrap}>
+            <Text style={styles.viewerCounter}>
+              {t('preview.viewerIndex', {
+                current: safeIndex + 1,
+                total: uris.length,
+              })}
+            </Text>
+          </View>
+          <View style={styles.viewerActions}>
+            {/* 收藏：文字按钮，和「封面」同一套外观 */}
+            {canFavorite ? (
+              <Pressable
+                onPress={onToggleFavorite}
+                disabled={favoriteBusy}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isFavorite === true }}
+                accessibilityLabel={
+                  isFavorite
+                    ? t('history.viewer.unfavorite')
+                    : t('history.viewer.favorite')
+                }
+                style={({ pressed }) => [
+                  styles.viewerPill,
+                  isFavorite && styles.viewerPillOn,
+                  pressed && styles.pressed,
                 ]}
               >
-                {isFavorite ? '\u2665\uFE0E' : '\u2661'}
-              </Text>
-            </Pressable>
-          ) : (
-            // 不支持系统收藏夹（iOS / Android < 11 / 视频）时保持对称留白。
-            <View style={styles.viewerPlaceholder} />
-          )}
+                <Text
+                  style={[
+                    styles.viewerPillText,
+                    isFavorite && styles.viewerPillTextOn,
+                  ]}
+                >
+                  {isFavorite
+                    ? t('history.viewer.favOn')
+                    : t('history.viewer.favOff')}
+                </Text>
+              </Pressable>
+            ) : null}
+            {/* 封面：当前这张就是封面时点亮；再点一次取消（回到默认第一张）。 */}
+            {onCoverPress && viewerUri && !isVideoUri(viewerUri) ? (
+              <Pressable
+                onPress={() => onCoverPress(viewerUri)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityState={{ selected: viewerUri === coverUri }}
+                accessibilityLabel={t('history.viewer.cover')}
+                style={({ pressed }) => [
+                  styles.viewerPill,
+                  viewerUri === coverUri && styles.viewerPillOn,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.viewerPillText,
+                    viewerUri === coverUri && styles.viewerPillTextOn,
+                  ]}
+                >
+                  {t('history.viewer.cover')}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
         <ScrollView
           ref={scrollRef}
@@ -1460,7 +1636,7 @@ function createStyles(c: ThemeColors) {
       alignItems: 'center',
       justifyContent: 'center',
     },
-    headerActionText: { fontSize: 17, color: c.headerTitle },
+    headerActionText: { fontSize: 18, lineHeight: 22, color: c.headerTitle },
     /** 已收藏的星标用主题色高亮。 */
     headerActionActive: { color: c.primary },
     /** 「已标记删除」用警示色。 */
@@ -1627,9 +1803,49 @@ function createStyles(c: ThemeColors) {
       justifyContent: 'center',
     },
     tileFavoriteText: { fontSize: 18, lineHeight: 22, color: '#FF4D6D' },
+    /** 封面角标（★）：和收藏角标不同位置，两者可同时出现。 */
+    tileCoverBadge: {
+      position: 'absolute',
+      bottom: 6,
+      right: 6,
+      width: 26,
+      height: 26,
+      borderRadius: 13,
+      backgroundColor: 'rgba(0,0,0,0.6)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    tileCoverText: { fontSize: 15, lineHeight: 20, color: '#FFD166' },
     /** 系统收藏夹按钮（♥ / ♡）。用文字呈现变体 U+FE0E，颜色才能自定义。 */
-    viewerFavText: { fontSize: 24, lineHeight: 28, color: '#fff' },
+    viewerFavText: { fontSize: 18, lineHeight: 22 },
     viewerFavTextOn: { color: '#FF4D6D' },
+    /** 全屏顶栏右侧的文字按钮（收藏 / 封面）——同一套外观。 */
+    viewerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    /** 页码居中用的绝对定位层：左右按钮数量变化不会挪动它。 */
+    viewerCounterWrap: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      alignItems: 'center',
+    },
+    viewerPill: {
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.5)',
+    },
+    viewerPillOn: {
+      backgroundColor: '#FFD166',
+      borderColor: '#FFD166',
+    },
+    viewerPillText: {
+      fontSize: 13,
+      lineHeight: 16,
+      color: '#fff',
+      fontWeight: '600',
+    },
+    viewerPillTextOn: { color: '#1a1a1a' },
     viewerScroll: { flex: 1 },
     viewerScrollContent: { alignItems: 'center' },
     viewerPage: {

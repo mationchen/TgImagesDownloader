@@ -54,6 +54,11 @@ export interface HistoryRecord {
   isMarkedDeleted: boolean;
   /** 移入回收站的时间（UTC ms）；0 = 不在回收站。 */
   trashedAt: number;
+  /**
+   * 用户手动指定的封面（v6+）。空串 = 用 `imagePaths[0]` 当封面。
+   * 列表 / 回收站的缩略图优先用它。
+   */
+  coverUri: string;
 }
 
 export type HistoryStatus = 'done' | 'partial' | 'failed' | 'cancelled';
@@ -93,7 +98,7 @@ export interface HistoryRow {
 const HISTORY_COLUMNS =
   'id, url, title, image_count, success_count, failed_count, skipped_count, ' +
   'save_dir, status, image_urls, image_paths, save_paths, created_at, updated_at, ' +
-  'is_favorite, is_marked_deleted, trashed_at';
+  'is_favorite, is_marked_deleted, trashed_at, cover_uri';
 
 /** A migration step: brings the schema from `version - 1` to `version`. */
 interface Migration {
@@ -106,7 +111,7 @@ interface Migration {
   up: (db: DB) => Promise<void>;
 }
 
-export const LATEST_SCHEMA_VERSION = 5;
+export const LATEST_SCHEMA_VERSION = 6;
 
 /**
  * Migration manifest (AGENTS.md §4). Add a new entry here for every future
@@ -229,6 +234,16 @@ const MIGRATIONS: Migration[] = [
       await db.execute(
         `CREATE INDEX IF NOT EXISTS idx_history_favorite
          ON history(is_favorite);`,
+      );
+    },
+  },
+  {
+    version: 6,
+    description: 'history: cover_uri 封面列（详情页全屏「设为封面」）',
+    up: async db => {
+      // 空串 = 用户没指定封面，列表退回 imagePaths[0]；旧数据不需要回填。
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN cover_uri TEXT NOT NULL DEFAULT '';`,
       );
     },
   },
@@ -665,6 +680,23 @@ export async function setHistoryFavorite(
   markHistoryChanged();
 }
 
+/**
+ * 指定某张图片为图集封面（列表 / 回收站的缩略图优先用它）。
+ * 传空串 = 清除自定义封面，退回第一张。
+ */
+export async function setHistoryCover(
+  id: number,
+  coverUri: string,
+): Promise<void> {
+  await initHistoryDatabase();
+  await getDb().execute(
+    `UPDATE history SET cover_uri = ?, updated_at = ? WHERE id = ?;`,
+    [coverUri, Date.now(), id],
+  );
+  markHistoryChanged();
+}
+
+
 /** 标记为删除 / 取消标记（只是打标记，记录仍在下载记录里）。 */
 export async function setHistoryMarkedDeleted(
   id: number,
@@ -877,6 +909,7 @@ function rowToRecord(row: Record<string, unknown>): HistoryRecord {
     isFavorite: Number(row.is_favorite ?? 0) === 1,
     isMarkedDeleted: Number(row.is_marked_deleted ?? 0) === 1,
     trashedAt: Number(row.trashed_at ?? 0),
+    coverUri: String(row.cover_uri ?? ''),
   };
 }
 

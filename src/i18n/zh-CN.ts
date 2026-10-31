@@ -198,6 +198,26 @@ export const zhCN = {
   'history.detail.edgeLast': '已经是最后一条记录',
   'history.detail.failedCount':
     '{count} 张图片加载失败（可能已从相册删除），已隐藏',
+  'history.detail.failedTitle': '加载失败：{count} 张',
+  'history.detail.failedHint':
+    '这些图片在相册里找不到（可能已被删除），所以没有显示。',
+  'history.reparseConfirmTitle': '重新获取这篇图集？',
+  'history.reparseConfirmBody':
+    '会重新抓取整篇文章并覆盖这条记录的图片列表（已保存的相册文件不会删除）。',
+  'history.viewer.setCover': '设为封面',
+  'history.viewer.coverSet': '已设为封面',
+  'history.viewer.cover': '封面',
+  'history.viewer.favOff': '收藏',
+  'history.viewer.favOn': '已收藏',
+  'history.viewer.coverIsDefault': '默认封面就是第一张，不需要设置',
+  'history.viewer.coverCleared': '已恢复默认封面（第一张）',
+  'history.jumpTitle': '跳转到页码',
+  'history.jumpFirst': '第一页',
+  'history.jumpLast': '最后一页',
+  'history.jumpPlaceholder': '输入页码',
+  'history.jumpGo': '跳转',
+  'history.pageLabel': '第 {page} / {pages} 页',
+  'history.pageRange': '第 {page} 页 · {from}-{to}',
   'history.detail.position': '第 {position} / {total} 条',
   'history.mediaPerm.title': '需要照片访问权限',
   'history.mediaPerm.body':

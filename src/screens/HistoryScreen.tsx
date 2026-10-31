@@ -8,6 +8,7 @@ import React, {
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   Modal,
   Pressable,
@@ -78,8 +79,9 @@ const STATUS_ORDER: HistoryStatus[] = [
 ];
 
 /* Pagination knobs — see AGENTS.md §4 / §history rules. */
-const PAGE_SIZE = 20; // records loaded per scroll/pull
-const PAGE_BATCH = 100; // records per "page" (5 batches) — pagination buttons appear once a page is full
+// 固定每页 50 条：不再「先加载 20 条、下滑再追加」。翻页即整页加载，
+// 这样页码区间与「上一页 / 下一页」永远对得上，也不会因为追加而抖动。
+const PAGE_BATCH = 50;
 
 export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   // Subscribe so sections/headers re-render in the active language.
@@ -92,12 +94,11 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   const [offset, setOffset] = useState(0);
   // Total number of rows in the history table (for pagination math).
   const [total, setTotal] = useState(0);
-  // True when there are more rows past the current visible window in the DB.
-  const [hasMoreInDb, setHasMoreInDb] = useState(false);
-  // True while a load is in flight (initial load / load-more / page change).
+  // True while a load is in flight (initial load / page change).
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  /** 页码跳转选择器是否打开。 */
+  const [showPagePicker, setShowPagePicker] = useState(false);
   /** Pull-to-refresh spinner (kept separate from the initial-load spinner). */
   const [refreshing, setRefreshing] = useState(false);
 
@@ -118,8 +119,6 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   const [showStatusPicker, setShowStatusPicker] = useState(false);
 
   const listRef = useRef<SectionList<HistoryRecord, Section> | null>(null);
-  /** onEndReached 的并发闸门（state 更新是异步的，光靠 loadingMore 拦不住同帧连发）。 */
-  const loadMoreBusyRef = useRef(false);
 
   // Keep the latest filter values in refs so the memoised `reload` never
   // closes over a stale query/date.
@@ -171,9 +170,8 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
         const totalRows = await countHistory(filter);
         // 越界时按**整页**对齐回落，避免出现 `881-889` 这种和翻页按钮对不上的区间。
         const safeOffset = clampPageOffset(nextOffset, totalRows, PAGE_BATCH);
-        // 取多少条由调用方决定：翻页 / 刷新取满一整页（页码区间立刻稳定），
-        // 首屏与滚动追加仍按 PAGE_SIZE 分批，避免一次渲染过多行。
-        const limit = Math.max(1, Math.floor(opts?.limit ?? PAGE_SIZE));
+        // 固定整页加载：页码区间与「上一页 / 下一页」永远对得上。
+        const limit = Math.max(1, Math.floor(opts?.limit ?? PAGE_BATCH));
         const [rows, marked] = await Promise.all([
           listHistory(limit, safeOffset, filter),
           countMarkedDeleted(),
@@ -182,12 +180,10 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
         setOffset(safeOffset);
         setTotal(totalRows);
         setMarkedCount(marked);
-        setHasMoreInDb(totalRows > safeOffset + rows.length);
       } catch {
         setLoadError(true);
         setRecords([]);
         setOffset(nextOffset);
-        setHasMoreInDb(false);
       } finally {
         setLoading(false);
       }
@@ -198,21 +194,15 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   /** 当前页偏移的镜像：刷新回调里读最新值，避免闭包拿到过期页码。 */
   const offsetRef = useRef(offset);
   offsetRef.current = offset;
-  /** 当前已加载条数的镜像：刷新时按「原来显示多少条」重新取，页码区间才不会缩水。 */
-  const loadedCountRef = useRef(records.length);
-  loadedCountRef.current = records.length;
 
   /**
    * 重新加载**用户当前所在的那一页**。
-   * 下拉刷新、从详情页返回都用它 —— 页码不该被重置回第一页，
-   * 展示的区间也不该从 `101-200` 缩成 `101-120`。
+   * 下拉刷新、从详情页返回都用它 —— 页码不该被重置回第一页。
+   * 每页固定 {@link PAGE_BATCH} 条，所以这里不需要再记「原来加载了多少」。
    */
   const refreshCurrentPage = useCallback(
     (opts?: { silent?: boolean }) =>
-      reload(offsetRef.current, {
-        ...opts,
-        limit: Math.max(PAGE_SIZE, loadedCountRef.current),
-      }),
+      reload(offsetRef.current, { ...opts, limit: PAGE_BATCH }),
     [reload],
   );
 
@@ -292,37 +282,6 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     const timer = setTimeout(() => reload(0), 300);
     return () => clearTimeout(timer);
   }, [query, reload]);
-
-  const loadMore = useCallback(async () => {
-    if (loading || loadingMore || loadMoreBusyRef.current) return;
-    if (!hasMoreInDb) return;
-    if (records.length >= PAGE_BATCH) return; // page is full → pagination buttons take over
-    // onEndReached 可能在同一个帧里连续触发（内容不足一屏时尤其明显），
-    // 用 ref 兜住并发：否则会追加重复的行、重复 key 会让列表上下闪。
-    loadMoreBusyRef.current = true;
-    setLoadingMore(true);
-    setLoadError(false);
-    const filter = buildFilter();
-    try {
-      const moreOffset = offset + records.length;
-      const rows = await listHistory(PAGE_SIZE, moreOffset, filter);
-      setRecords(prev => [...prev, ...rows]);
-      setHasMoreInDb(total > moreOffset + rows.length);
-    } catch {
-      setLoadError(true);
-    } finally {
-      loadMoreBusyRef.current = false;
-      setLoadingMore(false);
-    }
-  }, [
-    loading,
-    loadingMore,
-    hasMoreInDb,
-    records.length,
-    offset,
-    total,
-    buildFilter,
-  ]);
 
   /**
    * 滚回列表顶部（翻页 / 回到顶部按钮共用）。
@@ -450,8 +409,9 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   // it can swipe between neighbours without re-querying.
   const recordIds = useMemo(() => records.map(r => r.id), [records]);
 
-  const showFab = records.length > PAGE_SIZE;
-  const showPagination = records.length >= PAGE_BATCH || offset > 0;
+  const showFab = records.length > 10;
+  // 每页固定 50 条：只要这一页有数据就显示翻页栏（含页码跳转）。
+  const showPagination = records.length > 0;
   const hasFilter =
     query.trim().length > 0 ||
     filterDay != null ||
@@ -519,14 +479,29 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   // 下一页的**起点**必须还在总数内才可点：`801-889` 这种最后的不完整页要禁用，
   // 否则会点出 `881-889`，再回退又变成 `781-800` 这种对不上的区间。
   const showNextPage = computeHasNextPage(offset, total, PAGE_BATCH);
+  /** 总页数 / 当前页（0 基）：翻页栏的页码跳转用。 */
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_BATCH));
+  const currentPage = Math.floor(offset / PAGE_BATCH);
+
+  /** 跳到第 pageIndex 页（0 基）。 */
+  const goToPage = useCallback(
+    (pageIndex: number) => {
+      const clamped = Math.max(0, Math.min(totalPages - 1, pageIndex));
+      setShowPagePicker(false);
+      scrollListToTop(false);
+      reload(clamped * PAGE_BATCH, { limit: PAGE_BATCH });
+    },
+    [totalPages, reload, scrollListToTop],
+  );
   /** 详情页滑到本页第一条/最后一条时，用这些信息告诉用户下一步怎么做。 */
   const detailEdges = useMemo<HistoryEdgeInfo>(
     () => ({
       hasPrevPage: offset > 0,
       hasNextPage: computeHasNextPage(offset, total, PAGE_BATCH),
-      canLoadMore: hasMoreInDb && records.length < PAGE_BATCH,
+      // 每页固定加载满 50 条，已经没有「下滑继续加载」了。
+      canLoadMore: false,
     }),
-    [offset, total, hasMoreInDb, records.length],
+    [offset, total],
   );
   const filterDateLabel = filterDay
     ? t('history.filterDateSelected', {
@@ -697,9 +672,22 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
               ‹ {t('history.prevPage')}
             </Text>
           </Pressable>
-          <Text style={styles.pageIndicator}>
-            {t('history.pageIndicator', { from: pageFrom, to: pageTo, total })}
-          </Text>
+          <Pressable
+            onPress={() => setShowPagePicker(true)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityHint={t('history.jumpTitle')}
+            style={({ pressed }) => [styles.pageJump, pressed && styles.pressed]}
+          >
+            <Text style={styles.pageIndicator} numberOfLines={1}>
+              {t('history.pageIndicator', {
+                from: pageFrom,
+                to: pageTo,
+                total,
+              })}
+            </Text>
+            <Text style={styles.pageCaret}>{'▾'}</Text>
+          </Pressable>
           <Pressable
             onPress={gotoNextPage}
             hitSlop={8}
@@ -741,8 +729,6 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
           sections={sections}
           keyExtractor={item => String(item.id)}
           stickySectionHeadersEnabled
-          onEndReached={loadMore}
-          onEndReachedThreshold={0.5}
           onScrollToIndexFailed={onScrollToIndexFailed}
           renderSectionHeader={({ section }) => (
             <View style={styles.sectionHeader}>
@@ -766,14 +752,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
           )}
           ListFooterComponent={
             <View style={styles.footerWrap}>
-              {loadingMore ? (
-                <View style={styles.footerStatus}>
-                  <ActivityIndicator color={themeColors.primary} />
-                  <Text style={styles.footerStatusText}>
-                    {t('history.loadingMore')}
-                  </Text>
-                </View>
-              ) : !hasMoreInDb ? (
+              {!showNextPage ? (
                 <Text style={styles.footerStatusText}>
                   {t('history.endOfList')}
                 </Text>
@@ -826,9 +805,171 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
         onSelect={onStatusSelect}
         onClose={() => setShowStatusPicker(false)}
       />
+
+      {/* 页码跳转：页数多时用输入框直达，列表本身可滚动 */}
+      <HistoryPagePicker
+        visible={showPagePicker}
+        pages={totalPages}
+        current={currentPage}
+        pageSize={PAGE_BATCH}
+        total={total}
+        onPick={goToPage}
+        onClose={() => setShowPagePicker(false)}
+      />
     </SafeAreaView>
   );
 };
+
+/**
+ * 页码跳转面板。
+ *
+ * 页数可能很多（876 条 = 18 页，几千条就上百页），纯下拉会拖到怀疑人生，所以：
+ *   1. 顶部「第一页 / 最后一页」快捷按钮 —— 一步到边界；
+ *   2. 中间数字输入框 —— 页数再多也是「输入 + 跳转」两步；
+ *   3. 下面才是可滚动的页码列表 —— 用于在附近找一页（懒渲染，100 页也不卡）。
+ */
+const HistoryPagePicker: React.FC<{
+  visible: boolean;
+  /** 总页数。 */
+  pages: number;
+  /** 当前页（0 基）。 */
+  current: number;
+  /** 每页条数（算区间用）。 */
+  pageSize: number;
+  /** 总条数（算区间用）。 */
+  total: number;
+  onPick: (pageIndex: number) => void;
+  onClose: () => void;
+}> = ({ visible, pages, current, pageSize, total, onPick, onClose }) => {
+  useI18n();
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useTheme();
+  const [draft, setDraft] = useState('');
+
+  // 每次打开都清空输入，免得上次输到一半的数字留在框里。
+  useEffect(() => {
+    if (visible) setDraft('');
+  }, [visible]);
+
+  const items = useMemo(
+    () => Array.from({ length: pages }, (_, i) => i),
+    [pages],
+  );
+
+  const submit = useCallback(() => {
+    const n = Number.parseInt(draft.trim(), 10);
+    if (!Number.isFinite(n)) return;
+    onPick(n - 1); // 用户输入的是 1 基页码
+  }, [draft, onPick]);
+
+  return (
+    <Modal
+      transparent
+      animationType="slide"
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <Pressable style={[styles.calBackdrop, styles.pageBackdrop]} onPress={onClose}>
+        <Pressable style={styles.pageSheet} onPress={() => undefined}>
+          <View style={styles.pageHeader}>
+            <Text style={styles.statusSheetTitle}>
+              {t('history.jumpTitle')}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={10}>
+              <Text style={styles.pageClose}>×</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.pageQuickRow}>
+            <Pressable
+              onPress={() => onPick(0)}
+              style={({ pressed }) => [
+                styles.pageQuickBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.pageQuickText}>
+                {t('history.jumpFirst')}
+              </Text>
+            </Pressable>
+            <Text style={styles.pageNow}>
+              {t('history.pageLabel', { page: current + 1, pages })}
+            </Text>
+            <Pressable
+              onPress={() => onPick(pages - 1)}
+              style={({ pressed }) => [
+                styles.pageQuickBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.pageQuickText}>
+                {t('history.jumpLast')}
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.pageInputRow}>
+            <TextInput
+              style={styles.pageInput}
+              value={draft}
+              onChangeText={setDraft}
+              keyboardType="number-pad"
+              maxLength={5}
+              returnKeyType="go"
+              onSubmitEditing={submit}
+              placeholder={t('history.jumpPlaceholder')}
+              placeholderTextColor={colors.textHint}
+            />
+            <Pressable
+              onPress={submit}
+              style={({ pressed }) => [
+                styles.pageQuickBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.pageQuickText}>{t('history.jumpGo')}</Text>
+            </Pressable>
+          </View>
+
+          <FlatList
+            data={items}
+            keyExtractor={i => String(i)}
+            style={styles.pageList}
+            initialNumToRender={12}
+            maxToRenderPerBatch={12}
+            windowSize={7}
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item: i }) => {
+              const from = i * pageSize + 1;
+              const to = Math.min(total, (i + 1) * pageSize);
+              const on = i === current;
+              return (
+                <Pressable
+                  onPress={() => onPick(i)}
+                  style={({ pressed }) => [
+                    styles.pageItem,
+                    on && styles.pageItemOn,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.pageItemText,
+                      on && styles.pageItemTextOn,
+                    ]}
+                  >
+                    {t('history.pageRange', { page: i + 1, from, to })}
+                  </Text>
+                </Pressable>
+              );
+            }}
+          />
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+};
+HistoryPagePicker.displayName = 'HistoryPagePicker';
 
 const HistoryRow: React.FC<{
   record: HistoryRecord;
@@ -844,7 +985,7 @@ const HistoryRow: React.FC<{
   const statusLabel = t(HISTORY_STATUS_LABEL_KEY[record.status]);
   // 图集预览：优先本地已存的第一张，本地打不开（老记录 WebP 存成 .jpg、
   // 或文件被删除）时自动换远程 URL 再试一次，两张都失败才显示占位图标。
-  const localPreview = record.imagePaths?.[0] ?? null;
+  const localPreview = record.coverUri || record.imagePaths?.[0] || null;
   const remotePreview = record.imageUrls?.[0] ?? null;
   const [previewPhase, setPreviewPhase] = useState<'local' | 'remote' | 'failed'>(
     'local',
@@ -1410,6 +1551,85 @@ function createStyles(c: ThemeColors) {
       fontSize: 12,
       fontVariant: ['tabular-nums'],
     },
+    /** 翻页栏中间的「区间 + ▾」，点了打开页码跳转。 */
+    pageJump: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexShrink: 1,
+      paddingHorizontal: 6,
+      paddingVertical: 4,
+    },
+    pageCaret: {
+      color: c.primary,
+      fontSize: 18,
+      lineHeight: 20,
+      marginLeft: 5,
+      // ▾ 是纯文本字符，默认太瘦小；加粗后在任何字号下都看得清。
+      fontWeight: '700',
+    },
+    /** 页码跳转面板：**居中**的卡片（贴底容易被系统手势条误触）。 */
+    pageSheet: {
+      width: '88%',
+      maxHeight: '70%',
+      backgroundColor: c.surface,
+      borderRadius: 16,
+      paddingTop: 12,
+      paddingBottom: 8,
+    },
+    /** 弹窗背景：居中对齐（calBackdrop 是贴底的，这里覆盖）。 */
+    pageBackdrop: {
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    pageHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 16,
+      paddingBottom: 8,
+    },
+    pageClose: { fontSize: 20, color: c.textSecondary, lineHeight: 22 },
+    pageQuickRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+    },
+    pageNow: { color: c.textSecondary, fontSize: 12 },
+    pageQuickBtn: {
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 6,
+      backgroundColor: c.primarySoft,
+    },
+    pageQuickText: { color: c.primary, fontSize: 13, fontWeight: '600' },
+    pageInputRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      paddingBottom: 8,
+      gap: 8,
+    },
+    pageInput: {
+      flex: 1,
+      height: 38,
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      color: c.textPrimary,
+      backgroundColor: c.surfaceStrong,
+      fontSize: 14,
+    },
+    pageList: { maxHeight: 360 },
+    pageItem: {
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+    pageItemOn: { backgroundColor: c.primarySoft },
+    pageItemText: { color: c.textPrimary, fontSize: 14 },
+    pageItemTextOn: { color: c.primary, fontWeight: '600' },
     sectionHeader: {
       backgroundColor: c.surface,
       paddingHorizontal: 16,
@@ -1481,7 +1701,14 @@ function createStyles(c: ThemeColors) {
       fontWeight: '700',
       lineHeight: 18,
     },
-    footerWrap: { paddingVertical: 16, alignItems: 'center' },
+    footerWrap: {
+      // 固定高度：底部文案（加载中 / 已到底 / 失败）切换时总高度不能变，
+      // 否则列表到底部时内容高度抖动 → 看起来像在上下闪。
+      minHeight: 56,
+      justifyContent: 'center',
+      paddingVertical: 8,
+      alignItems: 'center',
+    },
     footerStatus: { flexDirection: 'row', alignItems: 'center' },
     footerStatusText: { marginLeft: 8, color: c.textHint, fontSize: 12 },
     footerError: { color: c.danger, fontSize: 12, marginTop: 4 },

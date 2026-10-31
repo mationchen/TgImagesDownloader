@@ -7,7 +7,7 @@
 |---|---|
 | 应用名 | 网页图片批量下载器（debug 版显示为「网页图片批量下载器 Debug」，方便区分） |
 | 包名 | `com.acstd.tgimagesdownloader.release`（debug / release **共用同一包名与正式签名**，互相覆盖安装保留数据，因此不能同时安装） |
-| 当前版本 | 1.0.17（versionCode 17） |
+| 当前版本 | 1.0.18（versionCode 18） |
 | 平台 | Android 优先；iOS 暂为 no-op |
 
 ## 功能

@@ -181,21 +181,26 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
 4. **只「给」命令、不「跑」命令**（`git add -A` → `git commit -m "…"` →
    `git push origin master`）。**绝不执行任何 git 写操作**（add / commit / push），
    唯一例外是用户用动词明确要求「你提交 / 帮我提交 / 你来提交」——
-   仅说「总结一下」**不算授权**，只输出总结与命令。注意本机 git 配了
-   `http.proxy=127.0.0.1:7897`，代理没起时 push 会报
-   `Failed to connect to github.com:443 over proxy`，用
-   `git -c http.proxy= -c https.proxy= push origin master` 绕过。
+   仅说「总结一下」**不算授权**，只输出总结与命令。
+   **代理怎么给**：本机 git 全局配了 `http.proxy=127.0.0.1:7897`。先用
+   `Test-NetConnection 127.0.0.1 -Port 7897` 判断代理是否在跑：
+   - **代理在跑** → 用默认命令，**不要**加 `-c http.proxy=`（实测直连可能直接超时：
+     `Could not connect to server` / 21 秒后失败，绕过反而更慢或失败）；
+   - **代理没起** → push 会报 `Failed to connect to github.com:443 over proxy`，
+     此时才用 `git -c http.proxy= -c https.proxy= push origin master` 绕过。
+   给命令前先实测一次 `git ls-remote origin master`，按结果决定写法，别写死。
 5. **提交前处理版本号，并在升版本时一并给出发版命令** —— 不要等用户再问一次：
    - 本次有**用户可见的代码改动**、当天又还没升过版本，就**在这一步升一次**
      （`versionCode` +1、`versionName` 与要发的 tag 一致，见第 13 条），
      然后跑 `npm run apk:local` 出包（不要用旧版本号的包发版）；
-   - 已经升过版本号（含当天早些时候升的）→ 直接给发版命令：
-     `git tag vX.Y.Z` → `git push origin vX.Y.Z` →
-     `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file $notes`，
-     附上 `app-arm64-v8a-release.apk`、`app-armeabi-v7a-release.apk`、
-     `app-x86_64-release.apk` 三个架构；
+   - 已经升过版本号（含当天早些时候升的）→ 直接给发版命令，**必须按第 14 条用
+     带进度条的 curl 逐个上传**，不要给「一条 `gh release create` + 三个附件」的写法：
+     `git tag vX.Y.Z <本次提交>`（**打完 tag 必须核验指向**）→ `git push origin vX.Y.Z`
+     → `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file $notes`（**不带附件**）
+     → 三个 APK 用 `curl --progress-bar` 传到 uploads API；
    - release notes 用 here-string 写到临时文件再 `--notes-file` 引用，避免命令行参数过长；
-   - 若远程已有同名 tag / release，先说明情况再决定是覆盖（`gh release upload`）还是升新版本。
+   - 若远程已有同名 tag / release，先说明情况再决定是覆盖（`gh release upload`）还是升新版本；
+     同时检查有没有**同名 draft 残留**（取消上传会留下 draft，见第 14 条）。
    **没有代码改动、也没升版本号时不用发版**，明确写一句「本次不涉及发版」即可。
 6. **同步更新文档版本号**：总结里提到的功能 / 版本变化，如果 `README.md` 或本文件
    「State of the project」有对应描述（特性清单、版本号、目录结构、命令），一并改掉，
@@ -220,12 +225,88 @@ App 必须支持多国语言，所有 UI 文案统一走 i18n，禁止在代码�
   `adb install -r` 会报 `INSTALL_FAILED_VERSION_DOWNGRADE`，只能卸载重装
   （会丢数据）。
 
+### 14. 发版上传 APK：必须用带进度条的 curl，不要「gh 一条命令带附件」
+
+> **2026-10-31 实测事故**：`gh release create v1.0.17 --title … --notes-file … <3 个 apk>`
+> 在 172 KB/s 的网速下要传 80 MB，**gh 只有 spinner、没有任何百分比/字节数**
+> （gh 2.100 确认无此功能），看起来就是"卡死"。用户取消重试 4 次，最终结果：
+>
+> - 留下 **4 个同名 draft**；
+> - 更坑的是**附件全是 `state=starter` 的空壳**：GitHub 会先把附件登记出来再传字节，
+>   中途取消只留下登记记录 —— 网页上不显示（Assets 只剩源码包），但 API 查得到，
+>   还占着文件名，重传会撞 409 `already_exists`；
+> - `v1.0.17` 的 tag 因为**在 commit 之前打的**，指向了上一个提交（`1129bf7`），
+>   发布出来的源码包会是旧代码。
+>
+> ⚠️ **踩过的判断错误**：看到 `/releases/<id>/assets` 返回三条记录、`size` 也对得上本地
+> 字节数，我就以为"传完了，只是发布卡住"。**错**：`starter` 记录的 `size` 是*声明的*
+> 大小，不是已上传的字节数。必须看 `state` 和 `release.assets_count`。
+
+**规则：**
+
+1. **不给「一条 `gh release create` + 三个附件」的命令**。gh 没有上传进度，
+   在这种网速下必然表现为"没反应"。
+2. **拆成三步**：建 release（不带附件，秒完成）→ 逐个文件 `curl --progress-bar`
+   上传 → 核对资产。curl 会显示 `##### 43.2% 12.4M 2m18s` 这种真实的进度/速度/剩余时间。
+3. **「传上去了没」只认这三条**，缺一条都不算成功：
+   ```powershell
+   # a) release 对象自己数：只统计 uploaded 的，starter 不算
+   gh api "repos/<o>/<r>/releases/<id>" --jq '{assets_count:(.assets|length)}'
+   # b) 每个附件必须 state=uploaded
+   gh api "repos/<o>/<r>/releases/<id>/assets" --jq '.[] | "\(.name) \(.size) \(.state)"'
+   # c) 云端 sha256 == 本地 sha256（不只是大小）
+   gh api "repos/<o>/<r>/releases/<id>/assets" --jq '.[] | "\(.name) \(.digest)"'
+   Get-FileHash android\app\build\outputs\apk\release\*.apk -Algorithm SHA256
+   ```
+   `release.assets_count` 和 `/assets` 条数**不一致**，本身就是"有 starter 空壳"的信号。
+4. **补传前先清僵尸附件**（否则 409）：`gh api -X DELETE "repos/<o>/<r>/releases/assets/<asset-id>"`。
+5. **tag 必须在 commit 之后打**，并立刻核验指向：
+   `git tag vX.Y.Z <commit>` → `git log -1 --format='%h %s' vX.Y.Z`。
+6. **发版前先查同名 draft 残留**（取消上传会留下 draft）：
+   ```powershell
+   gh api "repos/mationchen/TgImagesDownloader/releases?per_page=10" --jq '.[] | "\(.id) tag=\(.tag_name) draft=\(.draft)"'
+   ```
+   多余的用 `gh api -X DELETE "repos/<owner>/<repo>/releases/<id>"` 清掉。
+7. **上传成功但"发布"卡住时不要重建**，直接调 PATCH：
+   `gh api -X PATCH "repos/<owner>/<repo>/releases/<id>" -f tag_name=<tag> -F draft=false -f make_latest=true`
+8. 网速心理预期：本机实测约 **170 KB/s**（三个包 ≈80 MB ≈ 8 分钟；单传 arm64 约 3 分钟）。
+   `curl` 逐个传、别并发 —— 并发只会让每个都更慢，还容易触发限流。
+
+**标准发版脚本（复制即用）：**
+
+```powershell
+cd D:\Android\TgImagesDownloader
+$repo = 'mationchen/TgImagesDownloader'
+$tag  = 'v1.0.17'                    # 换成本次版本
+
+# 1) 建 release，不带附件（秒完成；这个接口只对已发布 release 有效）
+gh release create $tag --title $tag --notes-file E:\OpenCodeCache\windows-temp\opencode\release-notes-1.0.17.md
+
+# 2) 逐个上传，带进度条
+$id  = gh api "repos/$repo/releases/tags/$tag" --jq .id
+$tok = gh auth token
+foreach ($f in Get-ChildItem android\app\build\outputs\apk\release\*.apk) {
+  "==> $($f.Name)  ({0:N1} MB)" -f ($f.Length / 1MB)
+  curl.exe --progress-bar -X POST `
+    -H "Authorization: Bearer $tok" `
+    -H "Content-Type: application/octet-stream" `
+    --upload-file $f.FullName `
+    "https://uploads.github.com/repos/$repo/releases/$id/assets?name=$($f.Name)"
+}
+
+# 3) 核对云端字节数与本地一致
+gh api "repos/$repo/releases/$id/assets" --jq '.[] | "\(.name)  \(.size)"'
+```
+
+> 备用：`gh release upload <tag> <文件> --clobber` 一次传一个 —— 至少能看出在传哪个，
+> 但仍然没有百分比，不推荐作为首选。
+
 
 ---
 
 ## State of the project
 
-A shipped Android app (release **1.0.17**, `versionCode 17`): a web image batch
+A shipped Android app (release **1.0.18**, `versionCode 18`): a web image batch
 downloader, plus a download-history manager (favorites / mark-for-delete /
 recycle bin) and a local archive import feature.
 `README.md` is this project's own documentation — read it first for features,
@@ -319,7 +400,7 @@ hook — they don't exist.
 ## Testing
 
 - Jest is configured (`jest.config.js` → `@react-native/jest-preset`).
-- 16 suites / ~193 tests currently pass (`npx jest`), covering the parsers,
+- 17 suites / 202 tests currently pass (`npx jest`), covering the parsers,
   resolvers, download queue, history service/status, settings, filename/save-dir
   and utility helpers. This project uses **react-test-renderer**, not
   `@testing-library/react-native` — don't add RTL imports without also adding
@@ -333,7 +414,8 @@ hook — they don't exist.
   (`MYAPP_RELEASE_*` properties in `android/gradle.properties`, which is
   gitignored) — never switch it back to the debug keystore for a shipped build.
 - `enableProguardInReleaseBuilds = false` by default.
-- Architectures built: `armeabi-v7a,arm64-v8a,x86,x86_64`. Trim with
+- Architectures built: `armeabi-v7a, arm64-v8a, x86_64` (only these three — `splits.abi`
+  in `build.gradle` has no `x86`). Trim with
   `./gradlew <task> -PreactNativeArchitectures=arm64-v8a` for faster local
   builds.
 - `compileSdk 37`, `targetSdk 36`, `minSdk 24`, `ndk 27.1.12297006`,
