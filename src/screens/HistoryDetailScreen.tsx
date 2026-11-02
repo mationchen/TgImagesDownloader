@@ -1135,6 +1135,19 @@ const Header: React.FC<{
         {/* 保存路径也做成徽章：原来单独占一行，右边还有大片空白 */}
         {record.saveDir ? <MetaChip label={record.saveDir} /> : null}
       </View>
+      {/* 图集页面上的标签（v7+）。站点本来没有标签时整块不显示。 */}
+      {record.tags && record.tags.length > 0 ? (
+        <View style={styles.tagsWrap}>
+          <Text style={styles.tagsLabel}>{t('history.detail.tags')}</Text>
+          {record.tags.map(tag => (
+            <View key={tag} style={styles.tagChip}>
+              <Text style={styles.tagChipText} numberOfLines={1}>
+                {tag}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
       <View style={{ height: GAP }} />
     </View>
   );
@@ -1658,6 +1671,26 @@ function createStyles(c: ThemeColors) {
       maxWidth: '100%',
     },
     chipText: { fontSize: 11, color: c.textSecondary, flexShrink: 1 },
+    /** 标签区：跟在元信息下面，独立一行，可换行。 */
+    tagsWrap: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      marginTop: 8,
+      gap: 6,
+    },
+    tagsLabel: { fontSize: 11, color: c.textHint },
+    /** 标签胶囊：比元信息徽章更醒目一点（主题色描边）。 */
+    tagChip: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.primary,
+      maxWidth: '100%',
+      flexShrink: 1,
+    },
+    tagChipText: { fontSize: 11, color: c.primary, flexShrink: 1 },
     saveDir: { marginTop: 10, fontSize: 11, color: c.textHint },
     emptyBlock: {
       alignItems: 'center',

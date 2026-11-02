@@ -8,73 +8,60 @@
 |---|---|
 | 项目 | 网页图片批量下载器（TgImagesDownloader）—— 批量下载 + 下载记录管理 + 压缩包导入 |
 | 仓库路径 | `D:\Android\TgImagesDownloader` |
-| 最后更新 | `2026-10-31 23:20`（本地时区） / 会话：分页改版、详情页稳定性、封面功能 |
+| 最后更新 | `2026-11-02 23:45`（本地时区） / 会话：在线图集、图集标签、预览图与筛选修复 |
 | 分支 / 工作区 | `master` / 本轮改动未提交（见 §3） |
-| 当前版本 | `1.0.18（versionCode 18）`，已构建并覆盖安装，**待发版** |
-| 数据库 schema | **v6**（迁移在 `src/services/historyService.ts`，v6 新增 `cover_uri`） |
-| 运行环境 | Node 22.23.2；RN 0.87.1（Hermes + New Arch）；实测机 2509FPN0BC / Android 16（API 36） |
+| 当前版本 | `1.0.19（versionCode 19）`，已构建并覆盖安装，**待发版** |
+| 数据库 schema | **v7**（`tags` / `tags_checked_at`，迁移在 `src/services/historyService.ts`） |
+| 运行环境 | Node 22；RN 0.87.1（Hermes + New Arch）；实测机 2509FPN0BC / Android 16 |
 
 ## 1. 这一轮的目标
 
-修「第二页滑到底闪烁」「详情页再次崩溃」「失败图片留黑块」，并按用户要求把分页改成固定 50 条 + 页码跳转、加封面功能、锁竖屏。
+在「URL 列表」里加在线图集抓取，给下载记录加图集标签，并修掉收藏筛选不生效、补上预览图的大图查看。
 
-## 2. 已完成（上次提交 `07b264e` 之后）
+## 2. 已完成（上次提交 `1fe0a22` 之后）
 
 | 改动 | 涉及文件 | 怎么验证的 / 结果 |
 |---|---|---|
-| 列表分页：**取消「先 20 条、下滑追加」**，固定 50 条/页，翻页栏常显 | `HistoryScreen.tsx` | 打开即 `第 1-50 条`；下一页 `51-100`；末页 `851-876` |
-| 页码快速跳转（第一页 / 最后一页 / 数字输入 / 可滚动列表） | `HistoryScreen.tsx`、i18n | `最后一页`→851-876；输入 `5`→201-250 |
-| 页码弹窗改**居中**卡片（原来贴底会误触手势条） | 同上 | 截图确认卡片垂直居中 |
-| 页码 `▾` 加大加粗 | 同上 | 层级里成为独立节点 `[777,468][797,528]` |
-| **详情页崩溃（第二次）**：`removeViewAt: Unable to find parentView` | `HistoryDetailScreen.tsx` | 页面改为**常挂 + `active` 只控制图片加载**；连滑 60 页无崩溃，内存 425 MB 稳定 |
-| 失败图片**从网格移除**（不留黑块），全屏查看器也排除 | 同上 | 网格格子连续无空洞；全屏显示 `1 / 30`（31 张里排除失败那张） |
-| 失败数量并入「失败 N」徽章 + 点击弹说明 | 同上、i18n | 徽章实时从 `失败 0` → `失败 1`；弹窗标题「加载失败：1 张」 |
-| 详情页「重新获取」加确认弹窗 | 同上、i18n | 点 🔄 → 「重新获取这篇图集？」+ 取消/重新解析 |
-| **封面功能**：全屏「收藏 / 封面」文字按钮、`cover_uri` 列、列表/回收站缩略图优先用封面 | `historyService.ts`(v6)、`HistoryDetailScreen.tsx`、`HistoryScreen.tsx`、`TrashScreen.tsx`、i18n | 设为封面→库里写入；再点→清空回默认；默认（第一张）自动点亮 |
-| 锁竖屏 | `AndroidManifest.xml`、`ios/.../Info.plist` | 强制 `user_rotation=1` 后截图仍是 1200×2608，`overrideOrientation=SCREEN_ORIENTATION_PORTRAIT` |
-| 顶栏图标风格统一 | `HistoryDetailScreen.tsx` | 收藏 `⭐/☆`、标记删除 🚫/↩️、重新获取 🔄、删除 🗑 同为 18px |
+| **在线图集**：从 everia.club 第 1–10 页（默认 1–5）抓「文章 + 一张预览图」，按 URL 去重、剔除已下载，勾选后并入待下载 | `services/everiaListing.ts`、`BatchListScreen.tsx`、`types/batch.ts`、i18n | 真机 5 页抓到 150 条 / 已下载 27 / 候选 123；加入队列后行内带缩略图与标题 |
+| 抓取必须**顺序**：并发 5 页会全部超时 | `everiaListing.ts` | 单页 1–3 秒，5 页并发全超时（实测） |
+| **标签**（schema v7）：详情页显示标签；新下载解析时自动带；设置页可对老记录按原网址补全 | `services/tags.ts`、`tagBackfill.ts`、`components/TagBackfillModal.tsx`、`historyService.ts`、`telegraphParser.ts`、`HistoryDetailScreen.tsx`、`SettingsScreen.tsx` | 迁移前后 903 行不变；详情页显示 `标签 Bimilstory / Seoyool 서율`；存量补齐 536 条 |
+| 修 **收藏筛选点了不生效**：切换筛选的 effect 依赖里漏了 `filterFavorite` | `HistoryScreen.tsx` | 点 ★ → `第 1-17 条 / 共 17 条`，再点恢复 903 |
+| 在线图集**预览图可点开大图**、**左右滑动看相邻候选**、**直接选中/取消选中** | `BatchListScreen.tsx`、i18n | 1/123 → 左滑 2/123（标题同步）→ 取消选中 → 关闭后「已选 122 条」，该行复选框变空心 |
 
 ## 3. 当前状态
 
-- **能不能跑**：能。手机上是 **release 1.0.18**（`npm run apk:local` 覆盖安装，数据保留）。
-- **数据**：库 `tgdownloader.sqlite` 889 行（列表 876 + 回收站 13），schema 6，封面全为空。
-- **未提交**：`AGENTS.md`、`HANDOVER.md`、`README.md`、`android/app/build.gradle`、
-  `android/app/src/main/AndroidManifest.xml`、`ios/TgImagesDownloader/Info.plist`、
-  `src/i18n/{zh-CN,en}.ts`、`src/screens/{HistoryScreen,HistoryDetailScreen,TrashScreen}.tsx`、
-  `src/services/{historyService,imageDownloader}.ts`、`android/.../TelegraphDownloaderModule.kt`、指令日志。
-- **测试残留**：无（测试设过的 3 个封面已用 App 功能清掉；系统收藏也已切回未收藏）。
+- **能不能跑**：能。手机上是 **release 1.0.19**（`npm run apk:local` 覆盖安装，数据保留）。
+- **数据**：903 条记录（含 73 条本地压缩包）；**536 条已有标签**，292 条待补（约 290 条是 `www.1y.is` 整站 502，其余是 everia 的 TLS 偶发失败）。
+- **未提交**：`AGENTS.md`、`README.md`、`android/app/build.gradle`、`src/i18n/{zh-CN,en}.ts`、`src/screens/{BatchListScreen,HistoryScreen,HistoryDetailScreen,SettingsScreen}.tsx`、`src/services/{historyService,telegraphParser,tags,tagBackfill,everiaListing}.ts`、`src/types/{batch,telegraph}.ts`、`src/components/TagBackfillModal.tsx`、`__tests__/{tags,everiaListing}.test.ts`、指令日志。
+- **测试污染**：无（没有真正下载任何图片；在线图集的测试队列已通过界面清空）。
 
 ## 4. 关键决策
 
-- **详情页 pager 常挂所有页**：`{近邻 ? <RecordPage/> : null}` 这种在横向 ScrollView 里动态增删子节点，
-  Fabric 会抛 `addViewAt` / `removeViewAt` 两类崩溃。现在改成始终挂载、用 `active` 控制是否渲染图片网格，
-  内存仍只保留当前页 ±1 的图。
-- **失败图片直接不渲染**：不做占位、不做红叉；`visibleUris` 过滤掉失败项，`oi` 保留在 `uris` 里的原下标，
-  拖动排序换算仍正确。
-- **不做「单张补下」**：实测老记录的 `imageUrls[i]` 与图片并不可靠对应（例：id=660 的 index 5 指向站点 logo，
-  且返回 502），补下会往相册塞错图。故只提示、不提供入口；相关代码已删除。
-- **分页固定 50 条**：不再滚动追加，页码区间与「上一页/下一页」永远对得上；页数多时用输入框直达。
-- **封面语义**：`cover_uri` 为空 = 用第一张（默认）；全屏按钮三态：默认第一张→提示 / 已自定义→取消 / 其他→设为封面。
-- **锁竖屏**：Android `screenOrientation="portrait"` + iOS 仅 Portrait。
+- **标签存 JSON 列**（`tags` + `tags_checked_at`）而不是关联表：列表渲染不用 join，代价是以后做「标签云/按标签统计」要自己聚合。
+- **无标签也要记 `tags_checked_at`**：否则每次补全会把几百条本来没标签的页面重抓一遍。
+- **标签只读**：不做手动编辑，避免「自动补全 vs 手工修改」的冲突；重解析时新标签覆盖旧的，空数组不覆盖。
+- **补全走顺序 + 自适应间隔（1.2–8 秒）+ 主机熔断（连续失败 5 次）**：并发会被限流，1y.is 整站 502 时不该把 308 条各试 3 次。
+- **820 条存量在电脑上补**：同一份 `extractTags` 编译成 JS 跑 curl（手机 OkHttp 对 everia 会偶发挂死），再写回数据库副本并用 `run-as cp` 推回，推之前先备份。
+- **在线图集预览用横向 paging ScrollView** 而不是 Reanimated pager：与详情页现有查看器一致，`onMomentumScrollEnd` + `onScrollEndDrag` 都挂，慢拖也能翻页。
 
 ## 5. 已知坑
 
-- **Fabric 挂载竞态**：详情页 pager / 网格都不要动态增删子节点，也不要 `numColumns`、不要
-  `removeClippedSubviews`（三条都实测崩过）。
-- **横向 ScrollView 占位子 View 只给 width 会塌成 0 高** → 白页；必须 `width + height:'100%'`。
-- **`contentOffset` 在 Android 不保证生效** → 用 ref `scrollTo` 兜底。
-- **慢速拖动只触发 `onScrollEndDrag`** → 分页回调两个都要挂。
-- **老记录的 URL/图片对不齐**（`imagePaths` 与 `savePaths` 长度都可能不同）→ 任何「按 URL 补图」的功能都不可靠。
-- **gh 上传无进度**，取消会留下 `state=starter` 的空壳附件（占名字但网页不显示）→ 见 AGENTS §14。
-- **无线调试灭屏即断**；`adb md5`/mdns 不可用；输入法弹出时底部 tab 点击无效（先收键盘）。
-- **screenrecord 抓不到闪烁瞬间**，验证列表稳定性要用「截图 + PIL 逐帧比对，且排除状态栏」。
+- **电脑直连 everia 被墙**：Node 的 `fetch` 不认 `HTTP(S)_PROXY`，要 `curl --proxy http://127.0.0.1:7897`（1–2 秒/页）。
+- **手机 OkHttp 对 everia 偶发挂死**：同一 URL 手机 curl 0.9 秒、RN fetch 25 秒超时；`Connection: close`、换 blob-util 都没根治。
+- **`www.1y.is` 当前整站 502**（主页也 502），308 条记录的标签补不了，等站点恢复。
+- **everia 老文章会 404**（跳回首页），所以存量补不全属正常。
+- **切换筛选的 effect 必须带上对应 state**：漏 `filterFavorite` 时界面亮灯但列表不重查。
+- **静态站（`*.github.io`）的标签写在标题里**：`#年年 - 沐浴 #漏点 #巨乳 [50P]`，离线解析，不用联网。
+- **`tuzac.com` 的 meta keywords 混着 SEO 堆词**（美女/性感/高清…），只在没有真实标签时兜底并过黑名单。
+- **无线调试灭屏即断**；锁屏后 `uiautomator dump` 会 dump 出 0 个节点，**这不是 App 崩溃**。
+- **预览大图里点图片=关闭，滑动=翻页**：靠 ScrollView 接管手势区分，别把 onPress 挂到图片本身。
 
 ## 6. 下一步
 
-1. [ ] 发版 v1.0.18（tag 必须在 commit 之后打；附件用 `curl --progress-bar` 传，见 AGENTS §14）
-2. [ ] 可选：修 `src/utils/htmlEntities.ts` 的二次编码（`&amp;#8211;` 仍会残留在标题里）
-3. [ ] 可选：老记录 URL 错位的存量修复（需要重新解析那一篇，不能靠 index 猜）
-4. [ ] 决定 `开发相关资源/page.html` 去留
+1. [ ] 发布 v1.0.19（tag 必须在 commit 之后打；附件用 `curl --progress-bar` 逐个传，见 AGENTS §14）
+2. [ ] `www.1y.is` 恢复后，继续补那 292 条（设置 → 标签 → 补全标签，或再跑一次电脑端脚本）
+3. [ ] 可选：修 `src/utils/htmlEntities.ts` 的二次编码（`&amp;#8211;` 仍会残留）
+4. [ ] 可选：老记录 URL 与图片错位的存量修复（需重新解析那一篇，不能按 index 猜）
 
 ## 7. 常用命令
 
@@ -85,14 +72,13 @@ npm start                                      # Metro（独立可见窗口）
 npx react-native run-android --no-packager     # 调试：装 debug，保留数据
 npm run apk:local                              # 日常：装 release，保留数据
 npx tsc --noEmit; npx jest; npx eslint src/
-adb shell uiautomator dump /sdcard/ui.xml      # 真机取证（截图可能被 FLAG_SECURE 拦）
+adb shell uiautomator dump /sdcard/ui.xml      # 真机取证（锁屏时会 dump 出空节点）
 ```
 
 ## 8. 环境与外部依赖
 
-- 设备 `2509FPN0BC` / Android 16；adb 走 Wi-Fi（`192.168.31.172`，端口会变）。
-- 包名**只有一个**：`com.acstd.tgimagesdownloader.release`（debug 也是它，共用一个安装位）。
-  **禁止 uninstall**：一卸载数据全没。
-- 签名 `MYAPP_RELEASE_*` 在 `android/gradle.properties`（gitignore），keystore 是
-  `android/app/TgImagesDownloader.keystore`（相对 app 模块目录）。
-- 数据库备份：`backup/db-before-v6-*.sqlite`（迁移前）、`backup/db-before-cover-cleanup-*.sqlite`。
+- 设备 `2509FPN0BC` / Android 16；adb 走 Wi-Fi（`192.168.31.172`，端口会变；`adb connect <ip>:<port>` 重连）。
+- 包名只有一个：`com.acstd.tgimagesdownloader.release`（debug 也是它），**禁止 uninstall**。
+- 签名 `MYAPP_RELEASE_*` 在 `android/gradle.properties`（gitignore）。
+- 数据库备份：`backup/db-before-v6-*.sqlite`、`backup/db-before-v7-20261102_194925.sqlite`。
+- 电脑端补标签的一次性脚本（不入库）：`E:\OpenCodeCache\windows-temp\opencode\tagjs\`（`fetch-tags.cjs` + `urls.json` + `results.ndjson`）、合并脚本 `E:\OpenCodeCache\windows-temp\opencode\merge_tags.py`。

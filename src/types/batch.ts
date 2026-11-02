@@ -17,6 +17,10 @@ export type BatchItemStatus =
 export type BatchItem = {
   /** Original URL string. Also the React `key`. */
   url: string;
+  /** 文章标题（在线图集抓取时带过来；手工/文件导入时为空）。 */
+  title?: string;
+  /** 列表页上的封面图，用作待下载列表的缩略图。 */
+  preview?: string;
   /** Current lifecycle status. Drives badge + per-row color. */
   status: BatchItemStatus;
   /** Free-form reason shown in the row (`24 张`, `HTTP_404`, `0 张`, ...). */

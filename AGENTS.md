@@ -306,7 +306,7 @@ gh api "repos/$repo/releases/$id/assets" --jq '.[] | "\(.name)  \(.size)"'
 
 ## State of the project
 
-A shipped Android app (release **1.0.18**, `versionCode 18`): a web image batch
+A shipped Android app (release **1.0.19**, `versionCode 19`): a web image batch
 downloader, plus a download-history manager (favorites / mark-for-delete /
 recycle bin) and a local archive import feature.
 `README.md` is this project's own documentation — read it first for features,
@@ -325,6 +325,11 @@ Feature areas:
   service + wake/wifi locks keeping long batches alive in the background.
 - 下载记录 — status/date filters, pull-to-refresh, detail grid + fullscreen
   viewer, re-parse, delete (optionally removing the saved files too).
+- 标签 — the detail screen shows the gallery page's own tags (WordPress
+  `rel="tag"`, tuzac's category links, `#hashtags` on static sites). New
+  downloads capture them during parsing; older records can be backfilled from
+  their original URLs in 设置 → 标签 (resumable, sequential, per-host gaps —
+  see `services/tagBackfill.ts` for why it must not run concurrently).
 - 解压压缩包 — in-app archive browser (archives only, sort / filter / imported
   badge) importing zip / 7z / tar / rar (incl. RAR5), de-duplicated by content
   fingerprint; videos go to the video gallery and open in the system player.
@@ -351,7 +356,7 @@ Runtime dependencies (all in use — don't "clean them up"):
 
 - `react-native-safe-area-context` (prefer it over the deprecated `SafeAreaView`)
 - `@react-navigation/{native,native-stack,bottom-tabs}`, `react-native-screens`
-- `@op-engineering/op-sqlite` — local history/settings DB (schema v5, versioned
+- `@op-engineering/op-sqlite` — local history/settings DB (schema v7, versioned
   migrations in `historyService.ts`)
 - `react-native-blob-util` — download transport
 - `@react-native-camera-roll/camera-roll`, `@react-native-clipboard/clipboard`,

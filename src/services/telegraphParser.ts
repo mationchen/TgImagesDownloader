@@ -37,6 +37,7 @@ import type {
   TelegraphImage,
 } from '../types/telegraph';
 import { defaultAdapterRegistry } from './adapters/registry';
+import { extractTags } from './tags';
 
 class HttpError extends Error {
   status: number;
@@ -173,6 +174,8 @@ export async function parseWebArticle(
   fetchedUrls.push(normalized);
   pageHtmls.push({ url: normalized, html: firstHtml });
   title = extractTitle(firstHtml) || 'untitled';
+  // 标签只在第一页取：分页的后续页通常不再重复渲染标签块。
+  const tags = extractTags(firstHtml, normalized, title);
 
   // Resolve site-specific adapter based on the first page's HTML.
   const adapter = defaultAdapterRegistry.resolve(normalized, firstHtml);
@@ -198,6 +201,7 @@ export async function parseWebArticle(
         parsedAt: Date.now(),
         source: 'web',
         pageCount: 1,
+        tags,
       },
     };
   }
@@ -287,6 +291,7 @@ export async function parseWebArticle(
       parsedAt: Date.now(),
       source: 'web',
       pageCount: fetchedUrls.length,
+      tags,
     },
   };
 }

@@ -270,10 +270,12 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     }
   }, [refreshCurrentPage]);
 
-  // Initial load. Also re-runs immediately when the date / status filter changes.
+  // Initial load. Also re-runs immediately when the date / status / 收藏 filter
+  // changes. 注意：收藏开关必须在这里，否则点 ★ 只会亮起筛选条、列表不重查
+  // （曾漏掉，表现为「点了星星却还是全部记录」）。
   useEffect(() => {
     reload(0);
-  }, [filterDay, filterStatus, reload]);
+  }, [filterDay, filterStatus, filterFavorite, reload]);
 
   // Debounced reload for the free-text title search.
   useEffect(() => {

@@ -59,6 +59,11 @@ export interface HistoryRecord {
    * 列表 / 回收站的缩略图优先用它。
    */
   coverUri: string;
+  /**
+   * 图集页面上标出的标签（v7+），例如 everia 的 `Cosplay`、tuzac 的 `秀人网`。
+   * 空数组 = 该站点本来没有标签，或还没补齐（设置页「补全标签」）。
+   */
+  tags: string[];
 }
 
 export type HistoryStatus = 'done' | 'partial' | 'failed' | 'cancelled';
@@ -78,6 +83,8 @@ export interface UpsertHistoryInput {
   imagePaths?: string[];
   /** Relative MediaStore paths for saved images (in download order). */
   savePaths?: string[];
+  /** 图集标签（v7+）。省略 = 保留库里已有的值。 */
+  tags?: string[];
 }
 
 export interface HistoryRow {
@@ -98,7 +105,7 @@ export interface HistoryRow {
 const HISTORY_COLUMNS =
   'id, url, title, image_count, success_count, failed_count, skipped_count, ' +
   'save_dir, status, image_urls, image_paths, save_paths, created_at, updated_at, ' +
-  'is_favorite, is_marked_deleted, trashed_at, cover_uri';
+  'is_favorite, is_marked_deleted, trashed_at, cover_uri, tags';
 
 /** A migration step: brings the schema from `version - 1` to `version`. */
 interface Migration {
@@ -111,7 +118,7 @@ interface Migration {
   up: (db: DB) => Promise<void>;
 }
 
-export const LATEST_SCHEMA_VERSION = 6;
+export const LATEST_SCHEMA_VERSION = 7;
 
 /**
  * Migration manifest (AGENTS.md §4). Add a new entry here for every future
@@ -247,6 +254,24 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    version: 7,
+    description: 'history: tags 标签列 + tags_checked_at（详情页显示标签 / 补全任务去重）',
+    up: async db => {
+      // JSON 数组，和 image_urls / save_paths 同一套存法。
+      // 默认 '[]'：旧记录先落空标签，之后由设置页的「补全标签」按原网址回填，
+      // 不在这里做任何网络/数据回填（AGENTS.md §4）。
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';`,
+      );
+      // 0 = 还没尝试过抓标签；> 0 = 尝试过的时间（UTC ms）。
+      // 「页面本来就没有标签」也要记一笔，否则每次补全都会把同一批无标签的
+      // 页面重新抓一遍（everia 有几百条这种）。
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN tags_checked_at INTEGER NOT NULL DEFAULT 0;`,
+      );
+    },
+  },
 ];
 
 /** Single in-process connection, lazily opened and migrated once. */
@@ -341,12 +366,13 @@ export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
   const imageUrls = JSON.stringify(input.imageUrls ?? []);
   const imagePaths = JSON.stringify(input.imagePaths ?? []);
   const savePaths = JSON.stringify(input.savePaths ?? []);
+  const tags = JSON.stringify(input.tags ?? []);
   await d.execute(
     `INSERT INTO history
        (url, title, image_count, success_count, failed_count, skipped_count,
         save_dir, status, image_urls, image_paths, save_paths,
-        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, tags, tags_checked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(url) DO UPDATE SET
        title = excluded.title,
        image_count = excluded.image_count,
@@ -358,6 +384,8 @@ export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
        image_urls = CASE WHEN excluded.image_urls = '[]' THEN history.image_urls ELSE excluded.image_urls END,
        image_paths = CASE WHEN excluded.image_paths = '[]' THEN history.image_paths ELSE excluded.image_paths END,
        save_paths = CASE WHEN excluded.save_paths = '[]' THEN history.save_paths ELSE excluded.save_paths END,
+       tags = CASE WHEN excluded.tags = '[]' THEN history.tags ELSE excluded.tags END,
+       tags_checked_at = CASE WHEN excluded.tags = '[]' THEN history.tags_checked_at ELSE excluded.tags_checked_at END,
        updated_at = excluded.updated_at;`,
     [
       input.url,
@@ -373,7 +401,71 @@ export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
       savePaths,
       now,
       now,
+      tags,
+      // 刚解析过的页面等于「已经看过标签」，补全任务不该再把这条抓一遍。
+      // 解析阶段本来就没抓到（telegra.ph / 静态站返回空）也算看过了。
+      now,
     ],
+  );
+  markHistoryChanged();
+}
+
+/** 一条「缺标签」的候选记录（补全标签任务用）。 */
+export type TagBackfillTarget = {
+  id: number;
+  url: string;
+  title: string;
+};
+
+/**
+ * 列出「网页记录里还没有标签」的那些，按站点聚在一起，便于补全任务
+ * 对同一主机连续请求（并发会被站点限流，见 everiaListing 的教训）。
+ */
+export async function listHistoryNeedingTags(): Promise<TagBackfillTarget[]> {
+  await initHistoryDatabase();
+  const res = await getDb().execute(
+    `SELECT id, url, title FROM history
+      WHERE tags = '[]' AND tags_checked_at = 0 AND url LIKE 'http%'
+      ORDER BY LOWER(url) ASC, id ASC;`,
+  );
+  const rows = (res.rows ?? []) as Array<Record<string, unknown>>;
+  return rows.map(r => ({
+    id: Number(r.id),
+    url: String(r.url),
+    title: String(r.title ?? ''),
+  }));
+}
+
+/** 待补标签的条数（设置页显示用，不加载明细）。 */
+export async function countHistoryNeedingTags(): Promise<number> {
+  await initHistoryDatabase();
+  const res = await getDb().execute(
+    `SELECT COUNT(1) AS n FROM history
+      WHERE tags = '[]' AND tags_checked_at = 0 AND url LIKE 'http%';`,
+  );
+  const row = (res.rows?.[0] ?? {}) as Record<string, unknown>;
+  return Number(row.n ?? 0);
+}
+
+/**
+ * 写入某条记录的标签，并记下「这条已经看过标签」（`tags_checked_at`）。
+ * `onlyIfEmpty` 为真时只更新还没有标签的记录，保证补全任务不会覆盖已有结果。
+ */
+export async function updateHistoryTags(
+  id: number,
+  tags: string[],
+  options: { onlyIfEmpty?: boolean } = {},
+): Promise<void> {
+  await initHistoryDatabase();
+  const payload = JSON.stringify(tags);
+  const now = Date.now();
+  await getDb().execute(
+    options.onlyIfEmpty
+      ? `UPDATE history SET tags = ?, tags_checked_at = ?, updated_at = ?
+          WHERE id = ? AND tags = '[]';`
+      : `UPDATE history SET tags = ?, tags_checked_at = ?, updated_at = ?
+          WHERE id = ?;`,
+    [payload, now, now, id],
   );
   markHistoryChanged();
 }
@@ -910,6 +1002,7 @@ function rowToRecord(row: Record<string, unknown>): HistoryRecord {
     isMarkedDeleted: Number(row.is_marked_deleted ?? 0) === 1,
     trashedAt: Number(row.trashed_at ?? 0),
     coverUri: String(row.cover_uri ?? ''),
+    tags: decodeJsonArray(row.tags),
   };
 }
 
@@ -1081,6 +1174,7 @@ export async function recordHistoryFromState(
     imageUrls,
     imagePaths,
     savePaths,
+    tags: article.tags,
   });
 }
 

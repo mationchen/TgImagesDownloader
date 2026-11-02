@@ -7,6 +7,12 @@ export interface TelegraphArticle {
   source?: 'telegraph' | 'web';
   /** How many pages were merged when the article spans multiple pages. */
   pageCount?: number;
+  /**
+   * 页面上的标签（v7+）。各站点结构不同，由 `services/tags.ts` 按
+   * `rel="tag"` / `a.tag` / `/tag/` 链接 / 标题井号 / meta keywords 逐级提取。
+   * 站点本来没有标签时为空数组（telegra.ph 就是这种）。
+   */
+  tags?: string[];
 }
 
 export interface TelegraphImage {

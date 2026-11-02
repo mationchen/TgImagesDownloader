@@ -9,10 +9,17 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
+  Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  type ScrollViewInstance,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -32,6 +39,11 @@ import {
   requestIgnoreBatteryOptimizations,
 } from '../services/downloadNotifier';
 import { listHistoryByUrls } from '../services/historyService';
+import {
+  fetchEveriaPages,
+  MAX_PAGES,
+  type ListingEntry,
+} from '../services/everiaListing';
 import { dedupeUrls } from '../utils/batchScheduler';
 import { confirmDownloadWithoutWifi } from '../utils/downloadNetworkGuard';
 import { ArchivePicker } from '../components/ArchivePicker';
@@ -84,6 +96,53 @@ export const BatchListScreen: React.FC = () => {
   const [showArchivePicker, setShowArchivePicker] = useState(false);
   /** URL whose row is currently parsing for a preview (spinner + press lock). */
   const [previewingUrl, setPreviewingUrl] = useState<string | null>(null);
+
+  /* ---------------- 在线图集（everia.club 列表页） ---------------- */
+  const [showOnline, setShowOnline] = useState(false);
+  /** 勾选要抓取的列表页（默认 1-5，最多 10）。 */
+  const [onlinePages, setOnlinePages] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [onlineBusy, setOnlineBusy] = useState(false);
+  const [onlineError, setOnlineError] = useState('');
+  const [onlineEntries, setOnlineEntries] = useState<ListingEntry[]>([]);
+  const [onlineSelected, setOnlineSelected] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [onlineStats, setOnlineStats] = useState<{
+    total: number;
+    dup: number;
+    downloaded: number;
+  }>({ total: 0, dup: 0, downloaded: 0 });
+  /** 正在放大查看的候选下标（null = 没打开）。 */
+  const [onlinePreviewIndex, setOnlinePreviewIndex] = useState<number | null>(
+    null,
+  );
+  const { width: windowWidth } = useWindowDimensions();
+  const previewScrollRef = useRef<ScrollViewInstance>(null);
+
+  const openPreviewAt = useCallback(
+    (index: number) => {
+      setOnlinePreviewIndex(index);
+      // 打开后立刻定位到被点的那一张（不要动画，避免先闪第一张）。
+      requestAnimationFrame(() => {
+        previewScrollRef.current?.scrollTo({
+          x: index * windowWidth,
+          animated: false,
+        });
+      });
+    },
+    [windowWidth],
+  );
+
+  const closePreview = useCallback(() => setOnlinePreviewIndex(null), []);
+
+  /** 滑到相邻候选：慢拖只触发 onScrollEndDrag，快速甩动才有 momentum，两个都挂。 */
+  const onPreviewScrollEnd = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const idx = Math.round(e.nativeEvent.contentOffset.x / windowWidth);
+      if (idx >= 0 && idx < onlineEntries.length) setOnlinePreviewIndex(idx);
+    },
+    [onlineEntries.length, windowWidth],
+  );
 
   const batchAbortRef = useRef<AbortController | null>(null);
   const pauseResumeRef = useRef<{
@@ -180,9 +239,114 @@ export const BatchListScreen: React.FC = () => {
     }
   }, []);
 
-  // Sync the row whose index matches `index` with a status patcher. Accepts
-  // either a partial patch (Partial<BatchItem>) or a function of the
-  // previous row (same ergonomics as React's setState).
+  /** 勾选 / 取消某个列表页。 */
+  const toggleOnlinePage = useCallback((page: number) => {
+    setOnlinePages(prev =>
+      prev.includes(page)
+        ? prev.filter(p => p !== page)
+        : [...prev, page].sort((a, b) => a - b),
+    );
+  }, []);
+
+  /**
+   * 抓取选中的列表页 → 去重 → 过滤掉已经下载过的 → 生成待选列表。
+   * 默认全选（用户通常就是想批量拿新的）。
+   */
+  const handleFetchOnline = useCallback(async () => {
+    if (onlineBusy) return;
+    if (onlinePages.length === 0) return;
+    setOnlineBusy(true);
+    setOnlineError('');
+    setOnlineEntries([]);
+    setOnlineSelected(new Set());
+    try {
+      const { entries, failedPages } = await fetchEveriaPages(onlinePages);
+
+      // 1) 同一篇文章会在多个页面/推荐位重复出现 → 按 URL 去重
+      const seen = new Set<string>();
+      const unique: ListingEntry[] = [];
+      for (const e of entries) {
+        if (seen.has(e.url)) continue;
+        seen.add(e.url);
+        unique.push(e);
+      }
+
+      // 2) 已经下载过的（历史里有同 URL 的记录）直接剔除
+      let downloaded = 0;
+      let fresh = unique;
+      try {
+        const seenHistory = await listHistoryByUrls(unique.map(e => e.url));
+        if (seenHistory.size > 0) {
+          fresh = unique.filter(e => !seenHistory.has(e.url));
+          downloaded = unique.length - fresh.length;
+        }
+      } catch (e) {
+        // 查询失败不阻塞：宁可多给几条，用户在列表里还能取消
+        console.log('[BatchList] listHistoryByUrls failed', e);
+      }
+
+      setOnlineEntries(fresh);
+      setOnlineSelected(new Set(fresh.map(e => e.url)));
+      setOnlineStats({
+        total: entries.length,
+        dup: entries.length - unique.length,
+        downloaded,
+      });
+      if (failedPages.length > 0) {
+        setOnlineError(
+          failedPages.length >= onlinePages.length
+            ? t('batch.online.fetchFailed')
+            : t('batch.online.failedPages', {
+                pages: failedPages.join(', '),
+              }),
+        );
+      }
+    } catch (e) {
+      setOnlineError(t('batch.online.fetchFailed'));
+      console.log('[BatchList] fetch listing failed', e);
+    } finally {
+      setOnlineBusy(false);
+    }
+  }, [onlineBusy, onlinePages]);
+
+  /** 把勾选的条目并入待下载列表（按 URL 去重，重复的不再加）。 */
+  const handleAddOnline = useCallback(() => {
+    const picked = onlineEntries.filter(e => onlineSelected.has(e.url));
+    if (picked.length === 0) return;
+    setItems(prev => {
+      const have = new Set(prev.map(it => it.url));
+      const add = picked
+        .filter(e => !have.has(e.url))
+        .map(e => ({
+          url: e.url,
+          title: e.title,
+          preview: e.preview,
+          status: 'pending' as BatchItemStatus,
+          detail: '',
+          progress: null,
+        }));
+      return [...prev, ...add];
+    });
+    setShowOnline(false);
+  }, [onlineEntries, onlineSelected]);
+
+  const toggleOnlineSelect = useCallback((url: string) => {
+    setOnlineSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(url)) next.delete(url);
+      else next.add(url);
+      return next;
+    });
+  }, []);
+
+  const toggleOnlineAll = useCallback(() => {
+    setOnlineSelected(prev =>
+      prev.size === onlineEntries.length
+        ? new Set()
+        : new Set(onlineEntries.map(e => e.url)),
+    );
+  }, [onlineEntries]);
+
   const updateItem = useCallback(
     (
       index: number,
@@ -688,23 +852,32 @@ export const BatchListScreen: React.FC = () => {
           ]}
         >
           <View style={styles.rowMain}>
-            <Text style={[styles.rowUrl]} numberOfLines={1}>
-              {index + 1}. {item.url}
-            </Text>
-            <Text
-              style={[
-                styles.rowStatus,
-                { color: isPreviewing ? colors.primary : color },
-              ]}
-            >
-              {isPreviewing ? t('batch.status.parsing') : label}
-              {!isPreviewing && item.detail ? ` · ${item.detail}` : ''}
-            </Text>
-            {item.existing && !isPreviewing ? (
-              <Text style={styles.rowHistory} numberOfLines={1}>
-                ↩ {item.existing.title} · {t('batch.longPressRequeue')}
-              </Text>
+            {item.preview ? (
+              <Image
+                source={{ uri: item.preview }}
+                style={styles.rowThumb}
+                resizeMode="cover"
+              />
             ) : null}
+            <View style={styles.rowText}>
+              <Text style={[styles.rowUrl]} numberOfLines={1}>
+                {index + 1}. {item.title || item.url}
+              </Text>
+              <Text
+                style={[
+                  styles.rowStatus,
+                  { color: isPreviewing ? colors.primary : color },
+                ]}
+              >
+                {isPreviewing ? t('batch.status.parsing') : label}
+                {!isPreviewing && item.detail ? ` · ${item.detail}` : ''}
+              </Text>
+              {item.existing && !isPreviewing ? (
+                <Text style={styles.rowHistory} numberOfLines={1}>
+                  ↩ {item.existing.title} · {t('batch.longPressRequeue')}
+                </Text>
+              ) : null}
+            </View>
           </View>
         </Pressable>
       );
@@ -734,10 +907,13 @@ export const BatchListScreen: React.FC = () => {
               onPress={handlePickFile}
               style={({ pressed }) => [
                 styles.pickBtn,
+                styles.pickBtnPrimary,
                 pressed && styles.pressed,
               ]}
             >
-              <Text style={styles.pickBtnText}>{t('batch.pickFile')}</Text>
+              <Text style={styles.pickBtnText} numberOfLines={1}>
+                {t('batch.pickFile')}
+              </Text>
             </Pressable>
             <Pressable
               onPress={() => setShowArchivePicker(true)}
@@ -746,8 +922,19 @@ export const BatchListScreen: React.FC = () => {
                 pressed && styles.pressed,
               ]}
             >
-              <Text style={styles.pickBtnText}>
+              <Text style={styles.pickBtnText} numberOfLines={1}>
                 {t('archive.pickArchives')}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setShowOnline(true)}
+              style={({ pressed }) => [
+                styles.pickBtn,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.pickBtnText} numberOfLines={1}>
+                {t('batch.online.open')}
               </Text>
             </Pressable>
           </View>
@@ -793,6 +980,19 @@ export const BatchListScreen: React.FC = () => {
                 disabled={running}
               >
                 <Text style={styles.repickBtnDanger}>{t('batch.clear')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setShowOnline(true)}
+                style={({ pressed }) => [
+                  styles.repickBtn,
+                  pressed && styles.pressed,
+                  running && styles.pressedDisabled,
+                ]}
+                disabled={running}
+              >
+                <Text style={styles.repickBtnText}>
+                  {t('batch.online.open')}
+                </Text>
               </Pressable>
             </View>
             <FlatList
@@ -904,24 +1104,342 @@ export const BatchListScreen: React.FC = () => {
           handlePickArchives(picked).catch(() => undefined);
         }}
       />
+
+      {/* 在线图集：从 everia.club 列表页抓「文章 + 一张预览图」，勾选后并入待下载 */}
+      <Modal
+        visible={showOnline}
+        animationType="slide"
+        onRequestClose={() => setShowOnline(false)}
+      >
+        <SafeAreaView style={styles.onlineSafe} edges={['top', 'bottom']}>
+          <View style={styles.onlineHeader}>
+            <Text style={styles.onlineTitle}>{t('batch.online.title')}</Text>
+            <Pressable
+              onPress={() => setShowOnline(false)}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel={t('common.cancel')}
+            >
+              <Text style={styles.onlineClose}>×</Text>
+            </Pressable>
+          </View>
+
+          <Text style={styles.onlineHint}>{t('batch.online.pagesHint')}</Text>
+          <View style={styles.onlinePages}>
+            {Array.from({ length: MAX_PAGES }, (_, i) => i + 1).map(p => {
+              const on = onlinePages.includes(p);
+              return (
+                <Pressable
+                  key={p}
+                  onPress={() => toggleOnlinePage(p)}
+                  style={({ pressed }) => [
+                    styles.pageChip,
+                    on && styles.pageChipOn,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.pageChipText,
+                      on && styles.pageChipTextOn,
+                    ]}
+                  >
+                    {p}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View style={styles.onlineActions}>
+            <Pressable
+              onPress={handleFetchOnline}
+              disabled={onlineBusy || onlinePages.length === 0}
+              style={({ pressed }) => [
+                styles.onlineFetchBtn,
+                (onlineBusy || onlinePages.length === 0) &&
+                  styles.pressedDisabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              {onlineBusy ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.onlineFetchText}>
+                  {t('batch.online.fetch')}
+                </Text>
+              )}
+            </Pressable>
+            {onlineEntries.length > 0 ? (
+              <Pressable
+                onPress={toggleOnlineAll}
+                style={({ pressed }) => [
+                  styles.smallBtn,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.smallBtnText}>
+                  {onlineSelected.size === onlineEntries.length
+                    ? t('batch.online.selectNone')
+                    : t('batch.online.selectAll')}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+
+          {onlineError ? (
+            <Text style={styles.onlineError}>{onlineError}</Text>
+          ) : null}
+          {onlineStats.total > 0 ? (
+            <Text style={styles.onlineStats}>
+              {t('batch.online.stats', {
+                total: onlineStats.total,
+                dup: onlineStats.dup,
+                downloaded: onlineStats.downloaded,
+              })}
+            </Text>
+          ) : null}
+
+          <FlatList
+            data={onlineEntries}
+            keyExtractor={e => e.url}
+            style={styles.onlineList}
+            contentContainerStyle={styles.onlineListContent}
+            ListEmptyComponent={
+              onlineBusy ? undefined : (
+                <Text style={styles.onlineEmpty}>
+                  {t('batch.online.empty')}
+                </Text>
+              )
+            }
+            renderItem={({ item: e, index: ei }) => {
+              const on = onlineSelected.has(e.url);
+              return (
+                <Pressable
+                  onPress={() => toggleOnlineSelect(e.url)}
+                  style={({ pressed }) => [
+                    styles.onlineRow,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <View
+                    style={[styles.onlineCheck, on && styles.onlineCheckOn]}
+                  >
+                    {on ? <Text style={styles.onlineCheckMark}>✓</Text> : null}
+                  </View>
+                  {e.preview ? (
+                    <Pressable
+                      onPress={() => openPreviewAt(ei)}
+                      accessibilityRole="imagebutton"
+                      accessibilityLabel={t('batch.online.previewOpen')}
+                      hitSlop={4}
+                      style={({ pressed }) => [
+                        styles.onlineThumbHit,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Image
+                        source={{ uri: e.preview }}
+                        style={styles.onlineThumb}
+                        resizeMode="cover"
+                      />
+                    </Pressable>
+                  ) : (
+                    <View style={[styles.onlineThumb, styles.onlineThumbEmpty]} />
+                  )}
+                  <Text style={styles.onlineRowTitle} numberOfLines={2}>
+                    {e.title}
+                  </Text>
+                </Pressable>
+              );
+            }}
+          />
+
+          <View style={styles.onlineFooter}>
+            <Text style={styles.onlineCount}>
+              {t('batch.online.add', { count: onlineSelected.size })}
+            </Text>
+            <Pressable
+              onPress={handleAddOnline}
+              disabled={onlineSelected.size === 0}
+              style={({ pressed }) => [
+                styles.onlineAddBtn,
+                onlineSelected.size === 0 && styles.pressedDisabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.onlineAddText}>
+                {t('batch.online.addBtn')}
+              </Text>
+            </Pressable>
+          </View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* 预览大图：点在线图集里的缩略图打开。左右滑动看相邻候选，
+          顶栏可直接把这个候选加入/移出待下载。放在这里（而不是嵌在上面那个
+          Modal 里）是为了避免 Android 上 Modal 套 Modal 的返回键/层级问题。 */}
+      <Modal
+        visible={onlinePreviewIndex !== null && onlineEntries.length > 0}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closePreview}
+      >
+        <View style={styles.previewRoot}>
+          <SafeAreaView style={styles.previewBar} edges={['top']}>
+            <View style={styles.previewBarRow}>
+              <Pressable
+                onPress={closePreview}
+                hitSlop={12}
+                style={styles.previewCloseBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t('batch.online.previewClose')}
+              >
+                <Text style={styles.previewCloseText}>×</Text>
+              </Pressable>
+              {/* 页码绝对居中：两侧按钮宽度变化也不会把它挤偏。 */}
+              <View pointerEvents="none" style={styles.previewCounterWrap}>
+                <Text style={styles.previewCounter}>
+                  {t('preview.viewerIndex', {
+                    current: (onlinePreviewIndex ?? 0) + 1,
+                    total: onlineEntries.length,
+                  })}
+                </Text>
+              </View>
+              {(() => {
+                const entry =
+                  onlinePreviewIndex != null
+                    ? onlineEntries[onlinePreviewIndex]
+                    : undefined;
+                if (!entry) return null;
+                const on = onlineSelected.has(entry.url);
+                return (
+                  <Pressable
+                    onPress={() => toggleOnlineSelect(entry.url)}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: on }}
+                    style={({ pressed }) => [
+                      styles.previewSelectBtn,
+                      on && styles.previewSelectBtnOn,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.previewSelectText,
+                        on && styles.previewSelectTextOn,
+                      ]}
+                    >
+                      {on ? t('batch.online.selected') : t('batch.online.select')}
+                    </Text>
+                  </Pressable>
+                );
+              })()}
+            </View>
+            <Text style={styles.previewTitle} numberOfLines={1}>
+              {onlinePreviewIndex != null
+                ? onlineEntries[onlinePreviewIndex]?.title ?? ''
+                : ''}
+            </Text>
+          </SafeAreaView>
+
+          <ScrollView
+            ref={previewScrollRef}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            style={styles.previewPager}
+            onMomentumScrollEnd={onPreviewScrollEnd}
+            onScrollEndDrag={onPreviewScrollEnd}
+          >
+            {onlineEntries.map(entry => (
+              <PreviewPage
+                key={entry.url}
+                uri={entry.preview}
+                width={windowWidth}
+                onPress={closePreview}
+              />
+            ))}
+          </ScrollView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
+
+/**
+ * 预览大图的单页。每页各自管自己的加载状态：滑到哪张才真正加载哪张，
+ * 避免 100 多个候选一次性全下载。
+ */
+const PreviewPage: React.FC<{
+  uri: string;
+  width: number;
+  onPress: () => void;
+}> = React.memo(({ uri, width, onPress }) => {
+  const styles = useThemedStyles(createStyles);
+  const [loading, setLoading] = React.useState(true);
+  const [failed, setFailed] = React.useState(false);
+
+  return (
+    <Pressable style={[styles.previewPage, { width }]} onPress={onPress}>
+      {uri ? (
+        <Image
+          source={{ uri }}
+          style={styles.previewImage}
+          resizeMode="contain"
+          // 图片不接收触摸：点击穿透到整页的关闭手势。
+          pointerEvents="none"
+          onLoadStart={() => {
+            setLoading(true);
+            setFailed(false);
+          }}
+          onLoadEnd={() => setLoading(false)}
+          onError={() => {
+            setLoading(false);
+            setFailed(true);
+          }}
+        />
+      ) : null}
+      {loading && !failed ? (
+        <View style={styles.previewSpinner} pointerEvents="none">
+          <ActivityIndicator color="#fff" />
+        </View>
+      ) : null}
+      {failed ? (
+        <Text style={styles.previewFailed}>
+          {t('batch.online.previewFailed')}
+        </Text>
+      ) : null}
+    </Pressable>
+  );
+});
+PreviewPage.displayName = 'PreviewPage';
 
 function createStyles(c: ThemeColors) {
   return StyleSheet.create({
     safe: { flex: 1, backgroundColor: c.background },
     body: { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
     intro: { fontSize: 13, color: c.textSecondary, marginBottom: 12 },
-    pickRow: { flexDirection: 'row', gap: 10 },
+    pickRow: { flexDirection: 'row', gap: 8 },
     pickBtn: {
       flex: 1,
       backgroundColor: c.primary,
-      paddingVertical: 14,
+      paddingVertical: 12,
+      paddingHorizontal: 6,
       borderRadius: 8,
       alignItems: 'center',
+      justifyContent: 'center',
     },
-    pickBtnText: { color: c.textOnPrimary, fontWeight: '600', fontSize: 15 },
+    /** 主入口（选择 url.txt）比旁边两个更宽，字更长也放得下。 */
+    pickBtnPrimary: { flex: 1.8 },
+    pickBtnText: {
+      color: c.textOnPrimary,
+      fontWeight: '600',
+      fontSize: 12,
+      textAlign: 'center',
+    },
     pressed: { opacity: 0.6 },
     fileRow: {
       flexDirection: 'row',
@@ -956,7 +1474,15 @@ function createStyles(c: ThemeColors) {
       marginBottom: 6,
     },
     rowPressable: { opacity: 0.85 },
-    rowMain: { flex: 1 },
+    rowMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
+    /** 待下载列表里的封面缩略图（在线图集带过来的预览）。 */
+    rowThumb: {
+      width: 44,
+      height: 58,
+      borderRadius: 4,
+      backgroundColor: c.surface,
+    },
+    rowText: { flex: 1 },
     rowUrl: { fontSize: 12, color: c.textPrimary },
     rowStatus: { fontSize: 11, marginTop: 4, fontWeight: '500' },
     rowHistory: {
@@ -1012,5 +1538,219 @@ function createStyles(c: ThemeColors) {
       paddingVertical: 6,
     },
     dismissText: { color: c.textSecondary, fontSize: 12 },
+
+    /* ---------------- 在线图集（everia 列表页） ---------------- */
+    onlineSafe: { flex: 1, backgroundColor: c.background },
+    onlineHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    onlineTitle: { fontSize: 16, fontWeight: '700', color: c.textPrimary },
+    onlineClose: { fontSize: 24, color: c.textSecondary, lineHeight: 26 },
+    onlineHint: {
+      fontSize: 12,
+      color: c.textSecondary,
+      paddingHorizontal: 16,
+      paddingTop: 10,
+    },
+    onlinePages: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+    },
+    pageChip: {
+      width: 38,
+      height: 38,
+      borderRadius: 19,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: c.surfaceStrong,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    pageChipOn: { backgroundColor: c.primary, borderColor: c.primary },
+    pageChipText: { fontSize: 14, color: c.textPrimary, fontWeight: '600' },
+    pageChipTextOn: { color: c.textOnPrimary },
+    onlineActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingHorizontal: 16,
+      paddingBottom: 8,
+    },
+    onlineFetchBtn: {
+      flex: 1,
+      paddingVertical: 11,
+      borderRadius: 8,
+      backgroundColor: c.primary,
+      alignItems: 'center',
+    },
+    onlineFetchText: {
+      color: c.textOnPrimary,
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    onlineError: {
+      fontSize: 12,
+      color: c.danger,
+      paddingHorizontal: 16,
+      paddingBottom: 4,
+    },
+    onlineStats: {
+      fontSize: 12,
+      color: c.textSecondary,
+      paddingHorizontal: 16,
+      paddingBottom: 6,
+    },
+    onlineList: { flex: 1 },
+    onlineListContent: { paddingHorizontal: 16, paddingBottom: 12 },
+    onlineEmpty: {
+      textAlign: 'center',
+      color: c.textHint,
+      fontSize: 13,
+      paddingVertical: 40,
+    },
+    onlineRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingVertical: 8,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    onlineCheck: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      borderWidth: 1.5,
+      borderColor: c.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    onlineCheckOn: { backgroundColor: c.primary, borderColor: c.primary },
+    onlineCheckMark: {
+      color: c.textOnPrimary,
+      fontSize: 13,
+      fontWeight: '700',
+      lineHeight: 16,
+    },
+    onlineThumb: {
+      width: 46,
+      height: 60,
+      borderRadius: 4,
+      backgroundColor: c.surfaceStrong,
+    },
+    onlineThumbEmpty: { backgroundColor: c.surfaceStrong },
+    /** 缩略图的可点区域：尺寸与图片一致，圆角裁切让按下反馈不外溢。 */
+    onlineThumbHit: {
+      width: 46,
+      height: 60,
+      borderRadius: 4,
+      overflow: 'hidden',
+    },
+    /** 预览大图：铺满全屏的黑底，上下滑不动、左右翻相邻候选。 */
+    previewRoot: { flex: 1, backgroundColor: '#000' },
+    previewBar: {
+      paddingHorizontal: 12,
+      paddingBottom: 6,
+      backgroundColor: 'rgba(0,0,0,0.85)',
+    },
+    previewBarRow: {
+      height: 44,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    previewCounterWrap: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      alignItems: 'center',
+    },
+    previewCounter: {
+      color: '#fff',
+      fontSize: 15,
+      fontWeight: '600',
+      fontVariant: ['tabular-nums'],
+    },
+    previewSelectBtn: {
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.5)',
+    },
+    previewSelectBtnOn: {
+      backgroundColor: '#FFD166',
+      borderColor: '#FFD166',
+    },
+    previewSelectText: { fontSize: 13, lineHeight: 16, color: '#fff', fontWeight: '600' },
+    previewSelectTextOn: { color: '#1a1a1a' },
+    previewTitle: {
+      color: 'rgba(255,255,255,0.75)',
+      fontSize: 11,
+      paddingBottom: 4,
+    },
+    previewPager: { flex: 1 },
+    previewPage: {
+      height: '100%',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    previewImage: { width: '100%', height: '100%' },
+    previewFailed: { color: 'rgba(255,255,255,0.6)', fontSize: 13 },
+    previewSpinner: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    previewTop: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      alignItems: 'flex-end',
+      paddingHorizontal: 12,
+    },
+    previewCloseBtn: {
+      width: 40,
+      height: 40,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    previewCloseText: { color: '#fff', fontSize: 30, lineHeight: 34 },
+    onlineRowTitle: { flex: 1, fontSize: 12, color: c.textPrimary },
+    onlineFooter: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+    onlineCount: { fontSize: 12, color: c.textSecondary },
+    onlineAddBtn: {
+      paddingHorizontal: 18,
+      paddingVertical: 10,
+      borderRadius: 8,
+      backgroundColor: c.primary,
+    },
+    onlineAddText: {
+      color: c.textOnPrimary,
+      fontSize: 14,
+      fontWeight: '600',
+    },
   });
 }

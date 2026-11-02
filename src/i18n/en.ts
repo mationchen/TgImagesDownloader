@@ -285,6 +285,24 @@ export const en: Record<ZhKeys, string> = {
     'Records moved to the recycle bin. Restore them, or empty the bin (deleting the gallery files too).',
   'settings.trash.open': 'Open recycle bin',
   'settings.trash.count': '{count}',
+  // Tags (detail screen / backfill for older records in settings)
+  'settings.tags.title': 'Tags',
+  'settings.tags.hint':
+    'Fetch the tags a gallery page shows and attach them to existing download records, using each record\u2019s original URL. Only records without tags are processed.',
+  'settings.tags.button': 'Fill in tags',
+  'settings.tags.count': '{count} left',
+  'settings.tags.none': 'All tags processed',
+  'settings.tags.intro':
+    'Fetches {count} original pages one by one to read their tags. Requests are sequential with a 0.3s gap per site, so a few hundred records take ten-plus minutes and may use over 100MB of data — Wi-Fi recommended. You can stop any time and continue later.',
+  'settings.tags.start': 'Start',
+  'settings.tags.stop': 'Stop',
+  'settings.tags.close': 'Close',
+  'settings.tags.running': 'Processed {done} / {total}',
+  'settings.tags.stats': 'Done {ok} · No tags {empty} · Failed {failed}',
+  'settings.tags.done': 'Finished',
+  'settings.tags.stopped': 'Stopped — continue later',
+  'settings.tags.unreachable': 'These sites are unreachable and were skipped: {hosts}',
+  'history.detail.tags': 'Tags',
   // Fullscreen viewer → system favorites (Android MediaStore favourite flag)
   'history.viewer.favorite': 'Add to system favorites',
   'history.viewer.unfavorite': 'Remove from favorites',
@@ -419,6 +437,26 @@ export const en: Record<ZhKeys, string> = {
   'batch.intro':
     'Pick a url.txt file (one URL per line). URLs will be processed one by one. Tap a row to preview the images parsed from that link.',
   'batch.pickFile': 'Choose url.txt',
+  // Online galleries (everia.club listing pages)
+  'batch.online.open': 'Online',
+  'batch.online.title': 'Online galleries (everia.club)',
+  'batch.online.pagesHint':
+    'Pages 1-5 by default, up to 10. Duplicates are merged and already-downloaded items are hidden.',
+  'batch.online.fetch': 'Fetch list',
+  'batch.online.fetchFailed': 'Fetch failed — check your network and retry',
+  'batch.online.failedPages': 'Page(s) {pages} failed; other pages are shown',
+  'batch.online.selectAll': 'Select all',
+  'batch.online.selectNone': 'Clear selection',
+  'batch.online.stats':
+    'Fetched {total} · duplicates {dup} · already downloaded {downloaded}',
+  'batch.online.empty': 'Nothing new (probably all downloaded) — try other pages',
+  'batch.online.add': '{count} selected',
+  'batch.online.addBtn': 'Add to queue',
+  'batch.online.previewOpen': 'View image',
+  'batch.online.previewClose': 'Close image',
+  'batch.online.previewFailed': 'Could not load preview',
+  'batch.online.select': 'Select',
+  'batch.online.selected': 'Selected',
   'batch.repickFile': 'Choose again',
   'batch.clear': 'Clear',
   'batch.clearTitle': 'Clear list',

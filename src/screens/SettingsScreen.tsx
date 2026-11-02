@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
-import { countTrash } from '../services/historyService';
+import { countHistoryNeedingTags, countTrash } from '../services/historyService';
 import { APP_CONFIG } from '../constants/config';
 import { getAppInfo, type AppInfo } from '../services/appInfo';
 import {
@@ -36,6 +36,7 @@ import {
 } from '../services/nativeDownloader';
 import { t, useI18n, type SupportedLocale } from '../i18n';
 import { useTheme, useThemedStyles, type ThemeColors } from '../theme';
+import { TagBackfillModal } from '../components/TagBackfillModal';
 
 export const SettingsScreen: React.FC = () => {
   // Subscribe so the whole screen re-renders with fresh strings/colors when
@@ -52,12 +53,21 @@ export const SettingsScreen: React.FC = () => {
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   /** 回收站条数（显示在入口按钮上）。 */
   const [trashCount, setTrashCount] = useState(0);
+  /** 还没有标签、且没试过抓取的记录条数（补全入口上显示）。 */
+  const [tagMissing, setTagMissing] = useState(0);
+  const [showTagBackfill, setShowTagBackfill] = useState(false);
+  const refreshTagMissing = useCallback(() => {
+    countHistoryNeedingTags()
+      .then(setTagMissing)
+      .catch(() => undefined);
+  }, []);
   useFocusEffect(
     useCallback(() => {
       countTrash()
         .then(setTrashCount)
         .catch(() => undefined);
-    }, []),
+      refreshTagMissing();
+    }, [refreshTagMissing]),
   );
 
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -432,6 +442,33 @@ export const SettingsScreen: React.FC = () => {
           </View>
         </Section>
 
+        <Section title={t('settings.tags.title')}>
+          <View style={styles.row}>
+            <View style={styles.rowMain}>
+              <Text style={styles.rowHint}>{t('settings.tags.hint')}</Text>
+            </View>
+          </View>
+          <View style={styles.folderRow}>
+            <Pressable
+              style={[
+                styles.folderBtn,
+                tagMissing === 0 && styles.disabledBtn,
+              ]}
+              onPress={() => setShowTagBackfill(true)}
+              disabled={tagMissing === 0}
+            >
+              <Text style={styles.folderBtnText}>
+                {tagMissing === 0
+                  ? t('settings.tags.none')
+                  : `${t('settings.tags.button')} · ${t(
+                      'settings.tags.count',
+                      { count: tagMissing },
+                    )}`}
+              </Text>
+            </Pressable>
+          </View>
+        </Section>
+
         <Section title={t('settings.about.title')}>
           <AboutRow
             label={t('settings.about.appName')}
@@ -475,6 +512,12 @@ export const SettingsScreen: React.FC = () => {
           </Text>
         </View>
       </ScrollView>
+      <TagBackfillModal
+        visible={showTagBackfill}
+        missingCount={tagMissing}
+        onClose={() => setShowTagBackfill(false)}
+        onFinished={refreshTagMissing}
+      />
     </SafeAreaView>
   );
 };

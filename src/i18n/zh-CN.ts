@@ -279,6 +279,24 @@ export const zhCN = {
     '已移入回收站的下载记录；可恢复，或一键清空（连带删除相册文件）。',
   'settings.trash.open': '打开回收站',
   'settings.trash.count': '{count} 条',
+  // 标签（详情页显示 / 设置页补全老记录）
+  'settings.tags.title': '标签',
+  'settings.tags.hint':
+    '按记录的原始网址，把图集页面上标出的标签补到已有下载记录里。只补还没有标签的记录。',
+  'settings.tags.button': '补全标签',
+  'settings.tags.count': '{count} 条待补',
+  'settings.tags.none': '标签已全部处理',
+  'settings.tags.intro':
+    '将逐条访问 {count} 条记录的原始页面并读取标签：顺序请求、同站点间隔 0.3 秒，几百条大约需要十几分钟，流量可能有上百 MB，建议在 Wi-Fi 下进行。可随时停止，下次继续。',
+  'settings.tags.start': '开始补全',
+  'settings.tags.stop': '停止',
+  'settings.tags.close': '关闭',
+  'settings.tags.running': '已处理 {done} / {total}',
+  'settings.tags.stats': '成功 {ok} · 无标签 {empty} · 失败 {failed}',
+  'settings.tags.done': '补全完成',
+  'settings.tags.stopped': '已停止，下次继续',
+  'settings.tags.unreachable': '这些站点暂时访问不了，已跳过：{hosts}',
+  'history.detail.tags': '标签',
   // 全屏大图 → 系统收藏夹（Android 系统的图片收藏标记）
   'history.viewer.favorite': '加入系统收藏夹',
   'history.viewer.unfavorite': '取消系统收藏',
@@ -415,6 +433,26 @@ export const zhCN = {
   'batch.intro':
     '选择一个 url.txt，每行一个 URL，逐个依次下载。点击某一行可预览该链接解析出的图片。',
   'batch.pickFile': '选择 url.txt 文件',
+  // 在线图集（everia.club 列表页）
+  'batch.online.open': '在线图集',
+  'batch.online.title': '在线图集（everia.club）',
+  'batch.online.pagesHint':
+    '默认抓取第 1-5 页，可勾选到第 10 页；同一篇只出现一次，已下载过的会自动去掉。',
+  'batch.online.fetch': '获取列表',
+  'batch.online.fetchFailed': '抓取失败，请检查网络后重试',
+  'batch.online.failedPages': '第 {pages} 页抓取失败，其余页已显示',
+  'batch.online.selectAll': '全选',
+  'batch.online.selectNone': '取消全选',
+  'batch.online.stats':
+    '抓到 {total} 条 · 重复 {dup} 条 · 已下载 {downloaded} 条',
+  'batch.online.empty': '没有新的图集（可能都已下载过，换个页数试试）',
+  'batch.online.add': '已选 {count} 条',
+  'batch.online.addBtn': '加入待下载',
+  'batch.online.previewOpen': '查看大图',
+  'batch.online.previewClose': '关闭大图',
+  'batch.online.previewFailed': '预览图加载失败',
+  'batch.online.select': '选中',
+  'batch.online.selected': '已选中',
   'batch.repickFile': '重新选择',
   'batch.clear': '清除',
   'batch.clearTitle': '清除列表',
