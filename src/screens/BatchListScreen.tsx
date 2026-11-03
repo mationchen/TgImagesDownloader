@@ -26,6 +26,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { t, useI18n } from '../i18n';
 import { useTheme, useThemedStyles, type ThemeColors } from '../theme';
+import { formatLocalDateTime } from '../utils/time';
 import type { RootStackParamList } from '../navigation/types';
 import {
   isDownloaderAvailable,
@@ -38,7 +39,16 @@ import {
   isNotifierSupported,
   requestIgnoreBatteryOptimizations,
 } from '../services/downloadNotifier';
-import { listHistoryByUrls } from '../services/historyService';
+import {
+  listDeletedUrlInfo,
+  listHistoryByUrls,
+  listListingSessions,
+  listPreviousListingSelection,
+  loadListingSession,
+  markListingSelection,
+  saveListingSession,
+  type ListingSessionSummary,
+} from '../services/historyService';
 import {
   fetchEveriaPages,
   MAX_PAGES,
@@ -78,6 +88,9 @@ const ARCHIVE_REASON_KEY = {
  *      advance to next URL.
  *   3. Per-URL failures are skipped; pause/resume/skip/cancel affect the loop.
  */
+/** 在线图集的数据源标识（落库 / 读取快照时用来区分站点）。 */
+const ONLINE_SITE = 'everia.club';
+
 export const BatchListScreen: React.FC = () => {
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -96,6 +109,8 @@ export const BatchListScreen: React.FC = () => {
   const [showArchivePicker, setShowArchivePicker] = useState(false);
   /** URL whose row is currently parsing for a preview (spinner + press lock). */
   const [previewingUrl, setPreviewingUrl] = useState<string | null>(null);
+  /** 「刷新状态」正在查库（按钮显示转圈，防连点）。 */
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
 
   /* ---------------- 在线图集（everia.club 列表页） ---------------- */
   const [showOnline, setShowOnline] = useState(false);
@@ -115,6 +130,22 @@ export const BatchListScreen: React.FC = () => {
   /** 正在放大查看的候选下标（null = 没打开）。 */
   const [onlinePreviewIndex, setOnlinePreviewIndex] = useState<number | null>(
     null,
+  );
+  /** 本次抓取的会话 id（落库用，也是「加入待下载」记勾选的依据）。 */
+  const [onlineSessionId, setOnlineSessionId] = useState<number | null>(null);
+  /** 面板当前视图：候选列表 / 历史抓取记录选择。 */
+  const [onlineMode, setOnlineMode] = useState<'list' | 'history'>('list');
+  const [onlineSessions, setOnlineSessions] = useState<ListingSessionSummary[]>(
+    [],
+  );
+  const [onlineHistoryBusy, setOnlineHistoryBusy] = useState(false);
+  /** 上次抓取时**没被勾选**的 URL（用于「上次未入选」提示）。 */
+  const [onlinePrevUnselected, setOnlinePrevUnselected] = useState<Set<string>>(
+    new Set(),
+  );
+  /** 以前下载过、后来被彻底删掉的 URL（墓碑表命中）。 */
+  const [onlineDeleted, setOnlineDeleted] = useState<Map<string, number>>(
+    new Map(),
   );
   const { width: windowWidth } = useWindowDimensions();
   const previewScrollRef = useRef<ScrollViewInstance>(null);
@@ -239,6 +270,80 @@ export const BatchListScreen: React.FC = () => {
     }
   }, []);
 
+  /**
+   * 重新核对「待下载列表」里每条 URL 的状态：
+   *   - 已经下载过（history 里有）→ existing + skipped
+   *   - 以前下载过但被彻底删了（墓碑）→ deletedBefore 提示
+   *
+   * 在线图集挑出来的列表不会再走「重新选择 url.txt」，所以需要这个手动刷新。
+   */
+  const refreshItemsStatus = useCallback(async () => {
+    if (running) return;
+    const urls = items.filter(it => !it.archive).map(it => it.url);
+    if (urls.length === 0) {
+      Alert.alert(t('batch.refresh.none'));
+      return;
+    }
+    setRefreshingStatus(true);
+    try {
+      const [seen, deleted] = await Promise.all([
+        listHistoryByUrls(urls),
+        listDeletedUrlInfo(urls),
+      ]);
+      setItems(prev =>
+        prev.map(it => {
+          if (it.archive) return it;
+          const rec = seen.get(it.url);
+          const at = deleted.get(it.url);
+          const existing = rec
+            ? {
+                historyId: rec.id,
+                title: rec.title,
+                imageCount: rec.imageCount,
+                status: rec.status,
+              }
+            : undefined;
+          // 原来因为「已下载」被跳过、现在记录没了（被删）→ 回到等待
+          const wasSkippedByExisting = !!it.existing && it.status === 'skipped';
+          const status: BatchItemStatus = existing
+            ? 'skipped'
+            : wasSkippedByExisting
+            ? 'pending'
+            : it.status;
+          const detail = existing
+            ? t('batch.status.alreadyDownloaded', {
+                count: existing.imageCount,
+              })
+            : wasSkippedByExisting
+            ? ''
+            : it.detail;
+          return {
+            ...it,
+            existing,
+            deletedBefore: at
+              ? { title: rec?.title ?? '', deletedAt: at }
+              : undefined,
+            status,
+            detail,
+          };
+        }),
+      );
+      Alert.alert(
+        t('batch.refresh.doneTitle'),
+        t('batch.refresh.doneBody', {
+          downloaded: seen.size,
+          deleted: deleted.size,
+          pending: urls.length - seen.size,
+        }),
+      );
+    } catch (e) {
+      console.log('[BatchList] refreshItemsStatus failed', e);
+      Alert.alert(t('batch.refresh.failed'));
+    } finally {
+      setRefreshingStatus(false);
+    }
+  }, [items, running]);
+
   /** 勾选 / 取消某个列表页。 */
   const toggleOnlinePage = useCallback((page: number) => {
     setOnlinePages(prev =>
@@ -292,6 +397,43 @@ export const BatchListScreen: React.FC = () => {
         dup: entries.length - unique.length,
         downloaded,
       });
+
+      // 落库：每场抓取单独存一份，之后可以「历史列表」挑任意一场重新打开。
+      // 「上次未入选」由上一场会话的勾选状态决定。
+      const sessionId = Date.now();
+      try {
+        await saveListingSession(
+          ONLINE_SITE,
+          sessionId,
+          { pages: onlinePages.join(','), total: entries.length },
+          fresh,
+        );
+        setOnlineSessionId(sessionId);
+        const prevSel = await listPreviousListingSelection(
+          ONLINE_SITE,
+          sessionId,
+        );
+        // 只有「上一场确实做过选择」（至少选了一条）才把未选的标出来，
+        // 否则只是浏览了一遍也会被标成「未入选」，太吵。
+        const anySelected = Array.from(prevSel.values()).some(Boolean);
+        setOnlinePrevUnselected(
+          anySelected
+            ? new Set(
+                Array.from(prevSel.entries())
+                  .filter(([, sel]) => !sel)
+                  .map(([u]) => u),
+              )
+            : new Set(),
+        );
+      } catch (e) {
+        console.log('[BatchList] save listing session failed', e);
+        setOnlinePrevUnselected(new Set());
+      }
+      try {
+        setOnlineDeleted(await listDeletedUrlInfo(fresh.map(e => e.url)));
+      } catch {
+        setOnlineDeleted(new Map());
+      }
       if (failedPages.length > 0) {
         setOnlineError(
           failedPages.length >= onlinePages.length
@@ -313,6 +455,13 @@ export const BatchListScreen: React.FC = () => {
   const handleAddOnline = useCallback(() => {
     const picked = onlineEntries.filter(e => onlineSelected.has(e.url));
     if (picked.length === 0) return;
+    // 记住这次勾了哪些：下次抓取时，没勾的会显示「上次未入选」。
+    if (onlineSessionId != null) {
+      markListingSelection(
+        onlineSessionId,
+        picked.map(e => e.url),
+      ).catch(() => undefined);
+    }
     setItems(prev => {
       const have = new Set(prev.map(it => it.url));
       const add = picked
@@ -328,7 +477,74 @@ export const BatchListScreen: React.FC = () => {
       return [...prev, ...add];
     });
     setShowOnline(false);
-  }, [onlineEntries, onlineSelected]);
+  }, [onlineEntries, onlineSelected, onlineSessionId]);
+
+  /**
+   * 打开「历史抓取」列表（不联网）：用户可以挑任意一次抓取结果重新打开，
+   * 而不是只能读最后那一次。
+   */
+  const openOnlineHistory = useCallback(async () => {
+    if (onlineBusy) return;
+    setOnlineError('');
+    setOnlineMode('history');
+    setOnlineHistoryBusy(true);
+    try {
+      setOnlineSessions(await listListingSessions(ONLINE_SITE, 50));
+    } catch (e) {
+      console.log('[BatchList] list listing sessions failed', e);
+      setOnlineSessions([]);
+    } finally {
+      setOnlineHistoryBusy(false);
+    }
+  }, [onlineBusy]);
+
+  /** 打开历史里选中的那一场（不联网），已下载过的仍然剔除。 */
+  const openListingSession = useCallback(async (sessionId: number) => {
+    setOnlineHistoryBusy(true);
+    setOnlineError('');
+    try {
+      const session = await loadListingSession(sessionId);
+      if (!session || session.items.length === 0) {
+        Alert.alert(t('batch.online.noLast'));
+        return;
+      }
+      let rows = session.items;
+      let downloaded = 0;
+      try {
+        const seenHistory = await listHistoryByUrls(rows.map(i => i.url));
+        if (seenHistory.size > 0) {
+          rows = rows.filter(i => !seenHistory.has(i.url));
+          downloaded = session.items.length - rows.length;
+        }
+      } catch (e) {
+        console.log('[BatchList] listHistoryByUrls failed', e);
+      }
+      setOnlineSessionId(session.sessionId);
+      setOnlineEntries(
+        rows.map(i => ({ url: i.url, title: i.title, preview: i.preview })),
+      );
+      // 沿用那一场记下的勾选。
+      setOnlineSelected(new Set(rows.filter(i => i.selected).map(i => i.url)));
+      setOnlineStats({
+        total: session.items.length,
+        dup: 0,
+        downloaded,
+      });
+      // 「上次未入选」对历史快照没有意义（它就是历史本身）。
+      setOnlinePrevUnselected(new Set());
+      try {
+        setOnlineDeleted(await listDeletedUrlInfo(rows.map(i => i.url)));
+      } catch {
+        setOnlineDeleted(new Map());
+      }
+      setOnlineMode('list');
+    } catch (e) {
+      console.log('[BatchList] open listing session failed', e);
+      setOnlineError(t('batch.online.fetchFailed'));
+    } finally {
+      setOnlineHistoryBusy(false);
+    }
+  }, []);
 
   const toggleOnlineSelect = useCallback((url: string) => {
     setOnlineSelected(prev => {
@@ -877,6 +1093,11 @@ export const BatchListScreen: React.FC = () => {
                   ↩ {item.existing.title} · {t('batch.longPressRequeue')}
                 </Text>
               ) : null}
+              {item.deletedBefore && !isPreviewing ? (
+                <Text style={styles.rowDeleted} numberOfLines={1}>
+                  🗑 {t('batch.deletedBefore')}
+                </Text>
+              ) : null}
             </View>
           </View>
         </Pressable>
@@ -968,19 +1189,7 @@ export const BatchListScreen: React.FC = () => {
                   {t('archive.pickArchives')}
                 </Text>
               </Pressable>
-              <Pressable
-                onPress={handleClearList}
-                accessibilityRole="button"
-                accessibilityLabel={t('batch.clear')}
-                style={({ pressed }) => [
-                  styles.repickBtn,
-                  pressed && styles.pressed,
-                  running && styles.pressedDisabled,
-                ]}
-                disabled={running}
-              >
-                <Text style={styles.repickBtnDanger}>{t('batch.clear')}</Text>
-              </Pressable>
+
               <Pressable
                 onPress={() => setShowOnline(true)}
                 style={({ pressed }) => [
@@ -1030,16 +1239,50 @@ export const BatchListScreen: React.FC = () => {
             </Text>
             <View style={styles.actions}>
               {!running ? (
-                <Pressable
-                  onPress={handleStart}
-                  style={({ pressed }) => [
-                    styles.actionBtn,
-                    styles.actionBtnPrimary,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.actionBtnText}>{t('batch.start')}</Text>
-                </Pressable>
+                <>
+                  <Pressable
+                    onPress={handleStart}
+                    style={({ pressed }) => [
+                      styles.actionBtn,
+                      styles.actionBtnPrimary,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.actionBtnText}>{t('batch.start')}</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={refreshItemsStatus}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('batch.refresh.button')}
+                    style={({ pressed }) => [
+                      styles.actionBtn,
+                      pressed && styles.pressed,
+                      refreshingStatus && styles.pressedDisabled,
+                    ]}
+                    disabled={refreshingStatus}
+                  >
+                    <Text style={styles.actionBtnText}>
+                      {refreshingStatus
+                        ? t('batch.refresh.running')
+                        : t('batch.refresh.button')}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleClearList}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('batch.clear')}
+                    style={({ pressed }) => [
+                      styles.actionBtn,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text
+                      style={[styles.actionBtnText, styles.actionBtnTextDanger]}
+                    >
+                      {t('batch.clear')}
+                    </Text>
+                  </Pressable>
+                </>
               ) : (
                 <>
                   <Pressable
@@ -1124,155 +1367,253 @@ export const BatchListScreen: React.FC = () => {
             </Pressable>
           </View>
 
-          <Text style={styles.onlineHint}>{t('batch.online.pagesHint')}</Text>
-          <View style={styles.onlinePages}>
-            {Array.from({ length: MAX_PAGES }, (_, i) => i + 1).map(p => {
-              const on = onlinePages.includes(p);
-              return (
-                <Pressable
-                  key={p}
-                  onPress={() => toggleOnlinePage(p)}
-                  style={({ pressed }) => [
-                    styles.pageChip,
-                    on && styles.pageChipOn,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.pageChipText,
-                      on && styles.pageChipTextOn,
-                    ]}
-                  >
-                    {p}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <View style={styles.onlineActions}>
-            <Pressable
-              onPress={handleFetchOnline}
-              disabled={onlineBusy || onlinePages.length === 0}
-              style={({ pressed }) => [
-                styles.onlineFetchBtn,
-                (onlineBusy || onlinePages.length === 0) &&
-                  styles.pressedDisabled,
-                pressed && styles.pressed,
-              ]}
-            >
-              {onlineBusy ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.onlineFetchText}>
-                  {t('batch.online.fetch')}
-                </Text>
-              )}
-            </Pressable>
-            {onlineEntries.length > 0 ? (
-              <Pressable
-                onPress={toggleOnlineAll}
-                style={({ pressed }) => [
-                  styles.smallBtn,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={styles.smallBtnText}>
-                  {onlineSelected.size === onlineEntries.length
-                    ? t('batch.online.selectNone')
-                    : t('batch.online.selectAll')}
-                </Text>
-              </Pressable>
-            ) : null}
-          </View>
-
-          {onlineError ? (
-            <Text style={styles.onlineError}>{onlineError}</Text>
-          ) : null}
-          {onlineStats.total > 0 ? (
-            <Text style={styles.onlineStats}>
-              {t('batch.online.stats', {
-                total: onlineStats.total,
-                dup: onlineStats.dup,
-                downloaded: onlineStats.downloaded,
-              })}
-            </Text>
-          ) : null}
-
-          <FlatList
-            data={onlineEntries}
-            keyExtractor={e => e.url}
-            style={styles.onlineList}
-            contentContainerStyle={styles.onlineListContent}
-            ListEmptyComponent={
-              onlineBusy ? undefined : (
+          {onlineMode === 'history' ? (
+            <View style={styles.onlineHistoryWrap}>
+              <Text style={styles.onlineHint}>
+                {t('batch.online.historyHint')}
+              </Text>
+              {onlineHistoryBusy ? (
+                <View style={styles.onlineHistoryBusy}>
+                  <ActivityIndicator />
+                </View>
+              ) : onlineSessions.length === 0 ? (
                 <Text style={styles.onlineEmpty}>
-                  {t('batch.online.empty')}
+                  {t('batch.online.noHistory')}
                 </Text>
-              )
-            }
-            renderItem={({ item: e, index: ei }) => {
-              const on = onlineSelected.has(e.url);
-              return (
-                <Pressable
-                  onPress={() => toggleOnlineSelect(e.url)}
-                  style={({ pressed }) => [
-                    styles.onlineRow,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <View
-                    style={[styles.onlineCheck, on && styles.onlineCheckOn]}
-                  >
-                    {on ? <Text style={styles.onlineCheckMark}>✓</Text> : null}
-                  </View>
-                  {e.preview ? (
+              ) : (
+                <FlatList
+                  data={onlineSessions}
+                  keyExtractor={s => String(s.sessionId)}
+                  style={styles.onlineList}
+                  contentContainerStyle={styles.onlineListContent}
+                  renderItem={({ item: s }) => (
                     <Pressable
-                      onPress={() => openPreviewAt(ei)}
-                      accessibilityRole="imagebutton"
-                      accessibilityLabel={t('batch.online.previewOpen')}
-                      hitSlop={4}
+                      onPress={() => {
+                        openListingSession(s.sessionId).catch(() => undefined);
+                      }}
                       style={({ pressed }) => [
-                        styles.onlineThumbHit,
+                        styles.onlineSessionRow,
                         pressed && styles.pressed,
                       ]}
                     >
-                      <Image
-                        source={{ uri: e.preview }}
-                        style={styles.onlineThumb}
-                        resizeMode="cover"
-                      />
+                      <View style={styles.onlineRowText}>
+                        <Text style={styles.onlineSessionTime}>
+                          {formatLocalDateTime(s.sessionId)}
+                        </Text>
+                        <Text style={styles.onlineSessionMeta}>
+                          {t('batch.online.sessionMeta', {
+                            pages: s.pages || '-',
+                            total: s.total,
+                            selected: s.selectedCount,
+                          })}
+                        </Text>
+                      </View>
+                      <Text style={styles.onlineSessionChevron}>›</Text>
                     </Pressable>
-                  ) : (
-                    <View style={[styles.onlineThumb, styles.onlineThumbEmpty]} />
                   )}
-                  <Text style={styles.onlineRowTitle} numberOfLines={2}>
-                    {e.title}
+                />
+              )}
+              <View style={styles.onlineFooter}>
+                <Pressable
+                  onPress={() => setOnlineMode('list')}
+                  style={({ pressed }) => [
+                    styles.onlineAddBtn,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.onlineAddText}>{t('common.back')}</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <>
+              <Text style={styles.onlineHint}>
+                {t('batch.online.pagesHint')}
+              </Text>
+              <View style={styles.onlinePages}>
+                {Array.from({ length: MAX_PAGES }, (_, i) => i + 1).map(p => {
+                  const on = onlinePages.includes(p);
+                  return (
+                    <Pressable
+                      key={p}
+                      onPress={() => toggleOnlinePage(p)}
+                      style={({ pressed }) => [
+                        styles.pageChip,
+                        on && styles.pageChipOn,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.pageChipText,
+                          on && styles.pageChipTextOn,
+                        ]}
+                      >
+                        {p}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <View style={styles.onlineActions}>
+                <Pressable
+                  onPress={handleFetchOnline}
+                  disabled={onlineBusy || onlinePages.length === 0}
+                  style={({ pressed }) => [
+                    styles.onlineFetchBtn,
+                    (onlineBusy || onlinePages.length === 0) &&
+                      styles.pressedDisabled,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  {onlineBusy ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.onlineFetchText}>
+                      {t('batch.online.fetch')}
+                    </Text>
+                  )}
+                </Pressable>
+                {onlineEntries.length > 0 ? (
+                  <Pressable
+                    onPress={toggleOnlineAll}
+                    style={({ pressed }) => [
+                      styles.smallBtn,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.smallBtnText}>
+                      {onlineSelected.size === onlineEntries.length
+                        ? t('batch.online.selectNone')
+                        : t('batch.online.selectAll')}
+                    </Text>
+                  </Pressable>
+                ) : null}
+                <Pressable
+                  onPress={openOnlineHistory}
+                  disabled={onlineBusy}
+                  style={({ pressed }) => [
+                    styles.smallBtn,
+                    onlineBusy && styles.pressedDisabled,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.smallBtnText}>
+                    {t('batch.online.history')}
                   </Text>
                 </Pressable>
-              );
-            }}
-          />
+              </View>
 
-          <View style={styles.onlineFooter}>
-            <Text style={styles.onlineCount}>
-              {t('batch.online.add', { count: onlineSelected.size })}
-            </Text>
-            <Pressable
-              onPress={handleAddOnline}
-              disabled={onlineSelected.size === 0}
-              style={({ pressed }) => [
-                styles.onlineAddBtn,
-                onlineSelected.size === 0 && styles.pressedDisabled,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.onlineAddText}>
-                {t('batch.online.addBtn')}
-              </Text>
-            </Pressable>
-          </View>
+              {onlineError ? (
+                <Text style={styles.onlineError}>{onlineError}</Text>
+              ) : null}
+              {onlineStats.total > 0 ? (
+                <Text style={styles.onlineStats}>
+                  {t('batch.online.stats', {
+                    total: onlineStats.total,
+                    dup: onlineStats.dup,
+                    downloaded: onlineStats.downloaded,
+                  })}
+                </Text>
+              ) : null}
+
+              <FlatList
+                data={onlineEntries}
+                keyExtractor={e => e.url}
+                style={styles.onlineList}
+                contentContainerStyle={styles.onlineListContent}
+                ListEmptyComponent={
+                  onlineBusy ? undefined : (
+                    <Text style={styles.onlineEmpty}>
+                      {t('batch.online.empty')}
+                    </Text>
+                  )
+                }
+                renderItem={({ item: e, index: ei }) => {
+                  const on = onlineSelected.has(e.url);
+                  return (
+                    <Pressable
+                      onPress={() => toggleOnlineSelect(e.url)}
+                      style={({ pressed }) => [
+                        styles.onlineRow,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <View
+                        style={[styles.onlineCheck, on && styles.onlineCheckOn]}
+                      >
+                        {on ? (
+                          <Text style={styles.onlineCheckMark}>✓</Text>
+                        ) : null}
+                      </View>
+                      {e.preview ? (
+                        <Pressable
+                          onPress={() => openPreviewAt(ei)}
+                          accessibilityRole="imagebutton"
+                          accessibilityLabel={t('batch.online.previewOpen')}
+                          hitSlop={4}
+                          style={({ pressed }) => [
+                            styles.onlineThumbHit,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Image
+                            source={{ uri: e.preview }}
+                            style={styles.onlineThumb}
+                            resizeMode="cover"
+                          />
+                        </Pressable>
+                      ) : (
+                        <View
+                          style={[styles.onlineThumb, styles.onlineThumbEmpty]}
+                        />
+                      )}
+                      <View style={styles.onlineRowText}>
+                        <Text style={styles.onlineRowTitle} numberOfLines={2}>
+                          {e.title}
+                        </Text>
+                        {onlineDeleted.has(e.url) ? (
+                          <Text
+                            style={styles.onlineBadgeWarn}
+                            numberOfLines={1}
+                          >
+                            🗑 {t('batch.online.badgeDeleted')}
+                          </Text>
+                        ) : onlinePrevUnselected.has(e.url) ? (
+                          <Text
+                            style={styles.onlineBadgeMuted}
+                            numberOfLines={1}
+                          >
+                            {t('batch.online.badgeUnselected')}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </Pressable>
+                  );
+                }}
+              />
+
+              <View style={styles.onlineFooter}>
+                <Text style={styles.onlineCount}>
+                  {t('batch.online.add', { count: onlineSelected.size })}
+                </Text>
+                <Pressable
+                  onPress={handleAddOnline}
+                  disabled={onlineSelected.size === 0}
+                  style={({ pressed }) => [
+                    styles.onlineAddBtn,
+                    onlineSelected.size === 0 && styles.pressedDisabled,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.onlineAddText}>
+                    {t('batch.online.addBtn')}
+                  </Text>
+                </Pressable>
+              </View>
+            </>
+          )}
         </SafeAreaView>
       </Modal>
 
@@ -1332,7 +1673,9 @@ export const BatchListScreen: React.FC = () => {
                         on && styles.previewSelectTextOn,
                       ]}
                     >
-                      {on ? t('batch.online.selected') : t('batch.online.select')}
+                      {on
+                        ? t('batch.online.selected')
+                        : t('batch.online.select')}
                     </Text>
                   </Pressable>
                 );
@@ -1443,14 +1786,16 @@ function createStyles(c: ThemeColors) {
     pressed: { opacity: 0.6 },
     fileRow: {
       flexDirection: 'row',
+      // 5 个按钮（重新选择/选择压缩包/清除/刷新状态/在线图集）放不下一行：
+      // 允许换行，窄屏上第二行继续排，而不是被挤出屏幕。
+      flexWrap: 'wrap',
       alignItems: 'center',
-      justifyContent: 'space-between',
+      justifyContent: 'flex-start',
       marginBottom: 8,
-      // Keep 「重新选择」 and 「选择压缩包」 visually separated; the label uses
-      // flex: 1 so the gap is purely between the two buttons.
-      gap: 10,
+      columnGap: 10,
+      rowGap: 6,
     },
-    fileLabel: { flex: 1, fontSize: 13, color: c.textPrimary },
+    fileLabel: { fontSize: 13, color: c.textPrimary, marginRight: 'auto' },
     repickBtn: {
       paddingHorizontal: 12,
       paddingVertical: 6,
@@ -1490,6 +1835,12 @@ function createStyles(c: ThemeColors) {
       color: c.textHint,
       marginTop: 2,
       fontStyle: 'italic',
+    },
+    /** 「以前下载过、后来被彻底删除」的提示（墓碑表命中）。 */
+    rowDeleted: {
+      fontSize: 10,
+      color: c.danger,
+      marginTop: 2,
     },
     skipHintRow: {
       flexDirection: 'row',
@@ -1531,6 +1882,8 @@ function createStyles(c: ThemeColors) {
     actionBtnPrimary: { backgroundColor: c.primary },
     actionBtnDanger: { backgroundColor: '#c62828' },
     actionBtnText: { color: c.textPrimary, fontWeight: '600', fontSize: 13 },
+    /** 「清除」放在开始旁边，用警示色但保留普通按钮底，避免太扎眼。 */
+    actionBtnTextDanger: { color: c.danger },
     spinner: { alignItems: 'center', paddingVertical: 12 },
     dismiss: {
       alignSelf: 'center',
@@ -1691,7 +2044,12 @@ function createStyles(c: ThemeColors) {
       backgroundColor: '#FFD166',
       borderColor: '#FFD166',
     },
-    previewSelectText: { fontSize: 13, lineHeight: 16, color: '#fff', fontWeight: '600' },
+    previewSelectText: {
+      fontSize: 13,
+      lineHeight: 16,
+      color: '#fff',
+      fontWeight: '600',
+    },
     previewSelectTextOn: { color: '#1a1a1a' },
     previewTitle: {
       color: 'rgba(255,255,255,0.75)',
@@ -1730,7 +2088,31 @@ function createStyles(c: ThemeColors) {
       justifyContent: 'center',
     },
     previewCloseText: { color: '#fff', fontSize: 30, lineHeight: 34 },
-    onlineRowTitle: { flex: 1, fontSize: 12, color: c.textPrimary },
+    onlineRowTitle: { fontSize: 12, color: c.textPrimary },
+    /* ---------- 历史抓取列表 ---------- */
+    onlineHistoryWrap: { flex: 1 },
+    onlineHistoryBusy: { paddingVertical: 40, alignItems: 'center' },
+    onlineSessionRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    onlineSessionTime: {
+      fontSize: 13,
+      color: c.textPrimary,
+      fontWeight: '600',
+    },
+    onlineSessionMeta: { fontSize: 11, color: c.textHint, marginTop: 3 },
+    onlineSessionChevron: { fontSize: 20, color: c.textHint },
+    /** 标题 + 状态提示的竖排容器。 */
+    onlineRowText: { flex: 1 },
+    /** 以前下载过又被删掉：用警示色提醒。 */
+    onlineBadgeWarn: { fontSize: 10, color: c.danger, marginTop: 2 },
+    /** 上次抓到了但没勾选：浅色提醒。 */
+    onlineBadgeMuted: { fontSize: 10, color: c.textHint, marginTop: 2 },
     onlineFooter: {
       flexDirection: 'row',
       alignItems: 'center',

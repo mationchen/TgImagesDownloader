@@ -590,7 +590,10 @@ const RecordPage: React.FC<{
     };
   }, [baseUris, viewerIndex]);
   const size = tileSizeFor(width);
-  const cell = size + GAP;
+  /** 宫格格子改成竖版 3:4（原来正方形会把竖图裁掉一大半）。 */
+  const tileH = Math.round((size * 4) / 3);
+  const cellW = size + GAP;
+  const cellH = tileH + GAP;
   // 只有「顺序来自记录本身」时才允许拖动 —— 否则改了也存不回数据库。
   const reorderable =
     baseUris.length > 1 &&
@@ -678,15 +681,15 @@ const RecordPage: React.FC<{
       const visible = visibleRef.current;
       if (dragIndexRef.current == null || visible.length === 0) return;
       const origin = gridOriginRef.current;
-      const col = Math.floor((x - origin.x) / cell);
-      const row = Math.floor((y - origin.y) / cell);
+      const col = Math.floor((x - origin.x) / cellW);
+      const row = Math.floor((y - origin.y) / cellH);
       const visIdx = Math.max(0, Math.min(row * COLS + col, visible.length - 1));
       const to = urisRef.current.indexOf(visible[visIdx]);
       if (to < 0 || to === targetRef.current) return;
       targetRef.current = to;
       setDragTarget(to);
     },
-    [cell],
+    [cellW, cellH],
   );
 
   /**
@@ -727,8 +730,8 @@ const RecordPage: React.FC<{
           }
           if (!draggingRef.current) return;
           dragPos.setValue({
-            x: g.moveX - pageOriginRef.current.x - cell / 2,
-            y: g.moveY - pageOriginRef.current.y - cell / 2,
+            x: g.moveX - pageOriginRef.current.x - cellW / 2,
+            y: g.moveY - pageOriginRef.current.y - cellH / 2,
           });
           moveTo(g.moveX, g.moveY);
         },
@@ -758,7 +761,7 @@ const RecordPage: React.FC<{
           finishDrag();
         },
       }),
-    [cell, dragPos, finishDrag, moveTo, clearLongPress],
+    [cellW, cellH, dragPos, finishDrag, moveTo, clearLongPress],
   );
 
   const beginDrag = useCallback(
@@ -768,7 +771,7 @@ const RecordPage: React.FC<{
       const col = index % COLS;
       const row = Math.floor(index / COLS);
       tile.measureInWindow((x: number, y: number) => {
-        gridOriginRef.current = { x: x - col * cell, y: y - row * cell };
+        gridOriginRef.current = { x: x - col * cellW, y: y - row * cellH };
         rootRef.current?.measureInWindow((px: number) => {
           pageOriginRef.current = { x: px, y: 0 };
         });
@@ -782,7 +785,7 @@ const RecordPage: React.FC<{
         setDragUri(urisRef.current[index] ?? null);
       });
     },
-    [cell, dragPos],
+    [cellW, cellH, dragPos],
   );
   beginDragRef.current = beginDrag;
 
@@ -950,7 +953,7 @@ const RecordPage: React.FC<{
                   }}
                   style={[
                     styles.tileOuter,
-                    { width: size, height: size },
+                    { width: size, height: tileH },
                     dragIndex === index && styles.tileLifted,
                     dragTarget === index && styles.tileTarget,
                     pressedIndex === index && styles.tilePressed,
@@ -995,7 +998,7 @@ const RecordPage: React.FC<{
               (_, k) => (
                 <View
                   key={`pad-${k}`}
-                  style={[styles.tileOuter, { width: size, height: size }]}
+                  style={[styles.tileOuter, { width: size, height: tileH }]}
                 />
               ),
             )}
@@ -1030,8 +1033,8 @@ const RecordPage: React.FC<{
           style={[
             styles.dragGhost,
             {
-              width: cell,
-              height: cell,
+              width: cellW,
+              height: cellH,
               transform: dragPos.getTranslateTransform(),
             },
           ]}

@@ -118,7 +118,7 @@ interface Migration {
   up: (db: DB) => Promise<void>;
 }
 
-export const LATEST_SCHEMA_VERSION = 7;
+export const LATEST_SCHEMA_VERSION = 9;
 
 /**
  * Migration manifest (AGENTS.md §4). Add a new entry here for every future
@@ -272,6 +272,87 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    version: 8,
+    description:
+      'deleted_urls 墓碑表（删过的链接留痕）+ listing_items 在线图集候选快照',
+    up: async db => {
+      // 记录被彻底删除（或清空回收站）的文章地址，用于「在线图集」提示
+      // 「这条以前下载过、后来删掉了」，以及批量列表里的同款标记。
+      // 重新下载成功时会把对应的行删掉（见 upsertHistory）。
+      await db.execute(
+        `CREATE TABLE IF NOT EXISTS deleted_urls (
+          url TEXT PRIMARY KEY,
+          title TEXT NOT NULL DEFAULT '',
+          deleted_at INTEGER NOT NULL
+        );`,
+      );
+      // 在线图集的候选快照：抓过一次就落库，于是
+      //   1) 关闭面板后还能「读取上次列表」；
+      //   2) 下次抓取时能标出「上次没入选」的那些。
+      await db.execute(
+        `CREATE TABLE IF NOT EXISTS listing_items (
+          url TEXT PRIMARY KEY,
+          site TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL DEFAULT '',
+          preview TEXT NOT NULL DEFAULT '',
+          session_id INTEGER NOT NULL DEFAULT 0,
+          selected INTEGER NOT NULL DEFAULT 0,
+          first_seen_at INTEGER NOT NULL DEFAULT 0,
+          last_seen_at INTEGER NOT NULL DEFAULT 0
+        );`,
+      );
+      await db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_listing_items_session
+         ON listing_items(session_id);`,
+      );
+    },
+  },
+  {
+    version: 9,
+    description:
+      'listing_sessions / listing_session_items：每次抓取各存一份，可挑历史列表',
+    up: async db => {
+      // 一次抓取 = 一场 session（id 就是开始抓取的时间戳）。
+      await db.execute(
+        `CREATE TABLE IF NOT EXISTS listing_sessions (
+          id INTEGER PRIMARY KEY,
+          site TEXT NOT NULL DEFAULT '',
+          pages TEXT NOT NULL DEFAULT '',
+          total INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL
+        );`,
+      );
+      // 每场会话的候选明细；同一场里 url 唯一，不同场之间互不覆盖。
+      await db.execute(
+        `CREATE TABLE IF NOT EXISTS listing_session_items (
+          session_id INTEGER NOT NULL,
+          url TEXT NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          preview TEXT NOT NULL DEFAULT '',
+          selected INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (session_id, url)
+        );`,
+      );
+      await db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_listing_session_items_session
+         ON listing_session_items(session_id);`,
+      );
+      // v8 那张「一个 URL 一行」的 listing_items 只保留最后一次，把还能认出来的
+      // 会话搬过来（表本身先留着，不删，按 §4 的约定）。
+      await db.execute(
+        `INSERT OR IGNORE INTO listing_sessions (id, site, pages, total, created_at)
+         SELECT session_id, MAX(site), '', COUNT(*), MAX(last_seen_at)
+           FROM listing_items WHERE session_id > 0 GROUP BY session_id;`,
+      );
+      await db.execute(
+        `INSERT OR IGNORE INTO listing_session_items
+           (session_id, url, title, preview, selected)
+         SELECT session_id, url, title, preview, selected
+           FROM listing_items WHERE session_id > 0;`,
+      );
+    },
+  },
 ];
 
 /** Single in-process connection, lazily opened and migrated once. */
@@ -407,6 +488,12 @@ export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
       now,
     ],
   );
+  // 重新下载成功 = 这条不再算「被删过」，清掉墓碑。
+  try {
+    await d.execute('DELETE FROM deleted_urls WHERE url = ?;', [input.url]);
+  } catch {
+    // best-effort
+  }
   markHistoryChanged();
 }
 
@@ -468,6 +555,200 @@ export async function updateHistoryTags(
     [payload, now, now, id],
   );
   markHistoryChanged();
+}
+
+/**
+ * 查这些网址是否「以前下载过、后来被删了」。
+ * 返回 Map<url, deleted_at>；没删过的不在 Map 里。
+ */
+export async function listDeletedUrlInfo(
+  urls: string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const unique = Array.from(new Set(urls.filter(u => /^https?:\/\//i.test(u))));
+  if (unique.length === 0) return out;
+  await initHistoryDatabase();
+  const d = getDb();
+  // SQLite 的变量数有上限，分批查。
+  const CHUNK = 400;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const part = unique.slice(i, i + CHUNK);
+    const placeholders = part.map(() => '?').join(',');
+    const res = await d.execute(
+      `SELECT url, deleted_at FROM deleted_urls WHERE url IN (${placeholders});`,
+      part,
+    );
+    for (const r of (res.rows ?? []) as Array<Record<string, unknown>>) {
+      out.set(String(r.url), Number(r.deleted_at ?? 0));
+    }
+  }
+  return out;
+}
+
+/** 在线图集里一条候选的落库形态。 */
+export type ListingItemRecord = {
+  url: string;
+  title: string;
+  preview: string;
+  /** 上次「加入待下载」时是否勾选了它。 */
+  selected: boolean;
+};
+
+/**
+ * 保存一次抓取的完整快照。**每场会话各存一份**，互不覆盖 —— 这样用户可以从
+ * 历史里挑任意一次抓取结果重新打开（`listing_sessions` + `listing_session_items`）。
+ */
+export async function saveListingSession(
+  site: string,
+  sessionId: number,
+  meta: { pages: string; total: number },
+  entries: Array<{ url: string; title: string; preview: string }>,
+): Promise<void> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const now = Date.now();
+  await d.execute(
+    `INSERT INTO listing_sessions (id, site, pages, total, created_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       pages = excluded.pages,
+       total = excluded.total;`,
+    [sessionId, site, meta.pages, meta.total, now],
+  );
+  for (const e of entries) {
+    await d.execute(
+      `INSERT INTO listing_session_items (session_id, url, title, preview, selected)
+       VALUES (?, ?, ?, ?, 0)
+       ON CONFLICT(session_id, url) DO UPDATE SET
+         title = excluded.title,
+         preview = excluded.preview;`,
+      [sessionId, e.url, e.title, e.preview],
+    );
+  }
+}
+
+/** 一次抓取的元信息（历史选择列表用）。 */
+export type ListingSessionSummary = {
+  sessionId: number;
+  createdAt: number;
+  /** 抓了哪些页，例如 `1,2,3,4,5`。 */
+  pages: string;
+  /** 本次抓到的总条数（去重前）。 */
+  total: number;
+  /** 本次会话里勾了多少条。 */
+  selectedCount: number;
+};
+
+/** 历史抓取记录（新的在前）。 */
+export async function listListingSessions(
+  site: string,
+  limit = 30,
+): Promise<ListingSessionSummary[]> {
+  await initHistoryDatabase();
+  const res = await getDb().execute(
+    `SELECT s.id, s.created_at, s.pages, s.total,
+            (SELECT COUNT(*) FROM listing_session_items i
+              WHERE i.session_id = s.id AND i.selected = 1) AS sel
+       FROM listing_sessions s
+      WHERE s.site = ?
+      ORDER BY s.id DESC
+      LIMIT ?;`,
+    [site, limit],
+  );
+  return ((res.rows ?? []) as Array<Record<string, unknown>>).map(r => ({
+    sessionId: Number(r.id),
+    createdAt: Number(r.created_at ?? 0),
+    pages: String(r.pages ?? ''),
+    total: Number(r.total ?? 0),
+    selectedCount: Number(r.sel ?? 0),
+  }));
+}
+
+/**
+ * 上一场抓取里这些 URL 的勾选状态（用于「上次未入选」）。
+ * 只看**紧邻的上一场**会话，避免把更早的结果混进来。
+ */
+export async function listPreviousListingSelection(
+  site: string,
+  currentSessionId: number,
+): Promise<Map<string, boolean>> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const head = await d.execute(
+    `SELECT MAX(id) AS s FROM listing_sessions WHERE site = ? AND id < ?;`,
+    [site, currentSessionId],
+  );
+  const prevId = Number(
+    ((head.rows?.[0] ?? {}) as Record<string, unknown>).s ?? 0,
+  );
+  const out = new Map<string, boolean>();
+  if (!prevId) return out;
+  const res = await d.execute(
+    `SELECT url, selected FROM listing_session_items WHERE session_id = ?;`,
+    [prevId],
+  );
+  for (const r of (res.rows ?? []) as Array<Record<string, unknown>>) {
+    out.set(String(r.url), Number(r.selected ?? 0) === 1);
+  }
+  return out;
+}
+
+/** 记住某场会话「加入待下载」勾了哪些（没勾的记为 0）。 */
+export async function markListingSelection(
+  sessionId: number,
+  selectedUrls: string[],
+): Promise<void> {
+  await initHistoryDatabase();
+  const d = getDb();
+  await d.execute(
+    `UPDATE listing_session_items SET selected = 0 WHERE session_id = ?;`,
+    [sessionId],
+  );
+  const unique = Array.from(new Set(selectedUrls));
+  const CHUNK = 400;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const part = unique.slice(i, i + CHUNK);
+    const placeholders = part.map(() => '?').join(',');
+    await d.execute(
+      `UPDATE listing_session_items SET selected = 1 WHERE session_id = ? AND url IN (${placeholders});`,
+      [sessionId, ...part],
+    );
+  }
+}
+
+/** 读回某一场抓取的候选（不联网）。返回 null 表示这场不存在。 */
+export async function loadListingSession(sessionId: number): Promise<{
+  sessionId: number;
+  pages: string;
+  total: number;
+  items: ListingItemRecord[];
+} | null> {
+  await initHistoryDatabase();
+  const d = getDb();
+  const head = await d.execute(
+    `SELECT pages, total FROM listing_sessions WHERE id = ?;`,
+    [sessionId],
+  );
+  const row = (head.rows ?? [])[0] as Record<string, unknown> | undefined;
+  if (!row) return null;
+  const res = await d.execute(
+    `SELECT url, title, preview, selected FROM listing_session_items
+      WHERE session_id = ?
+      ORDER BY rowid ASC;`,
+    [sessionId],
+  );
+  const items = ((res.rows ?? []) as Array<Record<string, unknown>>).map(r => ({
+    url: String(r.url),
+    title: String(r.title ?? ''),
+    preview: String(r.preview ?? ''),
+    selected: Number(r.selected ?? 0) === 1,
+  }));
+  return {
+    sessionId,
+    pages: String(row.pages ?? ''),
+    total: Number(row.total ?? items.length),
+    items,
+  };
 }
 
 /**
@@ -910,8 +1191,31 @@ export function recordImageUris(record: HistoryRecord): string[] {
 export async function purgeHistory(ids: number[]): Promise<void> {
   if (ids.length === 0) return;
   await initHistoryDatabase();
+  const d = getDb();
   const placeholders = ids.map(() => '?').join(',');
-  await getDb().execute(
+  // 删之前先给「网页类」记录留个墓碑：在线图集/批量列表据此提示
+  // 「这条以前下过、后来删了」。archive:// 没有可复用的地址，跳过。
+  try {
+    const rows = await d.execute(
+      `SELECT url, title FROM history WHERE id IN (${placeholders});`,
+      ids,
+    );
+    const now = Date.now();
+    for (const r of (rows.rows ?? []) as Array<Record<string, unknown>>) {
+      const url = String(r.url ?? '');
+      if (!/^https?:\/\//i.test(url)) continue;
+      await d.execute(
+        `INSERT INTO deleted_urls (url, title, deleted_at) VALUES (?, ?, ?)
+         ON CONFLICT(url) DO UPDATE SET
+           title = excluded.title,
+           deleted_at = excluded.deleted_at;`,
+        [url, String(r.title ?? ''), now],
+      );
+    }
+  } catch {
+    // 墓碑只是辅助提示，写失败不能挡住真正的删除。
+  }
+  await d.execute(
     `DELETE FROM history WHERE id IN (${placeholders});`,
     ids,
   );

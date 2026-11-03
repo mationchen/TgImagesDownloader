@@ -49,6 +49,14 @@ export type BatchItem = {
     imageCount: number;
     status: string;
   };
+  /**
+   * 这条地址「以前下载过、后来被彻底删除」（墓碑表里有记录）。
+   * 只做提示，不影响排队 —— 用户想重下就照常点开始。
+   */
+  deletedBefore?: {
+    title: string;
+    deletedAt: number;
+  };
 };
 
 export type BatchProgress = {

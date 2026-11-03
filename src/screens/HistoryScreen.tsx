@@ -1649,9 +1649,10 @@ function createStyles(c: ThemeColors) {
     },
     pressed: { backgroundColor: c.surface, opacity: 0.85 },
     /** 列表行左侧的图集预览图（取第一张）。 */
+    /** 列表缩略图：竖版 3:4（和在线图集的预览图一致，不再是正方形）。 */
     rowThumb: {
       width: 56,
-      height: 56,
+      height: 74,
       borderRadius: 8,
       marginRight: 12,
       backgroundColor: c.surfaceStrong,
