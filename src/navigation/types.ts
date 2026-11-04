@@ -10,7 +10,11 @@ import type { TelegraphArticle, TelegraphImage } from '../types/telegraph';
 export type MainTabParamList = {
   Batch: undefined;
   UrlList: undefined;
-  History: undefined;
+  /**
+   * `tag` lets other screens (e.g. 下载记录详情里点标签）打开下载记录并按标签筛选。
+   * 消费后立即 `setParams({ tag: undefined })`，避免下次进入 Tab 又被旧标签套上。
+   */
+  History: { tag?: string } | undefined;
   Settings: undefined;
 };
 
@@ -52,6 +56,8 @@ export type RootStackParamList = {
     total?: number;
   };
   BatchList: undefined;
+  /** App 内收藏的所有图片（跨记录）。 */
+  FavoriteImages: undefined;
 };
 
 export type RootStackScreenProps<T extends keyof RootStackParamList> =

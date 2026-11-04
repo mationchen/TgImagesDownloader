@@ -330,6 +330,14 @@ Feature areas:
   downloads capture them during parsing; older records can be backfilled from
   their original URLs in 设置 → 标签 (resumable, sequential, per-host gaps —
   see `services/tagBackfill.ts` for why it must not run concurrently).
+- 漫画 — `hanimeone.me/comic/<id>` builds the whole gallery from the page's
+  `data-pages` + `data-prefix` (no per-page fetching). Ordering rule (applies
+  to **every** article): `images` / history / filenames stay forward (page
+  1..N), while the queue dispatches with `pickOrder: 'reverse'` so page 1 is
+  written last and the gallery (sorted by date desc) opens on page 1. Comics
+  additionally force concurrency 1 (`downloadReverse`) so adjacent pages can't
+  finish out of order. **Do not also reverse `images` before download** —
+  PreviewScreen used to do that and it double-flipped everything.
 - 在线图集 — everia.club listing browser (pages 1-10) that adds picked
   articles to the download queue; every fetch is stored as its own session
   (`listing_sessions` + `listing_session_items`), so 「历史列表」 can reopen any

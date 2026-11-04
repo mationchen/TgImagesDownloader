@@ -78,12 +78,32 @@ const STATUS_ORDER: HistoryStatus[] = [
   'cancelled',
 ];
 
+/**
+ * 状态筛选的可选值：四个下载状态 + 「待删除」（标记为删除、还没进回收站）。
+ * 「待删除」不是一种 status，而是 `is_marked_deleted = 1`，所以单独一个键。
+ */
+type HistoryStatusFilter = HistoryStatus | 'marked';
+
+/** 筛选按钮 / 筛选条上显示的图标与文案。 */
+function statusFilterVisual(status: HistoryStatusFilter): {
+  icon: string;
+  label: string;
+} {
+  if (status === 'marked') {
+    return { icon: '🗑', label: t('history.statusFilter.marked') };
+  }
+  return {
+    icon: historyStatusVisual(status).icon,
+    label: t(HISTORY_STATUS_LABEL_KEY[status]),
+  };
+}
+
 /* Pagination knobs — see AGENTS.md §4 / §history rules. */
 // 固定每页 50 条：不再「先加载 20 条、下滑再追加」。翻页即整页加载，
 // 这样页码区间与「上一页 / 下一页」永远对得上，也不会因为追加而抖动。
 const PAGE_BATCH = 50;
 
-export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
+export const HistoryScreen: React.FC<Props> = ({ navigation, route }) => {
   // Subscribe so sections/headers re-render in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -107,9 +127,12 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   const [query, setQuery] = useState('');
   const [filterDay, setFilterDay] = useState<Date | null>(null);
   // Download-status filter (enum). null = 全部 / no status predicate.
-  const [filterStatus, setFilterStatus] = useState<HistoryStatus | null>(null);
+  const [filterStatus, setFilterStatus] =
+    useState<HistoryStatusFilter | null>(null);
   /** 只看收藏。 */
   const [filterFavorite, setFilterFavorite] = useState(false);
+  /** 只看带某个标签的记录（详情页点标签跳过来时设置）。 */
+  const [filterTag, setFilterTag] = useState<string | null>(null);
   /** 「标记为删除」且未进回收站的条数（决定「移入回收站」按钮显示）。 */
   const [markedCount, setMarkedCount] = useState(0);
 
@@ -130,12 +153,15 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   filterStatusRef.current = filterStatus;
   const filterFavoriteRef = useRef(filterFavorite);
   filterFavoriteRef.current = filterFavorite;
+  const filterTagRef = useRef(filterTag);
+  filterTagRef.current = filterTag;
 
   const buildFilter = useCallback((): HistoryListFilter | undefined => {
     const title = queryRef.current.trim();
     const day = filterDayRef.current;
     const status = filterStatusRef.current;
     const favoriteOnly = filterFavoriteRef.current;
+    const tag = filterTagRef.current;
     const filter: HistoryListFilter = {};
     if (title) filter.title = title;
     if (day) {
@@ -143,21 +169,35 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
       filter.createdAfterMs = dayStart;
       filter.createdBeforeMs = dayStart + DAY_MS;
     }
-    if (status) filter.status = status;
+    if (status === 'marked') filter.markedDeletedOnly = true;
+    else if (status) filter.status = status;
     if (favoriteOnly) filter.favoriteOnly = true;
+    if (tag) filter.tag = tag;
     return filter.title ||
       filter.createdAfterMs != null ||
       filter.status ||
-      filter.favoriteOnly
+      filter.favoriteOnly ||
+      filter.tag ||
+      filter.markedDeletedOnly
       ? filter
       : undefined;
   }, []);
+
+  /**
+   * 每次 reload 的自增序号。
+   *
+   * 搜索是「输入 → 延迟查询」，加上翻页 / 下拉刷新，可能同时有两三个查询在飞。
+   * 没有序号时，**先发起的旧查询可能后返回**，把新的筛选结果盖回旧结果 ——
+   * 表现就是「输入了文字，过一会儿列表又变回全部」。只认最后一次请求。
+   */
+  const reloadSeqRef = useRef(0);
 
   const reload = useCallback(
     async (
       nextOffset: number,
       opts?: { silent?: boolean; limit?: number },
     ) => {
+      const seq = ++reloadSeqRef.current;
       // `silent` keeps the current list on screen (pull-to-refresh) instead of
       // swapping it for the full-screen spinner.
       if (!opts?.silent) setLoading(true);
@@ -176,16 +216,18 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
           listHistory(limit, safeOffset, filter),
           countMarkedDeleted(),
         ]);
+        if (seq !== reloadSeqRef.current) return; // 已有更新的查询，丢弃这次结果
         setRecords(rows);
         setOffset(safeOffset);
         setTotal(totalRows);
         setMarkedCount(marked);
       } catch {
+        if (seq !== reloadSeqRef.current) return;
         setLoadError(true);
         setRecords([]);
         setOffset(nextOffset);
       } finally {
-        setLoading(false);
+        if (seq === reloadSeqRef.current) setLoading(false);
       }
     },
     [buildFilter],
@@ -270,20 +312,36 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     }
   }, [refreshCurrentPage]);
 
-  // Initial load. Also re-runs immediately when the date / status / 收藏 filter
-  // changes. 注意：收藏开关必须在这里，否则点 ★ 只会亮起筛选条、列表不重查
-  // （曾漏掉，表现为「点了星星却还是全部记录」）。
+  // 搜索 / 筛选的唯一入口：任何条件变化都回到第 0 页重新查询。
+  //
+  // 以前拆成两个 effect（一个管日期/状态/收藏，一个管标题），标题那个在
+  // 「输入为空」时直接 return —— 于是**清空搜索框永远不会重新加载**，
+  // 列表就停在上一批筛选结果上（用户反馈「清空文字无法恢复列表」）。
+  // 合并成一个：输入框用 300ms 防抖（避免每敲一个字查一次库），
+  // 其它筛选（含清空搜索）立即执行。
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    reload(0);
-  }, [filterDay, filterStatus, filterFavorite, reload]);
+    const delay = query.trim() ? 300 : 0;
+    searchTimerRef.current = setTimeout(() => {
+      searchTimerRef.current = null;
+      reload(0);
+    }, delay);
+    return () => {
+      if (searchTimerRef.current) {
+        clearTimeout(searchTimerRef.current);
+        searchTimerRef.current = null;
+      }
+    };
+  }, [query, filterDay, filterStatus, filterFavorite, filterTag, reload]);
 
-  // Debounced reload for the free-text title search.
+  // 详情页点标签跳过来：套用标签筛选，然后清掉导航参数，避免下次进 Tab
+  // 又被旧标签套一次。
+  const routeTag = route.params?.tag;
   useEffect(() => {
-    const trimmed = query.trim();
-    if (!trimmed) return; // handled by the effect above (empty = off)
-    const timer = setTimeout(() => reload(0), 300);
-    return () => clearTimeout(timer);
-  }, [query, reload]);
+    if (!routeTag) return;
+    setFilterTag(routeTag);
+    navigation.setParams({ tag: undefined });
+  }, [routeTag, navigation]);
 
   /**
    * 滚回列表顶部（翻页 / 回到顶部按钮共用）。
@@ -299,6 +357,27 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
       // 列表尚未完成布局时可能抛错，忽略即可。
     }
   }, []);
+
+  /**
+   * 搜索按钮 / 键盘回车：立刻查，不等防抖。
+   *
+   * 同时把列表滚回顶部 —— 筛选后结果通常比原来少，停在旧滚动位置会看到一片
+   * 空白（用户以为「搜不到内容」）。先取消挂起的防抖，避免紧接着又查一次。
+   */
+  const applySearch = useCallback(() => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    scrollListToTop(false);
+    reload(0);
+  }, [reload, scrollListToTop]);
+
+  /** 清空搜索框：防抖 effect 会以 0 延迟重载，这里负责滚回顶部。 */
+  const clearSearch = useCallback(() => {
+    setQuery('');
+    scrollListToTop(false);
+  }, [scrollListToTop]);
 
   /**
    * 翻页前先把旧页滚回顶部。
@@ -418,7 +497,8 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     query.trim().length > 0 ||
     filterDay != null ||
     filterStatus != null ||
-    filterFavorite;
+    filterFavorite ||
+    filterTag != null;
 
   const openDatePicker = useCallback(() => {
     setShowCalendar(true);
@@ -430,7 +510,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   /** Apply (or clear, with null) the download-status filter. */
-  const onStatusSelect = useCallback((status: HistoryStatus | null) => {
+  const onStatusSelect = useCallback((status: HistoryStatusFilter | null) => {
     setFilterStatus(status);
     setShowStatusPicker(false);
   }, []);
@@ -440,6 +520,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     setFilterDay(null);
     setFilterStatus(null);
     setFilterFavorite(false);
+    setFilterTag(null);
   }, []);
 
   const handleLongPress = useCallback(
@@ -515,7 +596,8 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       {/* Filter bar */}
       <View style={styles.filterBar}>
-        <View style={styles.searchWrap}>
+        <View style={styles.searchRow}>
+          <View style={styles.searchWrap}>
           <TextInput
             style={styles.searchInput}
             value={query}
@@ -525,10 +607,12 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
             autoCorrect={false}
             autoCapitalize="none"
             returnKeyType="search"
+            // 键盘上的「搜索」键与右侧按钮走同一条路径。
+            onSubmitEditing={applySearch}
           />
           {query.length > 0 ? (
             <Pressable
-              onPress={() => setQuery('')}
+              onPress={clearSearch}
               accessibilityRole="button"
               accessibilityLabel={t('history.searchClearA11y')}
               hitSlop={8}
@@ -538,7 +622,21 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
             </Pressable>
           ) : null}
         </View>
-        {/* Download-status filter: icon button that opens the enum picker. */}
+        {/* 显式搜索按钮：输入法不一定有「搜索」键，输入后总要有地方可点。 */}
+        <Pressable
+          onPress={applySearch}
+          accessibilityRole="button"
+          accessibilityLabel={t('history.searchButton')}
+          style={({ pressed }) => [
+            styles.statusBtn,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.dateBtnText}>🔍</Text>
+        </Pressable>
+        </View>
+        <View style={styles.filterRow}>
+          {/* Download-status filter: icon button that opens the enum picker. */}
         <Pressable
           onPress={() => setShowStatusPicker(true)}
           accessibilityRole="button"
@@ -555,7 +653,7 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
               filterStatus && styles.dateBtnTextActive,
             ]}
           >
-            {filterStatus ? historyStatusVisual(filterStatus).icon : '🏷'}
+            {filterStatus ? statusFilterVisual(filterStatus).icon : '🏷'}
           </Text>
         </Pressable>
         <Pressable
@@ -577,11 +675,24 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
             ★
           </Text>
         </Pressable>
+        {/* 收藏图片（App 内收藏的所有图片）入口。 */}
+        <Pressable
+          onPress={() => navigation.navigate('FavoriteImages')}
+          accessibilityRole="button"
+          accessibilityLabel={t('favoriteImages.title')}
+          style={({ pressed }) => [
+            styles.statusBtn,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.dateBtnText}>{'\u2665\uFE0E'}</Text>
+        </Pressable>
         <Pressable
           onPress={openDatePicker}
           accessibilityRole="button"
           style={({ pressed }) => [
             styles.dateBtn,
+            styles.dateBtnGrow,
             filterDay && styles.dateBtnActive,
             pressed && styles.pressed,
           ]}
@@ -592,29 +703,45 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
             📅 {t('history.filterByDate')}
           </Text>
         </Pressable>
-      </View>
-
-      {/* 一键把「标记为删除」的记录移入回收站 */}
-      {markedCount > 0 ? (
-        <View style={styles.trashRow}>
+        {/* 一键把「标记为删除」的记录移入回收站：只占一个图标位，
+            不再单独占一行（原来这一行只为这一个按钮存在）。 */}
+        {markedCount > 0 ? (
           <Pressable
             onPress={onMoveToTrash}
             accessibilityRole="button"
+            accessibilityLabel={t('history.moveToTrashCount', {
+              count: markedCount,
+            })}
+            hitSlop={6}
             style={({ pressed }) => [
-              styles.trashBtn,
+              styles.trashIconBtn,
               pressed && styles.pressed,
             ]}
           >
-            <Text style={styles.trashBtnText}>
-              🗑 {t('history.moveToTrashCount', { count: markedCount })}
-            </Text>
+            <Text style={styles.trashIconText}>{'\u{1F5D1}'}</Text>
+            <View pointerEvents="none" style={styles.trashBadge}>
+              <Text style={styles.trashBadgeText}>
+                {markedCount > 99 ? '99+' : markedCount}
+              </Text>
+            </View>
           </Pressable>
+        ) : null}
         </View>
-      ) : null}
+      </View>
 
-      {/* Active filter chips (date / status / favorites) */}
-      {filterDay || filterStatus || filterFavorite ? (
+      {/* Active filter chips (date / status / favorites / tag) */}
+      {filterDay || filterStatus || filterFavorite || filterTag ? (
         <View style={styles.chipRow}>
+          {filterTag ? (
+            <View style={styles.chip}>
+              <Text style={styles.chipText} numberOfLines={1}>
+                {t('history.tagFilter', { tag: filterTag })}
+              </Text>
+              <Pressable onPress={() => setFilterTag(null)} hitSlop={10}>
+                <Text style={styles.chipClear}>×</Text>
+              </Pressable>
+            </View>
+          ) : null}
           {filterFavorite ? (
             <View style={styles.chip}>
               <Text style={styles.chipText}>★ {t('history.favoriteOnly')}</Text>
@@ -634,8 +761,8 @@ export const HistoryScreen: React.FC<Props> = ({ navigation }) => {
           {filterStatus ? (
             <View style={styles.chip}>
               <Text style={styles.chipText}>
-                {historyStatusVisual(filterStatus).icon}{' '}
-                {t(HISTORY_STATUS_LABEL_KEY[filterStatus])}
+                {statusFilterVisual(filterStatus).icon}{' '}
+                {statusFilterVisual(filterStatus).label}
               </Text>
               <Pressable onPress={() => setFilterStatus(null)} hitSlop={10}>
                 <Text style={styles.chipClear}>×</Text>
@@ -1101,8 +1228,8 @@ function formatDayKey(y: number, m: number, d: number): number {
  */
 const HistoryStatusPicker: React.FC<{
   visible: boolean;
-  selected: HistoryStatus | null;
-  onSelect: (status: HistoryStatus | null) => void;
+  selected: HistoryStatusFilter | null;
+  onSelect: (status: HistoryStatusFilter | null) => void;
   onClose: () => void;
 }> = ({ visible, selected, onSelect, onClose }) => {
   // Subscribe so option labels re-render in the active language.
@@ -1110,15 +1237,24 @@ const HistoryStatusPicker: React.FC<{
   const styles = useThemedStyles(createStyles);
   if (!visible) return null;
 
-  const options: { key: HistoryStatus | null; label: string; icon: string }[] =
-    [
-      { key: null, label: t('history.statusFilter.all'), icon: '≡' },
-      ...STATUS_ORDER.map(status => ({
-        key: status as HistoryStatus | null,
-        label: t(HISTORY_STATUS_LABEL_KEY[status]),
-        icon: historyStatusVisual(status).icon,
-      })),
-    ];
+  const options: {
+    key: HistoryStatusFilter | null;
+    label: string;
+    icon: string;
+  }[] = [
+    { key: null, label: t('history.statusFilter.all'), icon: '≡' },
+    ...STATUS_ORDER.map(status => ({
+      key: status as HistoryStatusFilter | null,
+      label: t(HISTORY_STATUS_LABEL_KEY[status]),
+      icon: historyStatusVisual(status).icon,
+    })),
+    // 「待删除」不是下载状态，而是「标记为删除、还没进回收站」的一批记录。
+    {
+      key: 'marked' as HistoryStatusFilter,
+      label: t('history.statusFilter.marked'),
+      icon: '🗑',
+    },
+  ];
 
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
@@ -1424,8 +1560,6 @@ function createStyles(c: ThemeColors) {
     loadingText: { color: c.textHint, fontSize: 13 },
     list: { paddingBottom: 96 },
     filterBar: {
-      flexDirection: 'row',
-      alignItems: 'center',
       paddingHorizontal: 12,
       paddingVertical: 8,
       gap: 8,
@@ -1433,6 +1567,10 @@ function createStyles(c: ThemeColors) {
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: c.border,
     },
+    /** 第一行：搜索输入 + 搜索按钮。 */
+    searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    /** 第二行：状态 / 只看收藏 / 收藏图片 / 日期。 */
+    filterRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     searchWrap: {
       flex: 1,
       flexDirection: 'row',
@@ -1467,6 +1605,8 @@ function createStyles(c: ThemeColors) {
       justifyContent: 'center',
     },
     dateBtnActive: { backgroundColor: c.primarySoft },
+    /** 日期按钮吃掉第二行的剩余宽度，避免右边留一块空白。 */
+    dateBtnGrow: { flex: 1 },
     dateBtnText: { fontSize: 13, color: c.textSecondary },
     dateBtnTextActive: { color: c.primarySoftText, fontWeight: '600' },
     // Icon-only download-status filter button (between search and date).
@@ -1679,19 +1819,34 @@ function createStyles(c: ThemeColors) {
       paddingVertical: 1,
       overflow: 'hidden',
     },
-    /** 「移入回收站」按钮所在的整行。 */
-    trashRow: {
-      paddingHorizontal: 12,
-      paddingBottom: 8,
-    },
-    trashBtn: {
-      alignSelf: 'flex-start',
-      paddingHorizontal: 12,
-      paddingVertical: 7,
+    /** 「移入回收站」：筛选行末尾的图标按钮（角标显示待处理条数）。 */
+    trashIconBtn: {
+      width: 38,
+      height: 38,
       borderRadius: 8,
       backgroundColor: c.dangerBg,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
-    trashBtnText: { fontSize: 12.5, color: c.danger, fontWeight: '600' },
+    trashIconText: { fontSize: 17, lineHeight: 21, color: c.danger },
+    trashBadge: {
+      position: 'absolute',
+      top: -4,
+      right: -4,
+      minWidth: 16,
+      height: 16,
+      borderRadius: 8,
+      paddingHorizontal: 3,
+      backgroundColor: c.danger,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    trashBadgeText: {
+      fontSize: 9,
+      lineHeight: 12,
+      color: '#fff',
+      fontWeight: '700',
+    },
     rowBadge: {
       width: 24,
       height: 24,

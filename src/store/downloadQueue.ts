@@ -48,6 +48,11 @@ export interface CreateQueueOptions {
   runTask: TaskRunner;
   /** Effective concurrency (read each tick so settings can change live). */
   getConcurrency: () => number;
+  /**
+   * 派发顺序。`reverse` = 先派发 taskOrder 的最后一个（漫画用：相册按保存
+   * 时间倒序展示，倒着下才能让第 1 页排在最前面）。默认 `forward`。
+   */
+  pickOrder?: 'forward' | 'reverse';
   /** Per-task max retry attempts (default 2). */
   maxRetries?: number;
   /** Base delay for exponential backoff between retries (default 500ms). */
@@ -215,7 +220,11 @@ export function createQueue(opts: CreateQueueOptions): QueueController {
           await waitForRev(state.rev, getState, drainAbort.signal);
           continue;
         }
-        const next = pickNextPending(state, inFlight.keys());
+        const next = pickNextPending(
+          state,
+          inFlight.keys(),
+          opts.pickOrder ?? 'forward',
+        );
         console.log(
           `[DL] drain pick next=${
             next?.imageId ?? 'none'
@@ -403,9 +412,12 @@ function countPending(state: DownloadState): number {
 function pickNextPending(
   state: DownloadState,
   inFlightKeys: Iterable<string>,
+  order: 'forward' | 'reverse' = 'forward',
 ): { imageId: string } | null {
   let inFlight: Set<string> | null = null;
-  for (const id of state.taskOrder) {
+  const ids =
+    order === 'reverse' ? [...state.taskOrder].reverse() : state.taskOrder;
+  for (const id of ids) {
     const t = state.tasks[id];
     if (!t || t.status !== 'pending') continue;
     // Skip tasks currently owned by an in-flight runOne (e.g. sitting in

@@ -8,6 +8,17 @@ import type { TelegraphImage } from '../../types/telegraph';
  */
 export interface SiteAdapter {
   readonly name: string;
+  /**
+   * 可选：把用户粘贴的地址改写成真正要抓的地址。例如漫画详情页
+   * `/comic/121142` 需要补成 `/comic/121142/1` 才有图片元素。
+   */
+  normalizeUrl?: (url: string) => string;
+  /**
+   * 声明这个站点的图集**必须串行下载**（并发 1）。漫画类需要：相册顺序靠
+   * 写入时间，并发会让相邻页的完成顺序互换，读起来就串页。
+   * 派发顺序对所有图集都是倒序（见 DownloadContext），这里只影响并发数。
+   */
+  readonly downloadReverse?: boolean;
   /** True when this adapter should handle the given page URL (and optional HTML hint). */
   canHandle(url: string, html?: string): boolean;
   /**

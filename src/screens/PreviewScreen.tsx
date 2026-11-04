@@ -87,12 +87,13 @@ export const PreviewScreen: React.FC<Props> = ({ route, navigation }) => {
       .catch(() => true)
       .then(ok => {
         if (!ok) return;
-        // Download in reverse source order so the saved MediaStore entries show
-        // up in the system gallery in *forward* source order (the last image in
-        // the article appears first because it was inserted last).
+        // 顺序说明：这里**不要**反转列表。列表保持「第 1 页在前」，这样
+        // 历史记录里的 image_paths 和文件名（0001、0002…）都是正序；
+        // 相册顺序由下载队列的倒序派发保证（见 DownloadContext 里的
+        // pickOrder: 'reverse'），两者不能同时反转，否则会双重翻转。
         navigation.navigate('Download', {
           article,
-          images: [...selectedImages].reverse(),
+          images: selectedImages,
         });
       });
   }, [article, selectedImages, navigation]);

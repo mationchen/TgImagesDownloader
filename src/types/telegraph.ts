@@ -13,6 +13,12 @@ export interface TelegraphArticle {
    * 站点本来没有标签时为空数组（telegra.ph 就是这种）。
    */
   tags?: string[];
+  /**
+   * 解析结果里的 `images` 永远按「第 1 页 → 第 N 页」正序；下载队列会**倒序
+   * 派发**（第 1 页最后写），这样相册按保存时间倒序展示时第 1 页在最前面。
+   * 这个标记只表示「必须串行下载」（漫画），不影响排序。
+   */
+  downloadReverse?: boolean;
 }
 
 export interface TelegraphImage {

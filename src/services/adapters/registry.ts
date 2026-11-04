@@ -1,4 +1,5 @@
 import { genericAdapter } from './genericAdapter';
+import { HanimeComicAdapter } from './hanimeComicAdapter';
 import { telegraphAdapter } from './telegraphAdapter';
 import { TuzacAdapter } from './tuzacAdapter';
 import { wordPressAdapter } from './wordPressAdapter';
@@ -10,6 +11,7 @@ export class AdapterRegistry {
   constructor(adapters?: SiteAdapter[]) {
     this.adapters = adapters ?? [
       telegraphAdapter,
+      new HanimeComicAdapter(),
       new TuzacAdapter(),
       wordPressAdapter,
       genericAdapter,

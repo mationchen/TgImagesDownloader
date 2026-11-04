@@ -119,6 +119,13 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
        * 下载记录列表据此显示 ♥（图集里有任意一张被收藏即可）。
        */
       listFavoritedUris?(uris: string[]): Promise<string[]>;
+      /**
+       * 列出**本 App 保存目录下**所有被系统相册收藏的图片 URI。
+       * 只用于「收藏图片」页首次打开时把旧收藏一次性导入 App 收藏
+       * （之后 App 收藏完全走本机数据库，不再读写系统收藏标记）。
+       * Android 11 以下、iOS、或查询失败时返回空数组。
+       */
+      listFavoriteImages?(): Promise<string[]>;
     }
   | undefined;
 

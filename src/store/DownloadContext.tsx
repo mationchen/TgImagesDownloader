@@ -291,6 +291,13 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
       | undefined,
   ): { queue: QueueController; kickoffQueue: () => void } {
     const settings = getSettingsSync();
+    // 顺序策略（全局）：
+    //   - 任务列表 / 历史记录 / 文件名一律按「第 1 页 → 第 N 页」正序；
+    //   - 但**派发顺序反过来**（先下最后一页，第 1 页最后写），因为相册按
+    //     保存时间倒序展示，这样点开第一张才是第 1 页。
+    //   - 漫画（adapter 声明 downloadReverse）额外把并发压到 1，否则并发
+    //     完成顺序会把相邻页写反。
+    const reverseOrder = article.downloadReverse === true;
     const relativePath = computeRelativePath(article, settings);
     // Native saver prepends its own base path, so it must only receive the
     // leaf subfolder ('' = save straight into the app base folder).
@@ -378,7 +385,9 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
         dispatch(a);
       },
       runTask: buildRunner(),
-      getConcurrency: () => concurrencyRef.current,
+      getConcurrency: () => (reverseOrder ? 1 : concurrencyRef.current),
+      // 所有图集都倒序派发（相册按时间倒序展示），历史记录与文件名仍是正序。
+      pickOrder: 'reverse',
       onQueueFinished,
       onTaskComplete,
     });

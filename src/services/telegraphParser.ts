@@ -202,6 +202,7 @@ export async function parseWebArticle(
         source: 'web',
         pageCount: 1,
         tags,
+        downloadReverse: adapter.downloadReverse === true,
       },
     };
   }
@@ -292,6 +293,7 @@ export async function parseWebArticle(
       source: 'web',
       pageCount: fetchedUrls.length,
       tags,
+      downloadReverse: adapter.downloadReverse === true,
     },
   };
 }
@@ -454,7 +456,10 @@ async function fetchHtml(url: string, signal?: AbortSignal): Promise<string> {
             'User-Agent': APP_CONFIG.telegraph.userAgent,
             Accept:
               'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Encoding': 'gzip, deflate',
+            // 不要手动设置 Accept-Encoding：自己写了这个头之后 OkHttp 就**不再
+            // 透明解压**，而 hanimeone.me 这类站会按它返回 gzip 的 HTML，于是
+            // 解析到的是二进制乱码（表现为「这个页面没有找到可下载的图片」）。
+            // 交给 OkHttp 自己协商（它只声明 gzip 并自动解压）即可。
           },
           signal: ctrl.signal,
         });
@@ -922,7 +927,11 @@ export async function parseArticle(
     if (host === 'telegra.ph' || host === 'www.telegra.ph') {
       return parseTelegraphArticle(trimmed, opts);
     }
-    return parseWebArticle(trimmed, opts);
+    // 站点可以把地址改写成真正可抓的形态（例如漫画详情页 → 第 1 页）。
+    // 这里只按 URL 解析适配器，不依赖 HTML。
+    const preAdapter = defaultAdapterRegistry.resolve(trimmed);
+    const target = preAdapter.normalizeUrl?.(trimmed) ?? trimmed;
+    return parseWebArticle(target, opts);
   } catch {
     return fail('INVALID_URL', '请输入有效的链接');
   }

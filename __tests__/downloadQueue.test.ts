@@ -38,6 +38,8 @@ interface Harness {
   readonly outcomes: Array<(i: number) => TaskOutcome>;
   readonly runner: TaskRunner;
   readonly activeCounts: number[];
+  /** 每个任务拿到的 filename 序号（meta.indexCounter）。 */
+  readonly counters: number[];
   readonly startedAt: number[];
   readonly finishedAt: number[];
 }
@@ -47,6 +49,8 @@ function setupHarness(opts: {
   outcomes: Array<(i: number) => TaskOutcome>;
   concurrency?: number;
   maxRetries?: number;
+  /** 派发顺序（默认正序）。 */
+  pickOrder?: 'forward' | 'reverse';
 }): Harness {
   const images: TelegraphImage[] = [];
   for (let i = 1; i <= opts.count; i += 1) images.push(makeImage(i));
@@ -65,11 +69,13 @@ function setupHarness(opts: {
 
   const activeCounts: number[] = [];
   const startedAt: number[] = [];
+  const counters: number[] = [];
   const finishedAt: number[] = [];
 
-  const runner: TaskRunner = async (image, _subfolder, _ctx) => {
+  const runner: TaskRunner = async (image, _subfolder, _ctx, meta) => {
     const idx = image.index;
     startedAt.push(idx);
+    counters.push(meta?.indexCounter ?? -1);
     activeCounts.push(
       holder.state.taskOrder.filter(
         id => holder.state.tasks[id]?.status === 'downloading',
@@ -94,6 +100,7 @@ function setupHarness(opts: {
     dispatch,
     runTask: runner,
     getConcurrency: () => opts.concurrency ?? 3,
+    pickOrder: opts.pickOrder,
     maxRetries: opts.maxRetries ?? 2,
     retryBaseMs: 1,
     retryCapMs: 5,
@@ -109,6 +116,7 @@ function setupHarness(opts: {
     outcomes: opts.outcomes,
     runner,
     activeCounts,
+    counters,
     startedAt,
     finishedAt,
   };
@@ -143,8 +151,27 @@ describe('downloadQueue', () => {
     expect(h.queue.isActive()).toBe(false);
   });
 
-  it('skips successful tasks without retrying', async () => {
-    const calls: number[] = [];
+  it('pickOrder=reverse dispatches from the last image (comic gallery order)', async () => {
+    const h = setupHarness({
+      count: 5,
+      concurrency: 1,
+      pickOrder: 'reverse',
+      outcomes: Array.from({ length: 5 }, (_, i) => () => ({
+        kind: 'success' as const,
+        localPath: `/p/${i + 1}`,
+        bytes: 1,
+      })),
+    });
+    h.queue.start();
+    await flush();
+    // 第 5 张先下、第 1 张最后下 —— 相册按时间倒序展示时第 1 页就在最前面。
+    expect(h.startedAt).toEqual([5, 4, 3, 2, 1]);
+    expect(h.finishedAt).toEqual([5, 4, 3, 2, 1]);
+    // 但文件名序号仍然跟页码一致（0001 = 第 1 页），不能被派发顺序带偏。
+    expect(h.counters).toEqual([5, 4, 3, 2, 1]);
+  });
+
+  it('skips successful tasks without retrying', async () => {    const calls: number[] = [];
     const h = setupHarness({
       count: 2,
       outcomes: [

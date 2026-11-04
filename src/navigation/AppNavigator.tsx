@@ -6,6 +6,7 @@ import { PreviewScreen } from '../screens/PreviewScreen';
 import { DownloadScreen } from '../screens/DownloadScreen';
 import { PrivacyScreen } from '../screens/PrivacyScreen';
 import { HistoryDetailScreen } from '../screens/HistoryDetailScreen';
+import { FavoriteImagesScreen } from '../screens/FavoriteImagesScreen';
 import { TrashScreen } from '../screens/TrashScreen';
 import { BatchListScreen } from '../screens/BatchListScreen';
 import { DownloadProvider } from '../store/DownloadContext';
@@ -70,6 +71,11 @@ export const AppNavigator: React.FC = () => {
           name="BatchList"
           component={BatchListScreen}
           options={{ title: t('batch.title') }}
+        />
+        <Stack.Screen
+          name="FavoriteImages"
+          component={FavoriteImagesScreen}
+          options={{ title: t('favoriteImages.title') }}
         />
       </Stack.Navigator>
     </DownloadProvider>

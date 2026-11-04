@@ -31,10 +31,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useThemedStyles, useTheme, type ThemeColors } from '../theme';
 import {
   getHistory,
+  listImageFavoriteUris,
   reorderHistoryImages,
   setHistoryCover,
   setHistoryFavorite,
   setHistoryMarkedDeleted,
+  setImageFavorite,
   type HistoryRecord,
 } from '../services/historyService';
 import {
@@ -75,20 +77,23 @@ function tileSizeFor(width: number): number {
 }
 
 /**
- * Copy a record's URL to the clipboard.
- *
- * Android 13+ shows the system's own "copied" confirmation, so the extra toast
- * is only shown on older Android; iOS copies silently (no equivalent toast).
+ * Copy text to the clipboard, with a toast on Android versions that don't
+ * show their own "copied" confirmation (13+ does).
  */
-function copyUrl(url: string): void {
+function copyText(text: string, toast: string): void {
   try {
-    Clipboard.setString(url);
+    Clipboard.setString(text);
   } catch {
     return;
   }
   if (Platform.OS === 'android' && Platform.Version < 33) {
-    ToastAndroid.show(t('history.link.copied'), ToastAndroid.SHORT);
+    ToastAndroid.show(toast, ToastAndroid.SHORT);
   }
+}
+
+/** Copy a record's URL to the clipboard. */
+function copyUrl(url: string): void {
+  copyText(url, t('history.link.copied'));
 }
 
 /** Hand a video to the system gallery / video player. */
@@ -382,6 +387,25 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
     [width, pageIds.length, edges],
   );
 
+  /** 点标签：复制 / 去下载记录里按标签筛选。 */
+  const onTagPress = useCallback(
+    (tag: string) => {
+      Alert.alert(tag, undefined, [
+        { text: t('history.copyTag'), onPress: () => copyText(tag, t('history.tagCopied')) },
+        {
+          text: t('history.tagRecords'),
+          onPress: () =>
+            navigation.navigate('Tabs', {
+              screen: 'History',
+              params: { tag },
+            }),
+        },
+        { text: t('common.cancel'), style: 'cancel' },
+      ]);
+    },
+    [navigation],
+  );
+
   return (
     <SafeAreaView style={styles.safe} edges={['left', 'right']}>
       {/*
@@ -424,6 +448,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
               active={Math.abs(index - pagerIndex) <= 1}
               position={baseOffset + index + 1}
               total={totalCount}
+              onTagPress={onTagPress}
             />
           </View>
         ))}
@@ -450,7 +475,9 @@ const RecordPage: React.FC<{
    * 但组件本身保持挂载 —— 见 pager 里关于 Fabric removeViewAt 崩溃的注释。
    */
   active?: boolean;
-}> = React.memo(({ id, width, mediaTick, position, total, active = true }) => {
+  /** 点标签的回调（标题栏一层统一处理复制 / 筛选弹窗）。 */
+  onTagPress?: (tag: string) => void;
+}> = React.memo(({ id, width, mediaTick, position, total, active = true, onTagPress }) => {
   // Subscribe so this page re-renders in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -573,13 +600,17 @@ const RecordPage: React.FC<{
   );
 
   // 按 URI 对应每张图片，拖动排序后角标也跟着图片走。
-  // 关闭全屏时重新读取系统状态；清理回调避免旧图集的查询覆盖新图集。
+  //
+  // 角标读的是 **App 内收藏**（本机数据库），不再读系统相册的收藏标记：
+  // 用户反馈「收藏多了会把手机相册的收藏夹塞满」，所以 App 收藏单独一套，
+  // 系统相册的收藏功能保持原样、只在全屏页里用。
+  // 关闭全屏时重新读取状态；清理回调避免旧图集的查询覆盖新图集。
   useEffect(() => {
     if (viewerIndex !== null) return;
     let cancelled = false;
     setFavoritedUris(new Set());
-    if (baseUris.length > 0 && TelegraphDownloader?.listFavoritedUris) {
-      TelegraphDownloader.listFavoritedUris(baseUris)
+    if (baseUris.length > 0) {
+      listImageFavoriteUris(baseUris)
         .then(result => {
           if (!cancelled) setFavoritedUris(new Set(result));
         })
@@ -1011,6 +1042,7 @@ const RecordPage: React.FC<{
             total={total}
             failedCount={failedUris.size}
             onFailedPress={showFailedHint}
+            onTagPress={onTagPress}
           />
         }
         ListEmptyComponent={
@@ -1057,6 +1089,7 @@ const RecordPage: React.FC<{
         onCoverPress={onCoverPress}
         initialIndex={viewerIndex ?? 0}
         onClose={closeViewer}
+        recordId={id}
       />
     </View>
   );
@@ -1073,7 +1106,10 @@ const Header: React.FC<{
   failedCount?: number;
   /** 点「失败」徽章时弹出的说明。 */
   onFailedPress?: () => void;
-}> = React.memo(({ record, position, total, failedCount = 0, onFailedPress }) => {
+  /** 点标签：上层弹「复制 / 按标签筛选」。 */
+  onTagPress?: (tag: string) => void;
+}> = React.memo(
+  ({ record, position, total, failedCount = 0, onFailedPress, onTagPress }) => {
   // Subscribe so meta labels re-render in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -1092,8 +1128,15 @@ const Header: React.FC<{
 
   return (
     <View style={styles.header}>
-      {/* Full title: wraps over as many lines as the text needs. */}
-      <Text style={styles.title}>{decodeHtmlEntities(record.title)}</Text>
+      {/* 标题可点：点一下复制（用户常要拿标题去搜索/分享）。 */}
+      <Pressable
+        onPress={() => copyText(decodeHtmlEntities(record.title), t('history.titleCopied'))}
+        accessibilityRole="button"
+        accessibilityLabel={t('history.copyTitleA11y')}
+        hitSlop={4}
+      >
+        <Text style={styles.title}>{decodeHtmlEntities(record.title)}</Text>
+      </Pressable>
       {/^https?:/i.test(record.url) ? (
         <Pressable onPress={onUrlPress} hitSlop={6}>
           <Text style={styles.url} numberOfLines={2}>
@@ -1143,18 +1186,29 @@ const Header: React.FC<{
         <View style={styles.tagsWrap}>
           <Text style={styles.tagsLabel}>{t('history.detail.tags')}</Text>
           {record.tags.map(tag => (
-            <View key={tag} style={styles.tagChip}>
+            <Pressable
+              key={tag}
+              onPress={() => onTagPress?.(tag)}
+              accessibilityRole="button"
+              accessibilityLabel={t('history.tagRecords')}
+              hitSlop={4}
+              style={({ pressed }) => [
+                styles.tagChip,
+                pressed && styles.pressed,
+              ]}
+            >
               <Text style={styles.tagChipText} numberOfLines={1}>
                 {tag}
               </Text>
-            </View>
+            </Pressable>
           ))}
         </View>
       ) : null}
       <View style={{ height: GAP }} />
     </View>
   );
-});
+  },
+);
 Header.displayName = 'Header';
 
 const MetaChip: React.FC<{ label: string }> = React.memo(({ label }) => {
@@ -1280,8 +1334,10 @@ const ImageViewer: React.FC<{
   coverUri?: string;
   /** 点「封面」按钮（设为 / 取消由上层判断）。 */
   onCoverPress?: (uri: string) => void;
+  /** 当前记录 id：App 内收藏写库时带上，收藏页才能显示出所属记录。 */
+  recordId?: number;
   onClose: () => void;
-}> = ({ visible, uris, initialIndex, remoteUris, coverUri, onCoverPress, onClose }) => {
+}> = ({ visible, uris, initialIndex, remoteUris, coverUri, onCoverPress, recordId, onClose }) => {
   // The viewer chrome stays black in both themes; the subscription only
   // forces fresh counter/error strings on locale change.
   useI18n();
@@ -1367,6 +1423,67 @@ const ImageViewer: React.FC<{
       .finally(() => setFavoriteBusy(false));
   }, [canFavorite, favoriteBusy, isFavorite, viewerUri]);
 
+  /* ---- App 内收藏（本机数据库，不碰手机相册） ---- */
+
+  /** 当前这张是否已在 App 内收藏。 */
+  const [appFavorite, setAppFavorite] = useState(false);
+  const [appFavoriteBusy, setAppFavoriteBusy] = useState(false);
+
+  useEffect(() => {
+    if (!visible || !viewerUri) {
+      setAppFavorite(false);
+      return;
+    }
+    let cancelled = false;
+    listImageFavoriteUris([viewerUri])
+      .then(hit => {
+        if (!cancelled) setAppFavorite(hit.length > 0);
+      })
+      .catch(() => {
+        if (!cancelled) setAppFavorite(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, viewerUri]);
+
+  /** 收藏 / 取消收藏到 App：乐观更新，写库失败再翻回来。 */
+  const onToggleAppFavorite = useCallback(() => {
+    if (!viewerUri || appFavoriteBusy) return;
+    const next = !appFavorite;
+    const remoteUrl =
+      remoteUris?.[Math.min(currentIndex, Math.max(0, remoteUris.length - 1))] ??
+      '';
+    setAppFavorite(next);
+    setAppFavoriteBusy(true);
+    setImageFavorite(viewerUri, next, { recordId, url: remoteUrl })
+      .then(() => {
+        ToastAndroid.show(
+          t(
+            next
+              ? 'history.viewer.appFavorited'
+              : 'history.viewer.appUnfavorited',
+          ),
+          ToastAndroid.SHORT,
+        );
+      })
+      .catch(() => {
+        setAppFavorite(!next);
+        ToastAndroid.show(
+          t('history.viewer.appFavoriteFailed'),
+          ToastAndroid.SHORT,
+        );
+      })
+      .finally(() => setAppFavoriteBusy(false));
+  }, [
+    appFavorite,
+    appFavoriteBusy,
+    currentIndex,
+    recordId,
+    remoteUris,
+    viewerUri,
+  ]);
+
   useEffect(() => {
     if (!visible) {
       setReady(false);
@@ -1437,7 +1554,38 @@ const ImageViewer: React.FC<{
             </Text>
           </View>
           <View style={styles.viewerActions}>
-            {/* 收藏：文字按钮，和「封面」同一套外观 */}
+            {/* App 内收藏：只写本机数据库，不加进手机相册的收藏夹。 */}
+            {viewerUri && !isVideoUri(viewerUri) ? (
+              <Pressable
+                onPress={onToggleAppFavorite}
+                disabled={appFavoriteBusy}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityState={{ selected: appFavorite }}
+                accessibilityLabel={t(
+                  appFavorite
+                    ? 'history.viewer.appUnfavorite'
+                    : 'history.viewer.appFavorite',
+                )}
+                style={({ pressed }) => [
+                  styles.viewerPill,
+                  appFavorite && styles.viewerPillHeart,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.viewerPillText,
+                    appFavorite && styles.viewerPillTextOn,
+                  ]}
+                >
+                  {appFavorite
+                    ? `\u2665\uFE0E ${t('history.viewer.favOn')}`
+                    : `\u2661\uFE0E ${t('history.viewer.favOff')}`}
+                </Text>
+              </Pressable>
+            ) : null}
+            {/* 系统相册收藏：保持原样（Android 11+ 的 MediaStore 收藏标记）。 */}
             {canFavorite ? (
               <Pressable
                 onPress={onToggleFavorite}
@@ -1463,8 +1611,8 @@ const ImageViewer: React.FC<{
                   ]}
                 >
                   {isFavorite
-                    ? t('history.viewer.favOn')
-                    : t('history.viewer.favOff')}
+                    ? t('history.viewer.sysFavOn')
+                    : t('history.viewer.sysFavOff')}
                 </Text>
               </Pressable>
             ) : null}
@@ -1857,11 +2005,10 @@ function createStyles(c: ThemeColors) {
     viewerFavTextOn: { color: '#FF4D6D' },
     /** 全屏顶栏右侧的文字按钮（收藏 / 封面）——同一套外观。 */
     viewerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    /** 页码居中用的绝对定位层：左右按钮数量变化不会挪动它。 */
+    /** 页码放在中间、按剩余空间自适应：以前用绝对定位居中，
+     *  右侧按钮一多（收藏 / 相册收藏 / 封面）就和页码叠在一起。 */
     viewerCounterWrap: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
+      flex: 1,
       alignItems: 'center',
     },
     viewerPill: {
@@ -1874,6 +2021,11 @@ function createStyles(c: ThemeColors) {
     viewerPillOn: {
       backgroundColor: '#FFD166',
       borderColor: '#FFD166',
+    },
+    /** App 内收藏点亮：和系统收藏的黄色区分开（红心）。 */
+    viewerPillHeart: {
+      backgroundColor: '#FF4D6D',
+      borderColor: '#FF4D6D',
     },
     viewerPillText: {
       fontSize: 13,

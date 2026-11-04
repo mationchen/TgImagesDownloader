@@ -90,8 +90,8 @@ async function fetchHtml(url: string, signal?: AbortSignal): Promise<string> {
         'User-Agent': APP_CONFIG.telegraph.userAgent,
         Accept:
           'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        // 和 parseArticle 保持一致：显式声明只接受 gzip/deflate。
-        'Accept-Encoding': 'gzip, deflate',
+        // 不手动声明 Accept-Encoding：写了之后 OkHttp 不会自动解压，
+        // 遇到 gzip 的站点会拿到乱码（见 telegraphParser 里的说明）。
       },
       signal: ctrl.signal,
     });

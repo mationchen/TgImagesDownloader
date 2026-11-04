@@ -2,6 +2,8 @@ import { open, type DB } from '@op-engineering/op-sqlite';
 import type { Scalar } from '@op-engineering/op-sqlite';
 import { computeSummary, type DownloadState } from '../store/downloadReducer';
 import { APP_CONFIG } from '../constants/config';
+import { decodeHtmlEntities } from '../utils/htmlEntities';
+import { likeContainsPattern, tagJsonFragment } from '../utils/searchQuery';
 
 /**
  * Local SQLite history for Telegraph download batches.
@@ -118,7 +120,7 @@ interface Migration {
   up: (db: DB) => Promise<void>;
 }
 
-export const LATEST_SCHEMA_VERSION = 9;
+export const LATEST_SCHEMA_VERSION = 10;
 
 /**
  * Migration manifest (AGENTS.md §4). Add a new entry here for every future
@@ -353,6 +355,53 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    version: 10,
+    description:
+      'image_favorites 表（App 内图片收藏，不再写系统相册）+ history.title_plain（标题搜索兼容 HTML 实体）',
+    up: async db => {
+      // App 内图片收藏：一行一张图，uri 用 MediaStore 的 content:// 地址
+      // （与 history.image_paths 里存的是同一个标识，便于反查记录）。
+      await db.execute(
+        `CREATE TABLE IF NOT EXISTS image_favorites (
+          uri TEXT PRIMARY KEY NOT NULL,
+          record_id INTEGER NOT NULL DEFAULT 0,
+          url TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL DEFAULT 0
+        );`,
+      );
+      await db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_image_favorites_created
+         ON image_favorites(created_at DESC);`,
+      );
+      await db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_image_favorites_record
+         ON image_favorites(record_id);`,
+      );
+
+      // 标题搜索用的「已解码」副本：老记录的标题里存着 `&#8211;` 这类 HTML
+      // 实体，界面上显示的是解码后的文字，用户照着显示的文字搜索就会搜不到。
+      // 旧数据默认空串，下面一次性回填（AGENTS.md §4）。
+      await db.execute(
+        `ALTER TABLE history ADD COLUMN title_plain TEXT NOT NULL DEFAULT '';`,
+      );
+      const res = await db.execute(
+        `SELECT id, title FROM history WHERE title LIKE '%&%';`,
+      );
+      for (const row of (res.rows ?? []) as Array<Record<string, unknown>>) {
+        const decoded = decodeHtmlEntities(String(row.title ?? ''));
+        if (decoded === String(row.title ?? '')) continue;
+        await db.execute(`UPDATE history SET title_plain = ? WHERE id = ?;`, [
+          decoded,
+          Number(row.id),
+        ]);
+      }
+      // 没有实体的记录（绝大多数）解码后与原值相同，直接复制一份。
+      await db.execute(
+        `UPDATE history SET title_plain = title WHERE title_plain = '';`,
+      );
+    },
+  },
 ];
 
 /** Single in-process connection, lazily opened and migrated once. */
@@ -450,12 +499,13 @@ export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
   const tags = JSON.stringify(input.tags ?? []);
   await d.execute(
     `INSERT INTO history
-       (url, title, image_count, success_count, failed_count, skipped_count,
+       (url, title, title_plain, image_count, success_count, failed_count, skipped_count,
         save_dir, status, image_urls, image_paths, save_paths,
         created_at, updated_at, tags, tags_checked_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(url) DO UPDATE SET
        title = excluded.title,
+       title_plain = excluded.title_plain,
        image_count = excluded.image_count,
        success_count = excluded.success_count,
        failed_count = excluded.failed_count,
@@ -471,6 +521,7 @@ export async function upsertHistory(input: UpsertHistoryInput): Promise<void> {
     [
       input.url,
       input.title,
+      decodeHtmlEntities(input.title),
       input.imageCount,
       input.successCount,
       input.failedCount,
@@ -794,6 +845,8 @@ export interface HistoryListFilter {
   favoriteOnly?: boolean;
   /** 只看「标记为删除」（尚未移入回收站）的记录。 */
   markedDeletedOnly?: boolean;
+  /** 只看带这个标签的记录（详情页点标签 → 标签列表）。 */
+  tag?: string;
 }
 
 /**
@@ -813,10 +866,14 @@ function buildHistoryFilter(filter?: HistoryListFilter): {
   if (!filter) return { whereSql: `WHERE ${clauses[0]}`, params };
   const title = filter.title?.trim();
   if (title) {
-    clauses.push('title LIKE ?');
-    // Escape LIKE wildcards so user input matches literally.
-    const escaped = title.replace(/[\\%_]/g, m => `\\${m}`);
-    params.push(`%${escaped}%`);
+    // 同时查原始值与解码后的副本：老记录的标题里存着 `&#8211;` 这类实体，
+    // 界面上显示的却是解码后的文字（`–`），只查原始列会「照着看到的搜不到」。
+    // ESCAPE 必须有：没有它，`%` / `_` 会被当成通配符。
+    const pattern = likeContainsPattern(title);
+    clauses.push(
+      `(title LIKE ? ESCAPE '\\' OR title_plain LIKE ? ESCAPE '\\')`,
+    );
+    params.push(pattern, pattern);
   }
   if (filter.createdAfterMs != null) {
     clauses.push('created_at >= ?');
@@ -832,6 +889,11 @@ function buildHistoryFilter(filter?: HistoryListFilter): {
   }
   if (filter.favoriteOnly) clauses.push('is_favorite = 1');
   if (filter.markedDeletedOnly) clauses.push('is_marked_deleted = 1');
+  if (filter.tag) {
+    // tags 是 JSON 数组字符串；带引号匹配，避免 `cat` 命中 `catsuit`。
+    clauses.push('instr(tags, ?) > 0');
+    params.push(tagJsonFragment(filter.tag));
+  }
   return {
     whereSql: `WHERE ${clauses.join(' AND ')}`,
     params,
@@ -1069,6 +1131,158 @@ export async function setHistoryCover(
   markHistoryChanged();
 }
 
+/* ------------------------------------------------------------------ */
+/* App 内图片收藏（v10）                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 一张「App 内收藏」的图片。
+ *
+ * 和系统相册收藏（`MediaStore.IS_FAVORITE`）是两套独立的东西：
+ * 系统那套会写进手机相册的收藏夹，用户收藏多了相册会变得很乱；
+ * 这一套只存在本 App 的库里，删掉 App 数据才会丢。
+ */
+export interface FavoriteImage {
+  /** MediaStore content:// URI（与 history.image_paths 里的标识一致）。 */
+  uri: string;
+  /** 所属下载记录 id；0 = 找不到来源记录（例如记录已删除）。 */
+  recordId: number;
+  /** 图片的源地址（远程兜底用，可为空）。 */
+  url: string;
+  /** 收藏时间（UTC ms）。 */
+  createdAt: number;
+  /** 所属记录的标题；记录已删除时为空串。 */
+  title: string;
+}
+
+/** 收藏 / 取消收藏一张图片（App 内）。 */
+export async function setImageFavorite(
+  uri: string,
+  favorite: boolean,
+  owner?: { recordId?: number; url?: string },
+): Promise<void> {
+  await initHistoryDatabase();
+  const d = getDb();
+  if (!favorite) {
+    await d.execute('DELETE FROM image_favorites WHERE uri = ?;', [uri]);
+    return;
+  }
+  await d.execute(
+    `INSERT INTO image_favorites (uri, record_id, url, created_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(uri) DO UPDATE SET
+       record_id = excluded.record_id,
+       url = CASE WHEN excluded.url = '' THEN image_favorites.url ELSE excluded.url END;`,
+    [uri, owner?.recordId ?? 0, owner?.url ?? '', Date.now()],
+  );
+}
+
+/** 查询一张图片是否已在本 App 里收藏。 */
+
+/**
+ * 批量筛出「已在本 App 收藏」的 URI（详情页宫格打 ♥ 角标用）。
+ * 按 400 一批，避开 SQLite 的绑定变量上限。
+ */
+export async function listImageFavoriteUris(
+  uris: string[],
+): Promise<string[]> {
+  if (uris.length === 0) return [];
+  await initHistoryDatabase();
+  const d = getDb();
+  const out: string[] = [];
+  for (let i = 0; i < uris.length; i += 400) {
+    const chunk = uris.slice(i, i + 400);
+    const placeholders = chunk.map(() => '?').join(',');
+    const res = await d.execute(
+      `SELECT uri FROM image_favorites WHERE uri IN (${placeholders});`,
+      chunk,
+    );
+    for (const row of (res.rows ?? []) as Array<Record<string, unknown>>) {
+      out.push(String(row.uri));
+    }
+  }
+  return out;
+}
+
+/** 全部 App 内收藏的图片（新的在前），带上所属记录的标题。 */
+export async function listFavoriteImages(): Promise<FavoriteImage[]> {
+  await initHistoryDatabase();
+  const res = await getDb().execute(
+    `SELECT f.uri, f.record_id, f.url, f.created_at,
+            COALESCE(h.title, '') AS title
+       FROM image_favorites f
+       LEFT JOIN history h ON h.id = f.record_id
+      ORDER BY f.created_at DESC;`,
+  );
+  return ((res.rows ?? []) as Array<Record<string, unknown>>).map(row => ({
+    uri: String(row.uri),
+    recordId: Number(row.record_id ?? 0),
+    url: String(row.url ?? ''),
+    createdAt: Number(row.created_at ?? 0),
+    title: String(row.title ?? ''),
+  }));
+}
+
+/** App 内收藏的图片总数。 */
+export async function countFavoriteImages(): Promise<number> {
+  await initHistoryDatabase();
+  const res = await getDb().execute(
+    'SELECT COUNT(*) AS n FROM image_favorites;',
+  );
+  const row = (res.rows ?? [])[0] as { n?: number } | undefined;
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * 把一批「系统相册收藏」的 URI 一次性导入 App 收藏（只增不改）。
+ *
+ * 一次性动作：老用户以前用 ♥ 收藏的图片都写在系统里，直接切到 App 收藏会
+ * 让新界面空空如也。这里按 `image_paths` 反查所属记录，查不到就用 0。
+ * 返回**新增**的条数（已在库里的不重复计数）。
+ */
+export async function importImageFavorites(uris: string[]): Promise<number> {
+  if (uris.length === 0) return 0;
+  await initHistoryDatabase();
+  const d = getDb();
+  const before = await countFavoriteImages();
+
+  // 一次读出所有记录的文件名单，建立 uri → 记录 的索引（避免逐条 LIKE 扫库）。
+  const owners = new Map<string, { recordId: number; url: string }>();
+  const res = await d.execute('SELECT id, image_paths, image_urls FROM history;');
+  for (const row of (res.rows ?? []) as Array<Record<string, unknown>>) {
+    const id = Number(row.id);
+    const paths = parseStringArray(row.image_paths);
+    const urls = parseStringArray(row.image_urls);
+    for (let i = 0; i < paths.length; i += 1) {
+      if (!owners.has(paths[i]!)) {
+        owners.set(paths[i]!, { recordId: id, url: urls[i] ?? '' });
+      }
+    }
+  }
+
+  const now = Date.now();
+  for (const uri of uris) {
+    const owner = owners.get(uri);
+    await d.execute(
+      `INSERT OR IGNORE INTO image_favorites (uri, record_id, url, created_at)
+       VALUES (?, ?, ?, ?);`,
+      [uri, owner?.recordId ?? 0, owner?.url ?? '', now],
+    );
+  }
+  return (await countFavoriteImages()) - before;
+}
+
+/** JSON 数组列 → string[]（坏数据退化成空数组，不让列表整页挂掉）。 */
+function parseStringArray(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map(String);
+  if (typeof raw !== 'string' || raw.length === 0) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
 
 /** 标记为删除 / 取消标记（只是打标记，记录仍在下载记录里）。 */
 export async function setHistoryMarkedDeleted(

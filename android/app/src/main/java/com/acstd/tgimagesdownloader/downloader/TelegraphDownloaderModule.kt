@@ -538,6 +538,48 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
         .start()
   }
 
+  /**
+   * 列出本 App 保存目录下所有「系统相册收藏」的图片 URI。
+   *
+   * 「收藏图片」页首次打开时用它把老收藏一次性导入 App 内收藏 —— 以前 ♥ 是
+   * 直接写系统收藏夹的，不导入的话老用户升级后会看到空列表。
+   * 只扫描 App 自己的两个默认根目录，别的 App 的收藏不碰。
+   * Android 11 以下没有收藏夹，直接返回空数组。
+   */
+  @ReactMethod
+  fun listFavoriteImages(promise: Promise) {
+    Thread {
+          val out = Arguments.createArray()
+          try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+              val base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+              val selection =
+                  "${MediaStore.MediaColumns.IS_FAVORITE} = 1 AND (" +
+                      "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? OR " +
+                      "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?)"
+              reactApplicationContext.contentResolver
+                  .query(
+                      base,
+                      arrayOf(MediaStore.MediaColumns._ID),
+                      selection,
+                      arrayOf("Pictures/TelegraphDownloader%", "Download/TelegraphDownloader%"),
+                      null)
+                  ?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                      val uri =
+                          ContentUris.withAppendedId(base, cursor.getLong(0)).toString()
+                      out.pushString(uri)
+                    }
+                  }
+            }
+          } catch (_: Throwable) {
+            // 查询失败就当没有旧收藏：新界面照样能用，不该弹错误。
+          }
+          promise.resolve(out)
+        }
+        .start()
+  }
+
   /** 分批查 `_ID IN (...)`（SQLite 绑定变量上限 999，取 500 一档）返回已收藏的 id。 */
   @RequiresApi(Build.VERSION_CODES.R)
   private fun collectFavoritedIds(ids: List<Long>): List<Long> {
