@@ -29,6 +29,9 @@ describe('HanimeComicAdapter', () => {
   });
 
   it('按 data-prefix + data-pages 拼出整本 239 张', () => {
+    // 整本在第 1 页就拼完：解析器不能再顺着链接翻页、也不该套用
+    // 「每页 N 张 × 页数」的完整性公式（漫画是一页一张）。
+    expect(adapter.wholeGalleryFromFirstPage).toBe(true);
     const images = adapter.extractImages(HTML, 'https://hanimeone.me/comic/121142/1', new Set());
     expect(images).toHaveLength(239);
     expect(images[0].url).toBe(

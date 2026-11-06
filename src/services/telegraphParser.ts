@@ -30,6 +30,7 @@ import {
 import { inferExtFromUrl } from '../utils/mime';
 import { decodeHtmlEntities } from '../utils/htmlEntities';
 import { isRetryableHttpStatus, withRetry } from '../utils/retry';
+import { expectedImageCount } from '../utils/pagination';
 import type {
   ParseErrorCode,
   ParseResult,
@@ -183,7 +184,11 @@ export async function parseWebArticle(
   const genericPagination = collectPaginationUrls(firstHtml, normalized);
   const mergedPagination =
     adapterPagination.length > 0 ? adapterPagination : genericPagination;
-  const paginationUrls = mergedPagination.slice(0, maxPages - 1);
+  // 有的站点（漫画）第 1 页就拼出了整本，链接只是阅读器的翻页控件：
+  // 顺着链接抓既浪费请求，也会让「每页张数 × 页数」的完整性推测失真。
+  const paginationUrls = adapter.wholeGalleryFromFirstPage
+    ? []
+    : mergedPagination.slice(0, maxPages - 1);
   if (paginationUrls.length === 0) {
     // No pagination detected — single page.
     const images = extractWithAdapter(firstHtml, normalized, seen, adapter, {
@@ -248,15 +253,35 @@ export async function parseWebArticle(
   }
   urlsToFetch.sort((a, b) => getPageNumber(a) - getPageNumber(b));
 
+  /**
+   * 失败但不是 404/410 的页（超时 / 断网 / 5xx）——这些页**本该有内容**，
+   * 用来判断「可能缺页」。404 只说明分页链接过期，不该据此吓用户。
+   */
+  const suspectPageUrls: string[] = [];
+  /** 抓一页；失败返回 null（由调用方决定重试 / 跳过）。 */
+  const fetchPageOrNull = async (pageUrl: string): Promise<string | null> => {
+    try {
+      return await fetchHtml(pageUrl, signal);
+    } catch (err) {
+      if (
+        !(err instanceof HttpError) ||
+        (err.status !== 404 && err.status !== 410)
+      ) {
+        if (!suspectPageUrls.includes(pageUrl)) suspectPageUrls.push(pageUrl);
+      }
+      return null;
+    }
+  };
+
   for (const pageUrl of urlsToFetch) {
     if (fetchedUrls.includes(pageUrl)) continue;
     if (fetchedUrls.length >= maxPages) break;
-    let html: string;
-    try {
-      html = await fetchHtml(pageUrl, signal);
-    } catch {
-      // 404 or network on a later page just stops the walk
-      break;
+    const html = await fetchPageOrNull(pageUrl);
+    if (html == null) {
+      // 单页失败**不再直接收工**：记下来继续抓后面的页，最后再统一补一次。
+      // 以前这里 break，网络抖一下第 3 页失败就只剩前两页的图，而结果看起来
+      // 「解析成功、张数也对得上」，用户只能靠肉眼发现少图。
+      continue;
     }
     fetchedUrls.push(pageUrl);
     pageHtmls.push({ url: pageUrl, html });
@@ -264,23 +289,72 @@ export async function parseWebArticle(
     if (!title) title = extractTitle(html) || 'untitled';
   }
 
-  // Merge images across all fetched pages
+  // Merge images across all fetched pages, remembering how many each page added.
   onStage?.('parsing');
-  for (const { html, url } of pageHtmls) {
-    const imgs = extractWithAdapter(html, url, seen, adapter, {
+  const mergePage = (html: string, url: string): number => {
+    const before = seen.size;
+    extractWithAdapter(html, url, seen, adapter, {
       skipRelatedCards: true,
     });
-    if (pageHtmls[0]!.url === url && imgs.length === 0) {
-      return fail('NO_IMAGES', '这个页面没有找到可下载的图片');
+    return seen.size - before;
+  };
+  let firstPageCount = 0;
+  for (const { html, url } of pageHtmls) {
+    mergePage(html, url);
+    if (pageHtmls[0]!.url === url) {
+      if (seen.size === 0) {
+        return fail('NO_IMAGES', '这个页面没有找到可下载的图片');
+      }
+      firstPageCount = seen.size;
     }
   }
-  // If later pages yielded no *new* URLs, seen already reflects it; just
-  // ensure we had at least something
+
+  /**
+   * 完整性检查（按分页推算应有张数）：
+   * 第 1 页通常就是「每页张数」，站点最后一页可能不满。所以
+   *   下限 = 每页张数 × (页数 - 1) + 1，上限 = 每页张数 × 页数。
+   * 实际张数低于下限 → 很可能有页没抓到（网络/OEM 拦截），先补抓失败页，
+   * 仍然不够就在预览页给出提示，别让用户以为「本来就只有这么多」。
+   */
+  const pagesExpected = Math.max(1, fetchedUrls.length, maxDiscoveredPage);
+  const perPage = Math.max(1, firstPageCount);
+  const { min: expectedMin, max: expectedMax } = expectedImageCount(
+    perPage,
+    pagesExpected,
+  );
+  /**
+   * 合理性闸门：一页几百上千张只可能是「第 1 页就把整本塞进来」的站点
+   * （漫画/单页图集），此时「每页 N 张 × 页数」的模型不成立，宁可不提示也
+   * 不要报出「应有 133591 张」这种吓人的数字。
+   */
+  const countModelSane = perPage <= 200;
+
+  if (seen.size < expectedMin && suspectPageUrls.length > 0) {
+    // 补抓「超时 / 断网 / 5xx」的页（最多 4 页，每页 fetchHtml 自身还有重试，
+    // 避免无限拖时间）。404 的分页链接不补，它本来就不存在。
+    for (const pageUrl of suspectPageUrls.slice(0, 4)) {
+      if (fetchedUrls.length >= maxPages) break;
+      if (seen.size >= expectedMax) break;
+      const html = await fetchPageOrNull(pageUrl);
+      if (html == null) continue;
+      fetchedUrls.push(pageUrl);
+      pageHtmls.push({ url: pageUrl, html });
+      mergePage(html, pageUrl);
+    }
+  }
+
+  // Images are merged into `seen` in page order; build them now (after the
+  // retry pass) so a late-successful page still lands in the right place.
   const images = Array.from(seen).map((url, index) =>
     buildImage(url, index + 1),
   );
   if (images.length === 0) {
     return fail('NO_IMAGES', '这个页面没有找到可下载的图片');
+  }
+  if (images.length < expectedMin && countModelSane && suspectPageUrls.length > 0) {
+    console.log(
+      `[parse] 可能缺页: got=${images.length} expected=${expectedMin}-${expectedMax} pages=${fetchedUrls.length}/${pagesExpected} suspect=${suspectPageUrls.join(',')}`,
+    );
   }
 
   return {
@@ -294,6 +368,12 @@ export async function parseWebArticle(
       pageCount: fetchedUrls.length,
       tags,
       downloadReverse: adapter.downloadReverse === true,
+      // 只在实际少于「应有下限」、且**确实有页抓不下来**（超时/断网/5xx）时带上，
+      // 供预览页提示「可能缺页」。分页链接过期（404）不算，避免误报。
+      imageCountHint:
+        countModelSane && images.length < expectedMin && suspectPageUrls.length > 0
+          ? { min: expectedMin, max: expectedMax }
+          : undefined,
     },
   };
 }

@@ -19,6 +19,15 @@ export interface SiteAdapter {
    * 派发顺序对所有图集都是倒序（见 DownloadContext），这里只影响并发数。
    */
   readonly downloadReverse?: boolean;
+  /**
+   * 这个适配器在**第 1 页就拼出整本**（例如漫画用 data-prefix + data-pages
+   * 一次生成全部页地址）。
+   *
+   * 置 true 时解析器不再按链接去抓后续页，也不做「每页张数 × 页数」的完整性
+   * 推测 —— 漫画是「一页一张图」，套用图集的「每页 N 张」公式会得到
+   * 133591–133956 这种离谱区间（用户实测反馈）。
+   */
+  readonly wholeGalleryFromFirstPage?: boolean;
   /** True when this adapter should handle the given page URL (and optional HTML hint). */
   canHandle(url: string, html?: string): boolean;
   /**

@@ -19,6 +19,12 @@ export interface TelegraphArticle {
    * 这个标记只表示「必须串行下载」（漫画），不影响排序。
    */
   downloadReverse?: boolean;
+  /**
+   * 分页完整性提示：按「每页张数 × 页数」估算应有张数，实际解析少于下限时给出
+   * （min..max 为应有区间）。用于在预览页提醒「可能缺页，建议重新解析」。
+   * 没有发现缺页时不存在这个字段。
+   */
+  imageCountHint?: { min: number; max: number };
 }
 
 export interface TelegraphImage {

@@ -42,3 +42,20 @@ export function hasNextPage(
   const safe = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
   return safe + pageSize < total;
 }
+
+/**
+ * 按「分页张数」估算一个图集应有的图片数量区间（解析完整性检查用）。
+ *
+ * 站点通常每页固定 `perPage` 张，只有最后一页可能不满，所以：
+ *   下限 = perPage × (pages - 1) + 1，上限 = perPage × pages
+ * 实测张数低于下限 → 很可能有页没抓到（网络抖动 / 被拦截），应提示用户重试。
+ */
+export function expectedImageCount(
+  perPage: number,
+  pages: number,
+): { min: number; max: number } {
+  const size = Math.max(1, Math.floor(perPage));
+  const count = Math.max(1, Math.floor(pages));
+  if (count === 1) return { min: size, max: size };
+  return { min: size * (count - 1) + 1, max: size * count };
+}

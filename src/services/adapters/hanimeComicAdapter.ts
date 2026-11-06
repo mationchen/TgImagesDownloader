@@ -28,6 +28,9 @@ export class HanimeComicAdapter implements SiteAdapter {
    */
   readonly downloadReverse = true;
 
+  /** 整本地址在第 1 页就拼完了（data-prefix + data-pages），不用翻页。 */
+  readonly wholeGalleryFromFirstPage = true;
+
   /**
    * `/comic/121142` 这种不带页码的地址返回的是 12 万字节的**详情页**，里面没有
    * `current-page-image`；必须补成 `/comic/121142/1` 才是真正的阅读页。

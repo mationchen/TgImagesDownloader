@@ -387,7 +387,28 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
     [width, pageIds.length, edges],
   );
 
-  /** 点标签：复制 / 去下载记录里按标签筛选。 */
+  /**
+   * 「已复制」小提示：只显示 0.5 秒，放在屏幕底部居中（盖在标题上会挡字）。
+   * Android 13+ 系统也会弹剪贴板提示，但各家样式/时长不一，用户常说「点了没反应」。
+   */
+  const [copiedToast, setCopiedToast] = useState(false);
+  const copiedToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedToastTimer.current) clearTimeout(copiedToastTimer.current);
+    },
+    [],
+  );
+  const showCopiedToast = useCallback(() => {
+    setCopiedToast(true);
+    if (copiedToastTimer.current) clearTimeout(copiedToastTimer.current);
+    copiedToastTimer.current = setTimeout(() => {
+      copiedToastTimer.current = null;
+      setCopiedToast(false);
+    }, 500);
+  }, []);
+
+  /** 点标签：复制 / 去下载记录里按标签筛选（标题复制见 showCopiedToast）。 */
   const onTagPress = useCallback(
     (tag: string) => {
       Alert.alert(tag, undefined, [
@@ -449,10 +470,18 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
               position={baseOffset + index + 1}
               total={totalCount}
               onTagPress={onTagPress}
+              onTitleCopied={showCopiedToast}
             />
           </View>
         ))}
       </ScrollView>
+
+      {/* 复制标题后的 0.5s 提示：底部居中，避免盖住标题文字 */}
+      {copiedToast ? (
+        <View pointerEvents="none" style={styles.copiedToast}>
+          <Text style={styles.copiedToastText}>{t('history.titleCopied')}</Text>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 };
@@ -477,7 +506,9 @@ const RecordPage: React.FC<{
   active?: boolean;
   /** 点标签的回调（标题栏一层统一处理复制 / 筛选弹窗）。 */
   onTagPress?: (tag: string) => void;
-}> = React.memo(({ id, width, mediaTick, position, total, active = true, onTagPress }) => {
+  /** 复制标题成功后通知外层弹 0.5s 提示。 */
+  onTitleCopied?: () => void;
+}> = React.memo(({ id, width, mediaTick, position, total, active = true, onTagPress, onTitleCopied }) => {
   // Subscribe so this page re-renders in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -1043,6 +1074,7 @@ const RecordPage: React.FC<{
             failedCount={failedUris.size}
             onFailedPress={showFailedHint}
             onTagPress={onTagPress}
+            onTitleCopied={onTitleCopied}
           />
         }
         ListEmptyComponent={
@@ -1108,15 +1140,33 @@ const Header: React.FC<{
   onFailedPress?: () => void;
   /** 点标签：上层弹「复制 / 按标签筛选」。 */
   onTagPress?: (tag: string) => void;
+  /** 复制标题成功后通知外层弹 0.5s 提示。 */
+  onTitleCopied?: () => void;
 }> = React.memo(
-  ({ record, position, total, failedCount = 0, onFailedPress, onTagPress }) => {
+  ({
+    record,
+    position,
+    total,
+    failedCount = 0,
+    onFailedPress,
+    onTagPress,
+    onTitleCopied,
+  }) => {
   // Subscribe so meta labels re-render in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
+  /** 点标题：复制到剪贴板，提示交给外层（0.5s，屏幕底部）。 */
+  const onCopyTitle = useCallback(() => {
+    try {
+      Clipboard.setString(decodeHtmlEntities(record.title));
+    } catch {
+      return;
+    }
+    onTitleCopied?.();
+  }, [record.title, onTitleCopied]);
   // Tapping the link opens a chooser instead of jumping straight to the
   // browser: the URL is long and often only needed for copying/sharing.
-  const onUrlPress = useCallback(() => {
-    Alert.alert(t('history.link.title'), record.url, [
+  const onUrlPress = useCallback(() => {    Alert.alert(t('history.link.title'), record.url, [
       { text: t('history.link.copy'), onPress: () => copyUrl(record.url) },
       {
         text: t('history.link.open'),
@@ -1130,7 +1180,7 @@ const Header: React.FC<{
     <View style={styles.header}>
       {/* 标题可点：点一下复制（用户常要拿标题去搜索/分享）。 */}
       <Pressable
-        onPress={() => copyText(decodeHtmlEntities(record.title), t('history.titleCopied'))}
+        onPress={onCopyTitle}
         accessibilityRole="button"
         accessibilityLabel={t('history.copyTitleA11y')}
         hitSlop={4}
@@ -1554,37 +1604,7 @@ const ImageViewer: React.FC<{
             </Text>
           </View>
           <View style={styles.viewerActions}>
-            {/* App 内收藏：只写本机数据库，不加进手机相册的收藏夹。 */}
-            {viewerUri && !isVideoUri(viewerUri) ? (
-              <Pressable
-                onPress={onToggleAppFavorite}
-                disabled={appFavoriteBusy}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityState={{ selected: appFavorite }}
-                accessibilityLabel={t(
-                  appFavorite
-                    ? 'history.viewer.appUnfavorite'
-                    : 'history.viewer.appFavorite',
-                )}
-                style={({ pressed }) => [
-                  styles.viewerPill,
-                  appFavorite && styles.viewerPillHeart,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.viewerPillText,
-                    appFavorite && styles.viewerPillTextOn,
-                  ]}
-                >
-                  {appFavorite
-                    ? `\u2665\uFE0E ${t('history.viewer.favOn')}`
-                    : `\u2661\uFE0E ${t('history.viewer.favOff')}`}
-                </Text>
-              </Pressable>
-            ) : null}
+            {/* 顺序按用户要求：相册收藏 → 封面 → App 收藏。 */}
             {/* 系统相册收藏：保持原样（Android 11+ 的 MediaStore 收藏标记）。 */}
             {canFavorite ? (
               <Pressable
@@ -1637,6 +1657,37 @@ const ImageViewer: React.FC<{
                   ]}
                 >
                   {t('history.viewer.cover')}
+                </Text>
+              </Pressable>
+            ) : null}
+            {/* App 内收藏：只写本机数据库，不加进手机相册的收藏夹。 */}
+            {viewerUri && !isVideoUri(viewerUri) ? (
+              <Pressable
+                onPress={onToggleAppFavorite}
+                disabled={appFavoriteBusy}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityState={{ selected: appFavorite }}
+                accessibilityLabel={t(
+                  appFavorite
+                    ? 'history.viewer.appUnfavorite'
+                    : 'history.viewer.appFavorite',
+                )}
+                style={({ pressed }) => [
+                  styles.viewerPill,
+                  appFavorite && styles.viewerPillHeart,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.viewerPillText,
+                    appFavorite && styles.viewerPillTextOn,
+                  ]}
+                >
+                  {appFavorite
+                    ? `\u2665\uFE0E ${t('history.viewer.favOn')}`
+                    : `\u2661\uFE0E ${t('history.viewer.favOff')}`}
                 </Text>
               </Pressable>
             ) : null}
@@ -1780,6 +1831,17 @@ function pad(n: number): string {
 function createStyles(c: ThemeColors) {
   return StyleSheet.create({
     safe: { flex: 1, backgroundColor: c.background },
+    /** 复制标题后的 0.5s 提示（屏幕底部居中）。 */
+    copiedToast: {
+      position: 'absolute',
+      bottom: 56,
+      alignSelf: 'center',
+      paddingHorizontal: 14,
+      paddingVertical: 7,
+      borderRadius: 14,
+      backgroundColor: 'rgba(0,0,0,0.78)',
+    },
+    copiedToastText: { color: '#fff', fontSize: 13, lineHeight: 18 },
     // Horizontal pager: flex so each page stretches to the viewport height.
     pager: { flex: 1 },
     // Inner (vertical) grid inside one page.

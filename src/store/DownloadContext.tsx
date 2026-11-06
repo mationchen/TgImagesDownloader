@@ -23,6 +23,10 @@ import {
 } from './downloadQueue';
 import type { TelegraphArticle, TelegraphImage } from '../types/telegraph';
 import { downloadImageToMediaStore } from '../services/imageDownloader';
+import {
+  createSaveOrderGate,
+  type SaveOrderGate,
+} from '../services/saveOrderGate';
 import { recordHistoryFromState } from '../services/historyService';
 import {
   ensureNotificationPermission,
@@ -116,6 +120,12 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   }, []);
 
   const queueRef = useRef<QueueController | null>(null);
+  /**
+   * 当前这一轮的「入库顺序闸门」。普通图集并发下载，但写进相册的顺序按页码
+   * 倒序（第 N 页先、第 1 页最后），避免系统相册里相邻几张因完成顺序互换。
+   * 漫画本来就是并发 1，不需要闸门。
+   */
+  const saveGateRef = useRef<SaveOrderGate | null>(null);
 
   // Read latest state from a ref so the queue's getState closure always
   // sees fresh data without re-creating the controller.
@@ -141,6 +151,9 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
             console.log(`[DL] progress id=${image.id} ${downloaded}/${total}`);
             ctx.onProgress(downloaded, total);
           },
+          // 并发下载、按页码倒序入库（相册倒序打开时第 1 页在最前）。
+          saveGate: saveGateRef.current ?? undefined,
+          savePosition: meta?.indexCounter,
         },
         meta
           ? {
@@ -368,6 +381,16 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
       stopTimerRef.current = null;
     }
     queueRef.current?.cancel();
+    // 旧队列的等待者也要一并结束（新队列会建自己的闸门）。
+    saveGateRef.current?.cancel();
+    // 并发下载 + 按页码倒序入库（漫画是并发 1，天然有序，不需要闸门）。
+    const gate =
+      !reverseOrder && initState.taskOrder.length > 1
+        ? createSaveOrderGate(
+            initState.taskOrder.map((_, i) => i + 1),
+          )
+        : null;
+    saveGateRef.current = gate;
     let queueState: DownloadState = initState;
     const q = createQueue({
       getState: () => queueState,
@@ -388,8 +411,19 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
       getConcurrency: () => (reverseOrder ? 1 : concurrencyRef.current),
       // 所有图集都倒序派发（相册按时间倒序展示），历史记录与文件名仍是正序。
       pickOrder: 'reverse',
-      onQueueFinished,
-      onTaskComplete,
+      // 每个任务结束后（成功/跳过/失败/取消）都要放行闸门，否则后面的图会
+      // 一直等自己的入库轮次。
+      onTaskComplete: gate
+        ? (st, id) => {
+            const position = st.taskOrder.indexOf(id) + 1;
+            if (position > 0) gate.done(position);
+            onTaskComplete?.(st, id);
+          }
+        : onTaskComplete,
+      onQueueFinished: st => {
+        saveGateRef.current = null;
+        onQueueFinished?.(st);
+      },
     });
     queueRef.current = q;
     console.log(
@@ -412,6 +446,8 @@ export const DownloadProvider: React.FC<ProviderProps> = ({
   const pause = useCallback(() => queueRef.current?.pause(), []);
   const resume = useCallback(() => queueRef.current?.resume(), []);
   const cancel = useCallback(() => {
+    // 让正在等入库轮次的图立即结束（否则它们会一直挂着）。
+    saveGateRef.current?.cancel();
     queueRef.current?.cancel();
     // During a batch session the foreground service must stay up for the
     // following articles ("跳过当前" routes through cancel()); it is torn

@@ -116,6 +116,8 @@ export const en: Record<ZhKeys, string> = {
 
   'preview.title': 'Article title',
   'preview.imageCount': 'Image count: {count}',
+  'preview.maybeIncomplete':
+    'Possible missing pages: expected {min}–{max} images from pagination, got {actual}. Go back and re-parse to retry.',
   'preview.selectAll': 'Select all',
   'preview.deselectAll': 'Deselect all',
   'preview.invertSelection': 'Invert',
@@ -498,6 +500,8 @@ export const en: Record<ZhKeys, string> = {
     'Downloaded {downloaded} · Deleted before {deleted} · Pending {pending}',
   'batch.refresh.failed': 'Refresh failed, please retry',
   'batch.deletedBefore': 'Downloaded before, then deleted',
+  'batch.rowMaybeIncomplete':
+    '⚠ Possible missing pages: expected {min}–{max}, got {actual}',
   'batch.online.previewOpen': 'View image',
   'batch.online.previewClose': 'Close image',
   'batch.online.previewFailed': 'Could not load preview',

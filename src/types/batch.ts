@@ -57,6 +57,11 @@ export type BatchItem = {
     title: string;
     deletedAt: number;
   };
+  /**
+   * 解析完整性警告（批量下载时用）：按分页推算应有更多张，但实际数量不足，
+   * 且确实有页因网络原因没抓下来。有值时行内显示一行橙色提示。
+   */
+  warning?: string;
 };
 
 export type BatchProgress = {

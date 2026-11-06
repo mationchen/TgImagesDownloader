@@ -14,6 +14,7 @@ import { defaultResolverRegistry } from './resolvers/registry';
 import { ERR_BLOCKED_HOST, ERR_BLOCKED_HOST_4KHD } from './resolvers/types';
 import { getSettingsSync, type AppSettings } from './settingsService';
 import { isImageDownloaded, markImageDownloaded } from './historyService';
+import type { SaveOrderGate } from './saveOrderGate';
 
 export type DownloadOutcome =
   | { kind: 'success'; result: SaveResult }
@@ -27,9 +28,19 @@ export type DownloadOptions = {
   signal?: AbortSignal;
   /** Progress callback fired as bytes stream from the network. */
   onProgress?: (downloadedBytes: number, totalBytes: number) => void;
+  /**
+   * 入库顺序闸门：下载可以并发，但**写进 MediaStore 的顺序**按页码倒序
+   * （第 N 页先写、第 1 页最后写），这样系统相册按时间倒序打开时第 1 页在
+   * 最前面。不传 = 谁先下完谁先入库（旧行为）。
+   */
+  saveGate?: SaveOrderGate;
+  /** 这张图在整本里的序号（1 基）。默认用 image.index。 */
+  savePosition?: number;
 };
 
 const TEMP_PREFIX = 'tg-img-';
+/** 等「入库轮次」的最长时间；超过就放弃顺序、直接入库，避免整批被拖住。 */
+const SAVE_TURN_TIMEOUT_MS = 30_000;
 
 /**
  * Build the headers used to fetch an image.
@@ -267,6 +278,34 @@ export async function downloadImageToMediaStore(
     console.log(`[DL] saved temp stat id=${image.id} size=${size}`);
     if (!Number.isFinite(size) || size <= 0) {
       return fail('ERR_EMPTY', 'Downloaded file is empty');
+    }
+
+    // 等轮到自己再入库：下载是并发的，入库顺序按页码倒序（见 DownloadOptions）。
+    if (options.saveGate) {
+      const position = options.savePosition ?? image.index;
+      // 安全阀：万一等太久（某页卡在重试、把整批拖住），就不再等顺序，
+      // 直接入库——顺序让位于「别把整批卡死」。
+      const turnCtrl = new AbortController();
+      const abortTurn = () => turnCtrl.abort();
+      signal?.addEventListener('abort', abortTurn, { once: true });
+      const timer = setTimeout(abortTurn, SAVE_TURN_TIMEOUT_MS);
+      try {
+        await options.saveGate.turn(position, turnCtrl.signal);
+      } catch {
+        if (signal?.aborted) {
+          return {
+            kind: 'failed',
+            code: 'ERR_CANCELLED',
+            message: 'cancelled while waiting for its save turn',
+          };
+        }
+        console.log(
+          `[DL] save gate timeout id=${image.id} position=${position}，按当前顺序入库`,
+        );
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abortTurn);
+      }
     }
 
     console.log(

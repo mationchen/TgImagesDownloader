@@ -120,7 +120,7 @@ interface Migration {
   up: (db: DB) => Promise<void>;
 }
 
-export const LATEST_SCHEMA_VERSION = 10;
+export const LATEST_SCHEMA_VERSION = 11;
 
 /**
  * Migration manifest (AGENTS.md §4). Add a new entry here for every future
@@ -399,6 +399,22 @@ const MIGRATIONS: Migration[] = [
       // 没有实体的记录（绝大多数）解码后与原值相同，直接复制一份。
       await db.execute(
         `UPDATE history SET title_plain = title WHERE title_plain = '';`,
+      );
+    },
+  },
+  {
+    version: 11,
+    description:
+      '历史记录的 success_count 计入 skipped（已存在而跳过 = 这张图本来就在），修「重新解析后成功 0」',
+    up: async db => {
+      // 重新解析/重下时，已下载过的图片会被「跳过」。它们和这次新保存的图片一样
+      // 都是「实际存在的图」，以前只记进 skipped_count，界面上的「成功」就变成 0
+      // （49 个文件 / 成功 0 / 失败 32），看起来像全失败了。
+      // 这里把旧数据一次性校正：成功 = 新保存 + 已存在跳过。
+      await db.execute(
+        `UPDATE history
+            SET success_count = success_count + skipped_count
+          WHERE skipped_count > 0;`,
       );
     },
   },
@@ -1684,7 +1700,10 @@ export async function recordHistoryFromState(
     url: article.url,
     title: article.title,
     imageCount: summary.total,
-    successCount: summary.success,
+    // 「成功」= 现在实际存在的图：本次新保存的 + 因为已存在而跳过的。
+    // 只记 summary.success 时，重新解析一遍（全部命中已下载）会显示
+    // 「49 个文件 / 成功 0 / 失败 0」，看起来像什么都没成功（用户反馈）。
+    successCount: summary.success + summary.skipped,
     failedCount: summary.failed,
     skippedCount: summary.skipped,
     saveDir,

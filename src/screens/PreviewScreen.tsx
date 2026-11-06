@@ -108,6 +108,17 @@ export const PreviewScreen: React.FC<Props> = ({ route, navigation }) => {
         <Text style={styles.headerCount}>
           {t('preview.imageCount', { count: images.length })}
         </Text>
+        {/* 分页推算应有更多张：提示可能缺页，别让用户以为本来就这么多 */}
+        {article.imageCountHint &&
+        images.length < article.imageCountHint.min ? (
+          <Text style={styles.headerWarn}>
+            {t('preview.maybeIncomplete', {
+              min: article.imageCountHint.min,
+              max: article.imageCountHint.max,
+              actual: images.length,
+            })}
+          </Text>
+        ) : null}
       </View>
 
       <View style={styles.toolbar}>
@@ -224,6 +235,13 @@ function createStyles(c: ThemeColors) {
       fontSize: 13,
       color: c.primary,
       fontWeight: '600',
+    },
+    /** 「可能缺页」提示：用警示色，和普通张数区分开。 */
+    headerWarn: {
+      marginTop: 4,
+      fontSize: 12,
+      lineHeight: 17,
+      color: c.danger,
     },
     toolbar: {
       flexDirection: 'row',

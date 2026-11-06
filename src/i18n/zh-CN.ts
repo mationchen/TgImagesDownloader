@@ -112,6 +112,8 @@ export const zhCN = {
   // Preview (also used inline on HomeScreen result card — same data, same wording)
   'preview.title': '文章标题',
   'preview.imageCount': '图片数量：{count}',
+  'preview.maybeIncomplete':
+    '可能缺页：按分页应有 {min}–{max} 张，实际取到 {actual} 张。可返回后重新解析。',
   'preview.selectAll': '全选',
   'preview.deselectAll': '全不选',
   'preview.invertSelection': '反选',
@@ -493,6 +495,7 @@ export const zhCN = {
   'batch.refresh.doneBody':
     '已下载 {downloaded} 条 · 以前删除过 {deleted} 条 · 待下载 {pending} 条',
   'batch.refresh.failed': '刷新失败，请重试',
+  'batch.rowMaybeIncomplete': '⚠ 可能缺页：应有 {min}–{max} 张，实际 {actual} 张',
   'batch.deletedBefore': '以前下载过，后来删除了',
   'batch.online.previewOpen': '查看大图',
   'batch.online.previewClose': '关闭大图',

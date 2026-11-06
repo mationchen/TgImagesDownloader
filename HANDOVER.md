@@ -8,97 +8,84 @@
 |---|---|
 | 项目 | 网页图片批量下载器（TgImagesDownloader）—— 批量下载 + 下载记录管理 + 压缩包导入 + 在线图集/漫画 |
 | 仓库路径 | `D:\Android\TgImagesDownloader` |
-| 最后更新 | `2026-11-04 23:35`（本地时区） / 会话：标签 / App 内收藏 / 搜索修复 |
+| 最后更新 | `2026-11-06 22:20`（本地时区） / 会话：缺页检查 / 成功数 / 相册顺序 |
 | 分支 / 工作区 | `master` / **有未提交改动**（见 §3） |
-| 当前版本 | `1.0.21（versionCode 21）`，已出包；待提交 + 发版 |
-| 数据库 schema | **v10**（新增 `image_favorites` 表、`history.title_plain`；历史见 `historyService.ts` 的 MIGRATIONS） |
+| 当前版本 | `1.0.22（versionCode 22）`，APK 已出（未装到手机，见 §3） |
+| 数据库 schema | **v11**（v10: `image_favorites` + `title_plain`；v11: `success_count += skipped_count` 校正） |
 | 运行环境 | Node 22；RN 0.87.1（Hermes + New Arch）；实测机 2509FPN0BC / Android 16；JDK 17 |
 
 ## 1. 这一轮的目标
 
-1. 标签可点（复制 / 按标签筛选）；2. 全局「收藏图片」页；3. App 内收藏（不再写系统相册收藏）；
-4. 修标题搜索（搜不到、清空不恢复、加搜索按钮）；5. 详情页标题与标签可复制；
-6. 布局：移入回收站改图标并挪进筛选行；7. 修收藏页全屏黑屏、页码与收藏按钮重叠；8. 状态筛选加「待删除」。
+1. 全屏按钮顺序改为「相册收藏 → 封面 → App 收藏」；2. 标题复制加 0.5s 提示；
+3. 在线图集「上次未入选 / 曾下载后删除」默认不选中，预览也显示标记；
+4. 分页完整性检查（含批量行内提示、漫画不误报）；5. 成功数计入跳过；
+6. 并发下载时保证系统相册顺序。
 
-## 2. 已完成（带验证方式）
+## 2. 已完成（带验证）
 
 | 改动 | 验证 |
 |---|---|
-| 标签点击 → `复制标签 / 查看该标签的下载记录 / 取消`；选第二项跳回下载记录并按标签筛选（顶部 chip「标签：xxx」） | 真机：选「Kanna Seto 瀬戸環奈」→ 34 条 |
-| 标题点击复制；标签复制 | 复制后用输入法粘贴到搜索框，内容一致 |
-| 搜索：合并成一个去抖 effect（清空也会重查）、新增 🔍 按钮与键盘搜索键、结果滚回顶部、请求序号防旧结果覆盖、SQL 补 `ESCAPE`、按解码标题（`title_plain`）匹配 | 真机：`bomb` → 24 条；清空 → 恢复 1026 条；粘贴完整中日文标题 → 精确 1 条 |
-| App 内收藏：详情全屏「♥ 收藏」胶囊（与「相册收藏」并存）、宫格 ♥ 角标改读 `image_favorites` | 真机：点收藏变红、关掉后格子出现「已收藏（App 内）」 |
-| 「收藏图片」页：筛选栏 ♥ 进入，宫格 3:4 + 全屏翻页 + 取消收藏 + 查看所属记录；首次打开把本 App 目录下的系统收藏一次性导入（原生 `listFavoriteImages`） | 真机：导入后 178 张（旧系统收藏 + 新收藏）；取消收藏 178→177 |
-| 回收站按钮挪到筛选行末尾，图标 + 角标条数 | 真机：16 角标；少占一行 |
-| 修收藏页全屏黑屏：页容器 `alignItems:'center'` 把 `ZoomableImage` 宽度压成 0，补 `viewerPageInner`（`flex:1` + `width:'100%'`） | 真机：图片正常显示 |
-| 修页码重叠：`viewerCounterWrap` 由绝对定位改为 `flex:1` 参与布局 | 真机顶栏：`× | 2 / 49 | ♡收藏 相册收藏 封面` 不重叠 |
-| 状态筛选新增「🗑 待删除」（`mark_deleted = 1`，不含回收站）；顺带修 `buildFilter` 漏判 `markedDeletedOnly` 导致筛选不生效 | 真机：16 条，与角标一致 |
-| 校验 | `npx tsc --noEmit` 通过；`npx jest` 21 套 / 233 条通过；`npx eslint src __tests__` 0 error |
-
-**数据订正**：验证「取消收藏」时移除了 1 张旧的系统收藏导入项（仅 App 收藏，未动系统相册标记），当前收藏 176 张。
+| 全屏顶栏顺序：相册收藏 → 封面 → App 收藏 | 真机：页码 285-426，按钮从 567 起，无重叠 |
+| 标题点击复制后屏幕底部弹「标题已复制」0.5 秒 | 真机截图捕获 |
+| 在线图集标记项默认不勾选；全屏预览标题下显示徽章 | 真机：150 条 / 45 新 / 默认已选 35；带「🗑 曾下载后删除」的行无 ✓，预览显示徽章 |
+| 分页完整性：单页失败不再中断、补抓一次；`expectedImageCount(perPage, pages)`；批量行内橙色「⚠ 可能缺页」 | 单测 2 条（漫画 366 张无提示、普通图集缺 1 页 → 41–60）；真机预览曾显示「177–192 实际 151」 |
+| 漫画不再套「每页 N 张」：adapter 新增 `wholeGalleryFromFirstPage`，解析器不翻页；另加 perPage>200 闸门 | 单测：366 张、仅 1 个请求、无缺页提示 |
+| 成功数 = 新保存 + 已存在跳过（写库 + v11 迁移校正旧数据） | 真机：49 项记录 成功 0→49；再跑一次全跳过仍 49/0；部分失败记录 165/166、74/81 |
+| **相册顺序**：新增 `saveOrderGate`，下载仍 8 并发，入库按页码 N→1 串行；30s 安全阀；取消/失败都会放行 | 真机下 81 张图集：`_id ASC` = 0081→0001，`_id DESC` = 0001→0081，81/81 成功 |
+| 校验 | `npx tsc --noEmit`；`npx jest` 23 套 / **242** 条；`npx eslint src __tests__` 0 error |
 
 ## 3. 当前状态
 
-- 能跑：手机上是 release **1.0.21**（`npm run apk:local` 覆盖安装，数据保留）。
-- 未提交：本轮 + 上一轮（漫画站）的改动，见 `git status --short`；版本号已升 1.0.21，`README.md` 已同步。
-- 卡点：无。
-- 已知遗留：`www.1y.is` 恢复后补完剩余 292 条标签。
+- APK 已构建（arm64 29482806 B / armeabi-v7a 24026916 B / x86_64 30134913 B），但**本次安装时 adb 设备掉线**
+  （`adb devices` 空、mDNS 无设备），手机上仍是 1.0.21；重新 `adb connect 192.168.31.172:<端口>` 后
+  `adb install -r android\app\build\outputs\apk\release\app-arm64-v8a-release.apk` 即可。
+- 未提交：见 `git status`（17 改 + 3 新增：`saveOrderGate.ts`、`parseCompleteness.test.ts`、`saveOrderGate.test.ts`）。
+- 测试留下的数据：在线图集多了一场抓取快照（150 条 / 45 新，仅选了 1 条并下载）；下载了一篇
+  《攝影師 luka 模特 Dora》81 张（`_174603`），`image_favorites` 少 1 张（早些验证时移除）。
 
 ## 4. 关键决策
 
-- **App 收藏与系统收藏彻底分开**：用户反馈系统相册收藏被塞满；App 收藏只写本机 `image_favorites`，
-  系统收藏保留原按钮不动。旧系统收藏一次性导入（settings 标记 `image_favorites_imported_v1`），避免升级后空列表。
-- **标签筛选复用下载记录列表**（带参数 `Tabs → History { tag }` + 顶部 chip），不再新开一个页面。
-- **搜索兜底做足**：清空重查、去抖 + 显式按钮、请求序号、`ESCAPE`、解码标题列 —— 用户反馈的三类症状
-  （搜不到 / 清空不恢复 / 无按钮）一次覆盖。
+- **并发下载 + 串行入库**：不牺牲下载速度，只把「写 MediaStore」这一步按页码倒序排队，
+  `date_added` 只有秒级精度时靠 `_id` 也能保证第 1 页最前。
+- **完整性检查只在「有网络类失败且张数不足」时提示**；404 分页链接、漫画都不提示，避免狼来了。
+- **成功口径**：跳过（文件已存在）与成功等价 —— 用户看到的是「这张图在不在」。
 
 ## 5. 已知坑
 
-- **全屏查看器黑屏**：`ZoomableImage` 必须放在满宽容器里；父级 `alignItems:'center'` 会让它宽度塌成 0
-  （图已加载但画不出来）。
-- **顶栏页码**：不要用 `position:'absolute'` 居中，右侧按钮一多就叠字；用 `flex:1`。
-- **`buildFilter` 的「是否有筛选」判断**：新增筛选条件必须同步加进那个 return 条件，否则筛选条出现但列表不查。
-- 真机 UI 坐标：`uiautomator dump` 的 bounds 是物理像素（本机 1200×2608），截图也是 1200×2608。
-- 其他历史坑（漫画顺序、gzip、锁屏、无线调试）见前一份交接单 / `AGENTS.md`。
+- 相册排序依赖 `date_added DESC`（秒级）+ `_id` 兜底；若某相册 App 只按秒级 `date_added` 且不兜底，同秒内的顺序可能仍不稳定。
+- `saveOrderGate` 若某页长时间重试会堵住更小页码的入库，30s 后自动放行（日志 `save gate timeout`）。
+- hanime `comic` 站偶发 `403`/解析失败（PC 走代理同样 403），与代码无关，等站点/节点恢复。
+- 无线调试灭屏即断，`adb devices` 空时先 `adb connect`。
 
-## 6. 下一步（可执行）
+## 6. 下一步
 
-1. [ ] 提交本轮并升版发版：按 AGENTS 第 12/14 条（tag 在 commit 之后打，APK 用 `curl --progress-bar` 逐个上传）
-2. [ ] 需要时把验证时移除的那张收藏补回（收藏页无「撤销」，只能在对应记录里重新点收藏）
-3. [ ] 复核收藏页在图片很多（几百张）时的滑动与内存
-4. [ ] 老账：`www.1y.is` 恢复后补完剩 292 条标签
+1. [ ] 手机重连后安装 1.0.22 并做一次普通图集的新下载，肉眼确认相册顺序
+2. [ ] 提交 + 发版（tag 在 commit 之后打，APK 用 `curl --progress-bar` 逐个上传）
+3. [ ] 老账：`www.1y.is` 恢复后补完剩余 292 条标签
 
-## 7. 常用命令（照抄即可）
+## 7. 常用命令
 
 ```powershell
 cd D:\Android\TgImagesDownloader
 $env:GRADLE_USER_HOME='D:\Android\.gradle'
 
-# 构建 + 覆盖安装（保留数据）
-npm run apk:local
+cd android; .\gradlew.bat assembleRelease; cd ..
+adb install -r android\app\build\outputs\apk\release\app-arm64-v8a-release.apk
 
-# 校验
 npx tsc --noEmit; npx jest; npx eslint src __tests__
 
-# 调试（需 Metro，独立窗口）
-npm start
-npx react-native run-android --no-packager
-
-# 真机取证
-adb shell uiautomator dump /sdcard/ui.xml
-adb pull /sdcard/ui.xml E:\OpenCodeCache\windows-temp\opencode\ui.xml
+# 核对相册入库顺序
+adb shell "content query --uri content://media/external/images/media --projection _id:_display_name --sort '_id DESC'"
 ```
 
 ## 8. 环境与外部依赖
 
-- 设备：`2509FPN0BC` / Android 16，adb 走 Wi-Fi（`192.168.31.172:<端口>`，端口会变）；包名唯一：
+- 设备：`2509FPN0BC` / Android 16，adb 走 Wi-Fi（`192.168.31.172:<端口>`，端口会变）；包名
   `com.acstd.tgimagesdownloader.release`，**禁止 uninstall**。
-- PC 访问 `hanimeone.me` / `everia.club` 需代理：`curl --proxy http://127.0.0.1:7897`。
-- 目录：构建产物 `android\app\build\outputs\apk\release\`；数据库备份 `backup\db-before-v*-*.sqlite`；
-  临时脚本 `E:\OpenCodeCache\windows-temp\opencode\`。
-- 凭据：签名在 `android/gradle.properties`（已 gitignore）；GitHub 用本机 `gh`，**不要**把 token 写进文件。
+- PC 访问 `everia.club` 需代理 `127.0.0.1:7897`；`hanimeone.me` 目前 PC 侧 403。
+- 签名在 `android/gradle.properties`（gitignore）；GitHub 用本机 `gh`，不要把 token 写进文件。
 
-## 9. 相关链接（可选）
+## 9. 相关链接
 
 - 项目文档：`D:\Android\TgImagesDownloader\README.md`
 - 开发约定：`D:\Android\TgImagesDownloader\AGENTS.md`

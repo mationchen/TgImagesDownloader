@@ -391,12 +391,18 @@ export const BatchListScreen: React.FC = () => {
       }
 
       setOnlineEntries(fresh);
-      setOnlineSelected(new Set(fresh.map(e => e.url)));
       setOnlineStats({
         total: entries.length,
         dup: entries.length - unique.length,
         downloaded,
       });
+
+      // 先算出两种「不该默认勾选」的标记，再决定初始勾选：
+      //   - 上次未入选（上一场确实做过选择）
+      //   - 以前下载过、后来被删掉（墓碑）
+      // 它们仍然显示在列表里，只是默认不被勾上，避免点一下「加入」又把不要的加回去。
+      let prevUnselected = new Set<string>();
+      let deletedInfo = new Map<string, number>();
 
       // 落库：每场抓取单独存一份，之后可以「历史列表」挑任意一场重新打开。
       // 「上次未入选」由上一场会话的勾选状态决定。
@@ -416,24 +422,34 @@ export const BatchListScreen: React.FC = () => {
         // 只有「上一场确实做过选择」（至少选了一条）才把未选的标出来，
         // 否则只是浏览了一遍也会被标成「未入选」，太吵。
         const anySelected = Array.from(prevSel.values()).some(Boolean);
-        setOnlinePrevUnselected(
-          anySelected
-            ? new Set(
-                Array.from(prevSel.entries())
-                  .filter(([, sel]) => !sel)
-                  .map(([u]) => u),
-              )
-            : new Set(),
-        );
+        if (anySelected) {
+          prevUnselected = new Set(
+            Array.from(prevSel.entries())
+              .filter(([, sel]) => !sel)
+              .map(([u]) => u),
+          );
+        }
       } catch (e) {
         console.log('[BatchList] save listing session failed', e);
-        setOnlinePrevUnselected(new Set());
       }
+      setOnlinePrevUnselected(prevUnselected);
+
       try {
-        setOnlineDeleted(await listDeletedUrlInfo(fresh.map(e => e.url)));
+        deletedInfo = await listDeletedUrlInfo(fresh.map(e => e.url));
       } catch {
-        setOnlineDeleted(new Map());
+        deletedInfo = new Map();
       }
+      setOnlineDeleted(deletedInfo);
+
+      setOnlineSelected(
+        new Set(
+          fresh
+            .filter(
+              e => !prevUnselected.has(e.url) && !deletedInfo.has(e.url),
+            )
+            .map(e => e.url),
+        ),
+      );
       if (failedPages.length > 0) {
         setOnlineError(
           failedPages.length >= onlinePages.length
@@ -759,7 +775,12 @@ export const BatchListScreen: React.FC = () => {
           continue;
         }
 
-        updateItem(i, { status: 'parsing', detail: '', progress: null });
+        updateItem(i, {
+          status: 'parsing',
+          detail: '',
+          progress: null,
+          warning: undefined,
+        });
 
         let result;
         try {
@@ -782,10 +803,23 @@ export const BatchListScreen: React.FC = () => {
           continue;
         }
 
+        // 分页完整性：解析器按「每页张数 × 页数」推算过应有区间，实际不足时
+        // 在行内留一行提示（批量下载不经过预览页，否则用户看不到）。
+        const hint = result.article.imageCountHint;
+        const warning =
+          hint && result.article.images.length < hint.min
+            ? t('batch.rowMaybeIncomplete', {
+                min: hint.min,
+                max: hint.max,
+                actual: result.article.images.length,
+              })
+            : undefined;
+
         updateItem(i, {
           status: 'downloading',
           detail: `下载中 0/${result.article.images.length}`,
           progress: { cur: 0, total: result.article.images.length },
+          warning,
         });
         try {
           const summary = await downloadContext.runDownload(result.article, {
@@ -1096,6 +1130,11 @@ export const BatchListScreen: React.FC = () => {
               {item.deletedBefore && !isPreviewing ? (
                 <Text style={styles.rowDeleted} numberOfLines={1}>
                   🗑 {t('batch.deletedBefore')}
+                </Text>
+              ) : null}
+              {item.warning && !isPreviewing ? (
+                <Text style={styles.rowWarning} numberOfLines={2}>
+                  {item.warning}
                 </Text>
               ) : null}
             </View>
@@ -1686,6 +1725,35 @@ export const BatchListScreen: React.FC = () => {
                 ? onlineEntries[onlinePreviewIndex]?.title ?? ''
                 : ''}
             </Text>
+            {/* 和列表一致的标记：全屏看大图时也知道这条「上次没入选 / 以前删过」 */}
+            {(() => {
+              const entry =
+                onlinePreviewIndex != null
+                  ? onlineEntries[onlinePreviewIndex]
+                  : undefined;
+              if (!entry) return null;
+              if (onlineDeleted.has(entry.url)) {
+                return (
+                  <Text
+                    style={styles.previewBadgeWarn}
+                    numberOfLines={1}
+                  >
+                    🗑 {t('batch.online.badgeDeleted')}
+                  </Text>
+                );
+              }
+              if (onlinePrevUnselected.has(entry.url)) {
+                return (
+                  <Text
+                    style={styles.previewBadgeMuted}
+                    numberOfLines={1}
+                  >
+                    {t('batch.online.badgeUnselected')}
+                  </Text>
+                );
+              }
+              return null;
+            })()}
           </SafeAreaView>
 
           <ScrollView
@@ -1840,6 +1908,13 @@ function createStyles(c: ThemeColors) {
     rowDeleted: {
       fontSize: 10,
       color: c.danger,
+      marginTop: 2,
+    },
+    /** 解析完整性警告（可能缺页）：橙色，和「已下载/已删除」等提示区分开。 */
+    rowWarning: {
+      fontSize: 10,
+      lineHeight: 14,
+      color: '#B26A00',
       marginTop: 2,
     },
     skipHintRow: {
@@ -2055,6 +2130,17 @@ function createStyles(c: ThemeColors) {
       color: 'rgba(255,255,255,0.75)',
       fontSize: 11,
       paddingBottom: 4,
+    },
+    /** 全屏预览顶栏里的小徽章（颜色比列表里的亮一点，黑底上可读）。 */
+    previewBadgeWarn: {
+      color: '#FF8A8A',
+      fontSize: 11,
+      paddingBottom: 6,
+    },
+    previewBadgeMuted: {
+      color: 'rgba(255,255,255,0.55)',
+      fontSize: 11,
+      paddingBottom: 6,
     },
     previewPager: { flex: 1 },
     previewPage: {

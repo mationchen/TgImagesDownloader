@@ -1,5 +1,6 @@
 import {
   clampPageOffset,
+  expectedImageCount,
   hasNextPage,
   lastPageOffset,
 } from '../src/utils/pagination';
@@ -61,6 +62,24 @@ describe('utils/pagination', () => {
 
     it('is false for an empty list', () => {
       expect(hasNextPage(0, 0, 100)).toBe(false);
+    });
+  });
+
+  describe('expectedImageCount', () => {
+    it('uses perPage × (pages-1)+1 .. perPage × pages for multi-page galleries', () => {
+      // 用户给的例子：每页 20 张、共 5 页 → 81..100
+      expect(expectedImageCount(20, 5)).toEqual({ min: 81, max: 100 });
+      // 每页 20 张、共 4 页 → 61..80
+      expect(expectedImageCount(20, 4)).toEqual({ min: 61, max: 80 });
+    });
+
+    it('is exact for a single page', () => {
+      expect(expectedImageCount(20, 1)).toEqual({ min: 20, max: 20 });
+    });
+
+    it('never returns a range below one image for junk input', () => {
+      expect(expectedImageCount(0, 3)).toEqual({ min: 3, max: 3 });
+      expect(expectedImageCount(20, 0)).toEqual({ min: 20, max: 20 });
     });
   });
 });
