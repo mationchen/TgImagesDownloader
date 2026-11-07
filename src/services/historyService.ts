@@ -4,6 +4,8 @@ import { computeSummary, type DownloadState } from '../store/downloadReducer';
 import { APP_CONFIG } from '../constants/config';
 import { decodeHtmlEntities } from '../utils/htmlEntities';
 import { likeContainsPattern, tagJsonFragment } from '../utils/searchQuery';
+import { hideRecycledImages } from '../utils/imageTrash';
+import { withImageTrashLock } from '../utils/imageTrashLock';
 
 /**
  * Local SQLite history for Telegraph download batches.
@@ -25,6 +27,9 @@ import { likeContainsPattern, tagJsonFragment } from '../utils/searchQuery';
  */
 
 export interface HistoryRecord {
+  /** Display projection only; raw arrays remain intact for image-trash restore. */
+  hasStoredImages?: boolean;
+  hiddenImageCount?: number;
   id: number;
   url: string;
   title: string;
@@ -120,7 +125,7 @@ interface Migration {
   up: (db: DB) => Promise<void>;
 }
 
-export const LATEST_SCHEMA_VERSION = 11;
+export const LATEST_SCHEMA_VERSION = 12;
 
 /**
  * Migration manifest (AGENTS.md §4). Add a new entry here for every future
@@ -418,6 +423,22 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    version: 12,
+    description: 'Independent image trash: URI identity, restore and permanent-delete tombstones',
+    up: async database => {
+      await database.execute(`CREATE TABLE IF NOT EXISTS image_trash (
+        uri TEXT PRIMARY KEY NOT NULL,
+        record_id INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL DEFAULT '',
+        trashed_at INTEGER NOT NULL DEFAULT 0,
+        purged_at INTEGER NOT NULL DEFAULT 0
+      );`);
+      await database.execute(`CREATE INDEX IF NOT EXISTS idx_image_trash_time
+        ON image_trash(purged_at, trashed_at DESC);`);
+    },
+  },
 ];
 
 /** Single in-process connection, lazily opened and migrated once. */
@@ -441,6 +462,13 @@ export function initHistoryDatabase(): Promise<void> {
 
 async function doInit(): Promise<void> {
   db = open({ name: getDatabaseName() });
+  const version = getSchemaVersion(db);
+  // Consistent SQLite snapshot, including WAL contents, before the v12 upgrade.
+  // Failure stops migration rather than proceeding without a recovery copy.
+  if (version > 0 && version < 12 && typeof db.getDbPath === 'function') {
+    const backupPath = `${db.getDbPath()}.before-v12.${Date.now()}.bak`;
+    await db.execute(`VACUUM INTO '${backupPath.replace(/'/g, "''")}';`);
+  }
   await runMigrations(db);
 }
 
@@ -844,7 +872,7 @@ export async function listHistory(
      LIMIT ? OFFSET ?;`,
     [...params, limit, Math.max(0, offset)],
   );
-  return (res.rows ?? []).map(rowToRecord);
+  return filterRecycledImages((res.rows ?? []).map(rowToRecord));
 }
 
 /** Optional predicate for {@link listHistory} / {@link countHistory}. */
@@ -993,7 +1021,7 @@ export async function getHistory(id: number): Promise<HistoryRecord | null> {
     [id],
   );
   const row = (res.rows ?? [])[0];
-  return row ? rowToRecord(row) : null;
+  return row ? (await filterRecycledImages([rowToRecord(row)]))[0] : null;
 }
 
 /**
@@ -1017,7 +1045,7 @@ export async function findHistoryByUrl(
     [target],
   );
   const row = (res.rows ?? [])[0];
-  return row ? rowToRecord(row) : null;
+  return row ? (await filterRecycledImages([rowToRecord(row)]))[0] : null;
 }
 
 /**
@@ -1056,7 +1084,8 @@ export async function listHistoryByUrls(
       if (rec) out.set(rec.url, rec);
     }
   }
-  return out;
+  const visible = await filterRecycledImages(Array.from(out.values()));
+  return new Map(visible.map(record => [record.url, record]));
 }
 
 /** Delete a single history row (does NOT touch downloaded files). */
@@ -1083,12 +1112,20 @@ export async function reorderHistoryImages(
   const row = (res.rows ?? [])[0];
   if (!row || order.length === 0) return;
 
+  const rawPaths = decodeJsonArray(row.image_paths);
+  const trash = await d.execute('SELECT uri FROM image_trash;');
+  const hidden = new Set((trash.rows ?? []).map(item => String(item.uri)));
+  const visibleIndices = rawPaths.flatMap((uri, i) => hidden.has(uri) ? [] : [i]);
+  if (order.length !== visibleIndices.length || new Set(order).size !== order.length ||
+      order.some(i => !Number.isInteger(i) || i < 0 || i >= order.length)) return;
+  const fullOrder = rawPaths.map((_, i) => i);
+  visibleIndices.forEach((slot, i) => { fullOrder[slot] = visibleIndices[order[i]]; });
   const permute = (value: unknown): string => {
     const arr = decodeJsonArray(value);
     // A malformed order (or a row whose arrays disagree in length) must never
     // drop entries — keep the stored order in that case.
-    if (arr.length !== order.length) return JSON.stringify(arr);
-    const next = order.map(i => arr[i]);
+    if (arr.length !== fullOrder.length) return JSON.stringify(arr);
+    const next = fullOrder.map(i => arr[i]);
     return JSON.stringify(next.every(v => typeof v === 'string') ? next : arr);
   };
 
@@ -1228,7 +1265,8 @@ export async function listFavoriteImages(): Promise<FavoriteImage[]> {
             COALESCE(h.title, '') AS title
        FROM image_favorites f
        LEFT JOIN history h ON h.id = f.record_id
-      ORDER BY f.created_at DESC;`,
+       WHERE NOT EXISTS (SELECT 1 FROM image_trash t WHERE t.uri = f.uri)
+       ORDER BY f.created_at DESC;`,
   );
   return ((res.rows ?? []) as Array<Record<string, unknown>>).map(row => ({
     uri: String(row.uri),
@@ -1243,7 +1281,8 @@ export async function listFavoriteImages(): Promise<FavoriteImage[]> {
 export async function countFavoriteImages(): Promise<number> {
   await initHistoryDatabase();
   const res = await getDb().execute(
-    'SELECT COUNT(*) AS n FROM image_favorites;',
+    `SELECT COUNT(*) AS n FROM image_favorites f
+      WHERE NOT EXISTS (SELECT 1 FROM image_trash t WHERE t.uri = f.uri);`,
   );
   const row = (res.rows ?? [])[0] as { n?: number } | undefined;
   return Number(row?.n ?? 0);
@@ -1384,7 +1423,7 @@ export async function listTrash(
       LIMIT ? OFFSET ?;`,
     [limit, Math.max(0, offset)],
   );
-  return (res.rows ?? []).map(rowToRecord);
+  return filterRecycledImages((res.rows ?? []).map(rowToRecord));
 }
 
 /** 回收站条数。 */
@@ -1514,6 +1553,108 @@ export async function closeHistoryDatabase(): Promise<void> {
   }
   db = null;
   initPromise = null;
+}
+
+async function filterRecycledImages(records: HistoryRecord[]): Promise<HistoryRecord[]> {
+  if (records.length === 0) return records;
+  const res = await getDb().execute('SELECT uri FROM image_trash;');
+  const hidden = new Set((res.rows ?? []).map(row => String(row.uri)));
+  const projected = records.map(record => hideRecycledImages(record, hidden));
+  const affected = projected.filter(record => record.hasStoredImages && record.hiddenImageCount);
+  if (affected.length) {
+    const sources = await getImageSourceUrls(affected.flatMap(record => record.imagePaths));
+    for (const record of affected) record.imageUrls = record.imagePaths.map(uri => sources.get(uri) ?? '');
+  }
+  return projected;
+}
+
+export interface TrashedImage {
+  uri: string;
+  recordId: number;
+  title: string;
+  url: string;
+  trashedAt: number;
+}
+
+export async function listTrashedImages(): Promise<TrashedImage[]> {
+  await initHistoryDatabase();
+  const res = await getDb().execute(`SELECT uri, record_id, title, url, trashed_at
+    FROM image_trash WHERE purged_at = 0 ORDER BY trashed_at DESC, uri ASC;`);
+  return (res.rows ?? []).map(row => ({
+    uri: String(row.uri), recordId: Number(row.record_id),
+    title: String(row.title), url: String(row.url), trashedAt: Number(row.trashed_at),
+  }));
+}
+
+export async function countTrashedImages(): Promise<number> {
+  await initHistoryDatabase();
+  const res = await getDb().execute('SELECT COUNT(*) AS n FROM image_trash WHERE purged_at = 0;');
+  return Number(res.rows?.[0]?.n ?? 0);
+}
+
+/** Resolve by download ledger identity, not array index (partial runs are not aligned). */
+export async function getImageSourceUrls(uris: string[]): Promise<Map<string, string>> {
+  await initHistoryDatabase();
+  const out = new Map<string, string>();
+  for (let i = 0; i < uris.length; i += 400) {
+    const part = uris.slice(i, i + 400);
+    const res = await getDb().execute(`SELECT local_path, url FROM downloaded_images
+      WHERE local_path IN (${part.map(() => '?').join(',')});`, part);
+    for (const row of res.rows ?? []) out.set(String(row.local_path), String(row.url));
+  }
+  return out;
+}
+
+/** Soft delete only: files and raw record arrays remain intact, so restore is lossless. */
+export async function moveImagesToTrash(recordId: number, uris: string[]): Promise<number> {
+  await initHistoryDatabase();
+  const d = getDb();
+  let moved = 0;
+  await d.transaction(async tx => {
+    const res = await tx.execute('SELECT title, image_paths, image_urls FROM history WHERE id = ?;', [recordId]);
+    const row = res.rows?.[0];
+    if (!row) throw new Error('History record not found');
+    const paths = decodeJsonArray(row.image_paths);
+    const allowed = new Set(paths.length ? paths : decodeJsonArray(row.image_urls));
+    for (const uri of new Set(uris)) {
+      if (!allowed.has(uri)) throw new Error('Image does not belong to this record');
+      const ledger = await tx.execute('SELECT url FROM downloaded_images WHERE local_path = ? LIMIT 1;', [uri]);
+      const source = /^https?:\/\//i.test(uri) ? uri : String(ledger.rows?.[0]?.url ?? '');
+      const inserted = await tx.execute(`INSERT OR IGNORE INTO image_trash
+        (uri, record_id, title, url, trashed_at, purged_at) VALUES (?, ?, ?, ?, ?, 0);`,
+        [uri, recordId, String(row.title ?? ''), source, Date.now()]);
+      moved += inserted.rowsAffected;
+    }
+  });
+  markHistoryChanged();
+  return moved;
+}
+
+export async function restoreTrashedImage(uri: string): Promise<void> {
+  return withImageTrashLock(async () => {
+    await initHistoryDatabase();
+    const entry = await getDb().execute('SELECT record_id FROM image_trash WHERE uri = ? AND purged_at = 0;', [uri]);
+    if (entry.rows?.length) {
+      const owner = await getDb().execute('SELECT id FROM history WHERE id = ?;', [Number(entry.rows[0].record_id)]);
+      if (!owner.rows?.length) throw new Error('IMAGE_TRASH_RECORD_MISSING');
+    }
+    await getDb().execute('DELETE FROM image_trash WHERE uri = ? AND purged_at = 0;', [uri]);
+    markHistoryChanged();
+  });
+}
+
+/** Called ONLY after confirmed file deletion (or for remote-only entries).
+ * Keep a tiny URI tombstone: old histories / reparses must not resurrect deleted files.
+ * Remove ledger by local_path so an unrelated source URL is never affected.
+ */
+export async function finishPurgingTrashedImage(uri: string): Promise<void> {
+  await initHistoryDatabase();
+  await getDb().transaction(async tx => {
+    await tx.execute('DELETE FROM downloaded_images WHERE local_path = ?;', [uri]);
+    await tx.execute('DELETE FROM image_favorites WHERE uri = ?;', [uri]);
+    await tx.execute('UPDATE image_trash SET purged_at = ? WHERE uri = ? AND purged_at = 0;', [Date.now(), uri]);
+  });
+  markHistoryChanged();
 }
 
 function rowToRecord(row: Record<string, unknown>): HistoryRecord {

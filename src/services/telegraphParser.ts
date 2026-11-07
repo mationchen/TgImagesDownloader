@@ -177,6 +177,13 @@ export async function parseWebArticle(
   title = extractTitle(firstHtml) || 'untitled';
   // 标签只在第一页取：分页的后续页通常不再重复渲染标签块。
   const tags = extractTags(firstHtml, normalized, title);
+  /**
+   * 列表页（首页 / page/N / 分类页）的每张缩略图都带 fifu-featured / post-id，
+   * 不能按「相关文章卡片」过滤，否则一张不剩；文章页则必须过滤掉相关推荐。
+   * 这个判断只看第一页的图片结构，整本沿用。
+   */
+  const listingPage = looksLikeListingPage(firstHtml);
+  const skipRelatedCards = !listingPage;
 
   // Resolve site-specific adapter based on the first page's HTML.
   const adapter = defaultAdapterRegistry.resolve(normalized, firstHtml);
@@ -186,13 +193,16 @@ export async function parseWebArticle(
     adapterPagination.length > 0 ? adapterPagination : genericPagination;
   // 有的站点（漫画）第 1 页就拼出了整本，链接只是阅读器的翻页控件：
   // 顺着链接抓既浪费请求，也会让「每页张数 × 页数」的完整性推测失真。
-  const paginationUrls = adapter.wholeGalleryFromFirstPage
-    ? []
-    : mergedPagination.slice(0, maxPages - 1);
+  // 列表页同理：把所有分页的卡片都抓下来没有意义（用户要的是「在线图集」，
+  // 那条流程会逐页抓列表并去重），这里只取当前这一页。
+  const paginationUrls =
+    adapter.wholeGalleryFromFirstPage || listingPage
+      ? []
+      : mergedPagination.slice(0, maxPages - 1);
   if (paginationUrls.length === 0) {
     // No pagination detected — single page.
     const images = extractWithAdapter(firstHtml, normalized, seen, adapter, {
-      skipRelatedCards: true,
+      skipRelatedCards,
     });
     if (images.length === 0) {
       return fail('NO_IMAGES', '这个页面没有找到可下载的图片');
@@ -294,7 +304,7 @@ export async function parseWebArticle(
   const mergePage = (html: string, url: string): number => {
     const before = seen.size;
     extractWithAdapter(html, url, seen, adapter, {
-      skipRelatedCards: true,
+      skipRelatedCards,
     });
     return seen.size - before;
   };
@@ -715,6 +725,25 @@ function resolveUrl(raw: string, baseUrl: string): string | null {
   }
 }
 
+/**
+ * 这个页面本身是不是**列表页**（首页 / page/N / 分类页）？
+ *
+ * 列表页的每张缩略图都带 `fifu-featured` / `post-id="…"`（文章卡片的标记），
+ * 如果照常启用「过滤相关文章卡片」，会被过滤到一张不剩 → 误报「没有可下载的
+ * 图片」。判据：带标记的 `<img>` 至少 3 个，且占全部 `<img>` 的一半以上。
+ * 文章页正文图片没有这些属性，只有少量相关推荐卡片带，比例远低于一半。
+ */
+function looksLikeListingPage(html: string): boolean {
+  const imgs = html.match(/<img\b[^>]*>/gi) ?? [];
+  if (imgs.length === 0) return false;
+  const tagged = imgs.filter(t =>
+    /fifu-featured|post-id=["']?\d+/.test(t),
+  ).length;
+  // 列表页几乎每张缩略图都带标记（everia 首页 38/38）；文章页只有相关推荐的
+  // 少量卡片带（实测 8/23 ≈ 35%）。取 75% 作分界。
+  return tagged >= 3 && tagged * 4 >= imgs.length * 3;
+}
+
 function extractImages(
   html: string,
   baseUrl: string,
@@ -898,7 +927,8 @@ function extractWithAdapter(
       return [];
     }
   }
-  return extractImages(html, baseUrl, seen, opts);
+  const generic = extractImages(html, baseUrl, seen, opts);
+  return generic;
 }
 
 function buildImage(

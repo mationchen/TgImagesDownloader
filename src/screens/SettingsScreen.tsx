@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
-import { countHistoryNeedingTags, countTrash } from '../services/historyService';
+import { countHistoryNeedingTags, countTrash, countTrashedImages } from '../services/historyService';
 import { APP_CONFIG } from '../constants/config';
 import { getAppInfo, type AppInfo } from '../services/appInfo';
 import {
@@ -53,6 +53,7 @@ export const SettingsScreen: React.FC = () => {
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   /** 回收站条数（显示在入口按钮上）。 */
   const [trashCount, setTrashCount] = useState(0);
+  const [imageTrashCount, setImageTrashCount] = useState(0);
   /** 还没有标签、且没试过抓取的记录条数（补全入口上显示）。 */
   const [tagMissing, setTagMissing] = useState(0);
   const [showTagBackfill, setShowTagBackfill] = useState(false);
@@ -66,6 +67,7 @@ export const SettingsScreen: React.FC = () => {
       countTrash()
         .then(setTrashCount)
         .catch(() => undefined);
+      countTrashedImages().then(setImageTrashCount).catch(() => undefined);
       refreshTagMissing();
     }, [refreshTagMissing]),
   );
@@ -438,6 +440,15 @@ export const SettingsScreen: React.FC = () => {
                   ? ` · ${t('settings.trash.count', { count: trashCount })}`
                   : ''}
               </Text>
+            </Pressable>
+          </View>
+        </Section>
+
+        <Section title={t('imageTrash.title')}>
+          <Text style={styles.rowHint}>{t('imageTrash.hint')}</Text>
+          <View style={styles.folderRow}>
+            <Pressable style={styles.folderBtn} onPress={() => navigation.navigate('ImageTrash')}>
+              <Text style={styles.folderBtnText}>{t('imageTrash.open')} · {t('imageTrash.count', { count: imageTrashCount })}</Text>
             </Pressable>
           </View>
         </Section>

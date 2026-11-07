@@ -403,6 +403,31 @@ class TelegraphDownloaderModule(reactContext: ReactApplicationContext) :
         .start()
   }
 
+  /** Strict single-item deletion for image trash. Permission failures must remain retryable. */
+  @ReactMethod
+  fun deleteImageForTrash(uriString: String, promise: Promise) {
+    Thread {
+      try {
+        val uri = Uri.parse(uriString)
+        val resolver = reactApplicationContext.contentResolver
+        val gone = when (uri.scheme?.lowercase()) {
+          "content" -> {
+            if (resolver.delete(uri, null, null) > 0) true
+            else resolver.query(uri, arrayOf("_id"), null, null, null)?.use { !it.moveToFirst() } ?: false
+          }
+          "file" -> uri.path?.let { path ->
+            val file = File(path)
+            !file.exists() || (file.isFile && file.delete())
+          } ?: false
+          else -> false
+        }
+        promise.resolve(gone)
+      } catch (e: Exception) {
+        promise.reject("ERR_IMAGE_TRASH_DELETE", e.message, e)
+      }
+    }.start()
+  }
+
   /**
    * 读取一张媒体是否已在系统「收藏夹」里。
    *

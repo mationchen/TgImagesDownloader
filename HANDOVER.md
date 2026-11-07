@@ -1,92 +1,83 @@
 # 会话交接单（HANDOVER）
 
-> 新会话开场：`/resume`（或先读本文件 → `git log -5` → `git status`）。
+## 基本信息
 
-## 0. 基本信息
+- 更新时间：2026-11-07 22:29（本地时区）；分支 `master`。
+- 仓库：`D:\Android\TgImagesDownloader`。
+- 提交准备阶段已升为 `1.0.23 / versionCode 23`，数据库 schema **v12**；尚未提交、打 tag 或发布。
+- 上次提交 `d0e395b`；历史上下文中 `v1.0.22` 已发布，不能复用该 tag 覆盖发版。
+- Android 16 / 2509FPN0BC；Node 22.23.2，RN 0.87.1；JDK 17。
 
-| 项 | 内容 |
-|---|---|
-| 项目 | 网页图片批量下载器（TgImagesDownloader）—— 批量下载 + 下载记录管理 + 压缩包导入 + 在线图集/漫画 |
-| 仓库路径 | `D:\Android\TgImagesDownloader` |
-| 最后更新 | `2026-11-06 22:20`（本地时区） / 会话：缺页检查 / 成功数 / 相册顺序 |
-| 分支 / 工作区 | `master` / **有未提交改动**（见 §3） |
-| 当前版本 | `1.0.22（versionCode 22）`，APK 已出（未装到手机，见 §3） |
-| 数据库 schema | **v11**（v10: `image_favorites` + `title_plain`；v11: `success_count += skipped_count` 校正） |
-| 运行环境 | Node 22；RN 0.87.1（Hermes + New Arch）；实测机 2509FPN0BC / Android 16；JDK 17 |
+## 本轮目标
 
-## 1. 这一轮的目标
+底部 URL 列表改名“批量下载”，详情页支持整本多选移入独立图片回收站，设置页提供预览与清空。
 
-1. 全屏按钮顺序改为「相册收藏 → 封面 → App 收藏」；2. 标题复制加 0.5s 提示；
-3. 在线图集「上次未入选 / 曾下载后删除」默认不选中，预览也显示标记；
-4. 分页完整性检查（含批量行内提示、漫画不误报）；5. 成功数计入跳过；
-6. 并发下载时保证系统相册顺序。
+## 已完成与验证
 
-## 2. 已完成（带验证）
+- Tab 中英文改名；详情页增加独立 `ImageSelectionModal`，全选 / 全不选 / 反选作用于整本，包含加载失败的图片，不包含视频；不与长按拖动排序争抢手势。
+- 最新调整：去掉详情页独立文字按钮行，改为顶栏 `☑` 图标，与收藏、标记删除、重新解析、删除图标同一行。请求按记录 ID 定向，以 nonce 防止取消后重复打开。
+- 详情标题最新改为 16 号字体，向左平移 8dp，单行自适应缩小且不显示省略号；仅影响详情页，位于 `D:\Android\TgImagesDownloader\src\navigation\AppNavigator.tsx`。TypeScript、该文件 ESLint、release 构建通过，最新 APK 已覆盖安装；真机无障碍树显示完整“下载记录详情”，五个操作图标仍同一行。构建日志 `E:\OpenCodeCache\windows-temp\opencode\detail-title-build.log`。
+- 全屏预览新增单张图片回收站 `🗑` 图标，顺序为相册收藏 → 封面 → 回收站 → App 收藏；复用本地化确认文案及 `moveImagesToTrash`，捕获确认时 URI，防止重复操作；成功后关闭预览并刷新宫格，不删除相册文件。真机确认四按钮同一行、点击弹出单张移入确认、取消后仍在预览；未实际移动或删除用户图片。最新 TypeScript、28 套 / 267 条测试和 release 构建通过，详情页 ESLint 0 错误 / 3 条既有警告，APK 已覆盖安装。日志 `E:\OpenCodeCache\windows-temp\opencode\viewer-trash-{tests,build}.log`。
+- 按提交前升版约定，备份 `D:\Android\TgImagesDownloader\android\app\build.gradle` 后升至 23 / 1.0.23，同步 README 与 AGENTS。`npm run apk:local` 成功，正式包覆盖安装保留数据，`dumpsys package` 确认为 23 / 1.0.23。构建显式禁用 Gradle 常驻 daemon。日志 `E:\OpenCodeCache\windows-temp\opencode\release-1.0.23-build.log`。
+- schema v12 增加 `image_trash`：移入仅软隐藏，历史原始数组、相册文件、收藏保留；跨记录引用同一 URI 都隐藏。恢复回原位置；原记录已彻底删除时拒绝恢复并保留回收站条目。
+- 读取历史时统一投影过滤回收 URI，全部隐藏后不回退到源图重新显示。图片源地址通过下载台账的 URI 映射，不能将可能错位的数组按下标配对。
+- 设置增加图片回收站与计数；支持宫格、全屏缩放、快/慢滑动翻页、恢复和确认清空。清空逐项确认原生删除成功或已不存在，失败保留，清台账只按准确 URI。
+- 恢复与清空共用串行锁，旧确认快照不删除已恢复图片。永久删除保留 URI 墓碑，避免旧历史重新显示已删文件；新下载产生的新 URI 不受影响。
+- 升级前通过 SQLite `VACUUM INTO` 自动生成 `.before-v12.<时间戳>.bak` 一致性快照；失败停止迁移。真实 SQLite 测试覆盖旧版升级、失败回滚、备份内容、恢复、共享 URI、排序和永久清理。
+- `npx jest --runInBand --silent`：**28 套 / 267 条通过**；`npx tsc --noEmit` 通过；ESLint 0 错误、5 条既有警告。
+- `D:\Android\TgImagesDownloader\android\gradlew.bat --no-daemon assembleRelease` 构建成功，arm64 APK `adb install -r` 最终覆盖安装成功，手机版本核对为 1.0.22。
+- 真机只读交互：Tab 新文案、下载记录详情选择入口、整本 61 张全选与取消、设置图片回收站入口、0 张空态。**未移动/删除用户的任何既有图片**；有数据回收站的预览、恢复、清空用组件测试与真实内存 SQLite 测试覆盖，未宣称实际删除过真机文件。
+- 最新图标版重新通过 28 套 / 267 条测试、TypeScript 检查、详情页 ESLint（0 错误、3 条既有警告）和 release 构建，已覆盖安装。真机无障碍树确认五个操作图标均在 y=168..288，同一行；点击 `☑` 打开当前 61 张图集，取消返回详情且未自动重开。未执行图片移动或删除。
 
-| 改动 | 验证 |
-|---|---|
-| 全屏顶栏顺序：相册收藏 → 封面 → App 收藏 | 真机：页码 285-426，按钮从 567 起，无重叠 |
-| 标题点击复制后屏幕底部弹「标题已复制」0.5 秒 | 真机截图捕获 |
-| 在线图集标记项默认不勾选；全屏预览标题下显示徽章 | 真机：150 条 / 45 新 / 默认已选 35；带「🗑 曾下载后删除」的行无 ✓，预览显示徽章 |
-| 分页完整性：单页失败不再中断、补抓一次；`expectedImageCount(perPage, pages)`；批量行内橙色「⚠ 可能缺页」 | 单测 2 条（漫画 366 张无提示、普通图集缺 1 页 → 41–60）；真机预览曾显示「177–192 实际 151」 |
-| 漫画不再套「每页 N 张」：adapter 新增 `wholeGalleryFromFirstPage`，解析器不翻页；另加 perPage>200 闸门 | 单测：366 张、仅 1 个请求、无缺页提示 |
-| 成功数 = 新保存 + 已存在跳过（写库 + v11 迁移校正旧数据） | 真机：49 项记录 成功 0→49；再跑一次全跳过仍 49/0；部分失败记录 165/166、74/81 |
-| **相册顺序**：新增 `saveOrderGate`，下载仍 8 并发，入库按页码 N→1 串行；30s 安全阀；取消/失败都会放行 | 真机下 81 张图集：`_id ASC` = 0081→0001，`_id DESC` = 0001→0081，81/81 成功 |
-| 校验 | `npx tsc --noEmit`；`npx jest` 23 套 / **242** 条；`npx eslint src __tests__` 0 error |
+## 当前状态
 
-## 3. 当前状态
+- 有未提交代码与文档，主体功能已实现、出包并安装；没有启动 Metro 或其他常驻服务。
+- 旧 everia 修复完整保留：`D:\Android\TgImagesDownloader\src\services\telegraphParser.ts` 与 `D:\Android\TgImagesDownloader\__tests__\everiaListingPage.test.ts`，并非本轮新增需求；未撤销也未提交。
+- 新增测试位于 `D:\Android\TgImagesDownloader\__tests__\image{Selection,TrashDatabase,TrashScreen,TrashService}.test.*`。
+- 代码修改前的备份在 `D:\Android\TgImagesDownloader\backup`，已被 gitignore；指令日志已追加原始需求及提交准备要求。交流电休眠已恢复 60 分钟、显示器关闭 30 分钟。
+- 代理 127.0.0.1:7897 测试可达，提交前 `git ls-remote origin master` 成功，远端为 `d0e395b`。远端无 `v1.0.23` tag，最近 10 个 release 中无同名 release / draft。用户已明确选择“帮我提交（add + commit + push）”，授权本次提交推送；最终提交号与远端结果以 git log / ls-remote 为准，尚未授权代发 release。
 
-- APK 已构建（arm64 29482806 B / armeabi-v7a 24026916 B / x86_64 30134913 B），但**本次安装时 adb 设备掉线**
-  （`adb devices` 空、mDNS 无设备），手机上仍是 1.0.21；重新 `adb connect 192.168.31.172:<端口>` 后
-  `adb install -r android\app\build\outputs\apk\release\app-arm64-v8a-release.apk` 即可。
-- 未提交：见 `git status`（17 改 + 3 新增：`saveOrderGate.ts`、`parseCompleteness.test.ts`、`saveOrderGate.test.ts`）。
-- 测试留下的数据：在线图集多了一场抓取快照（150 条 / 45 新，仅选了 1 条并下载）；下载了一篇
-  《攝影師 luka 模特 Dora》81 张（`_174603`），`image_favorites` 少 1 张（早些验证时移除）。
+## 关键决策与已知坑
 
-## 4. 关键决策
+- 图片回收站与下载记录回收站完全独立，**移入不释放空间，清空才会影响系统相册文件**。不触碰系统收藏标志。
+- 不凭 native 返回“调用成功”就删元数据：`deleteImageForTrash` 必须确认文件删除或确实不存在。iOS 没有此原生删除能力，本地条目会保留并报告未清理，不假成功；iOS 未实机构建验证。
+- 全屏图片需满宽 `flex:1,width:'100%'` 容器；慢速翻页同时处理 `onScrollEndDrag`，避免页码和恢复目标错位。
+- 历史成功/失败计数仍代表原始下载，不因回收图片重写；排序只重排可见槽，隐藏槽保留供恢复。
+- 墓碑长期保留少量 URI 元数据，不在图片回收站计数中出现。旧库快照在 App 私有数据库旁，不能用 `run-as` 读取正式不可调试包；恢复须停 App 后从快照恢复数据库并使用升级前版本，不操作运行中的库。
+- 原有保存顺序闸门仍有 30 秒安全阀，超时可放弃严格顺序；本轮未修改。
 
-- **并发下载 + 串行入库**：不牺牲下载速度，只把「写 MediaStore」这一步按页码倒序排队，
-  `date_added` 只有秒级精度时靠 `_id` 也能保证第 1 页最前。
-- **完整性检查只在「有网络类失败且张数不足」时提示**；404 分页链接、漫画都不提示，避免狼来了。
-- **成功口径**：跳过（文件已存在）与成功等价 —— 用户看到的是「这张图在不在」。
+## 下一步
 
-## 5. 已知坑
+1. 如用户要实际验证清空，用专门生成的测试媒体和测试记录验证，**不要拿用户已有图集永久删除**。
+2. 如用户反馈 everia 仍无法解析，先区分首页缩略图解析与在线图集文章列表抓取；保留现有两个回归用例。
+3. 本日已为提交升至 1.0.23，不再重复升版。用户选择“帮我提交”才执行 add / commit / push；否则仅保留命令。tag 必须指向本次新提交后才能发布；不能直接将当前旧 HEAD 打 tag。
 
-- 相册排序依赖 `date_added DESC`（秒级）+ `_id` 兜底；若某相册 App 只按秒级 `date_added` 且不兜底，同秒内的顺序可能仍不稳定。
-- `saveOrderGate` 若某页长时间重试会堵住更小页码的入库，30s 后自动放行（日志 `save gate timeout`）。
-- hanime `comic` 站偶发 `403`/解析失败（PC 走代理同样 403），与代码无关，等站点/节点恢复。
-- 无线调试灭屏即断，`adb devices` 空时先 `adb connect`。
+## 1.0.23 产物（尚未上传）
 
-## 6. 下一步
+目录：`D:\Android\TgImagesDownloader\android\app\build\outputs\apk\release`。
 
-1. [ ] 手机重连后安装 1.0.22 并做一次普通图集的新下载，肉眼确认相册顺序
-2. [ ] 提交 + 发版（tag 在 commit 之后打，APK 用 `curl --progress-bar` 逐个上传）
-3. [ ] 老账：`www.1y.is` 恢复后补完剩余 292 条标签
+| 文件 | 字节数 | SHA256 |
+|---|---:|---|
+| app-arm64-v8a-release.apk | 29522530 | E83223DC753733D3935478D11FAC62892C30AD3564429A78F0E27065E86B54CB |
+| app-armeabi-v7a-release.apk | 24066640 | 78005B50C6EF05082F2962E57F239C5FE18EE0C793F8F751C9FA91DBFC413DE2 |
+| app-x86_64-release.apk | 30174637 | 24034FE4ED3D61A37D9F516D72F662C38EC757B96093E2772D8EB2378E867CC1 |
 
-## 7. 常用命令
+## 常用命令
 
 ```powershell
-cd D:\Android\TgImagesDownloader
-$env:GRADLE_USER_HOME='D:\Android\.gradle'
-
-cd android; .\gradlew.bat assembleRelease; cd ..
-adb install -r android\app\build\outputs\apk\release\app-arm64-v8a-release.apk
-
-npx tsc --noEmit; npx jest; npx eslint src __tests__
-
-# 核对相册入库顺序
-adb shell "content query --uri content://media/external/images/media --projection _id:_display_name --sort '_id DESC'"
+chcp 65001 > $null
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Set-Location D:\Android\TgImagesDownloader
+npx jest --runInBand --silent
+npx tsc --noEmit
+npx eslint src __tests__
+$env:GRADLE_USER_HOME = 'D:\Android\.gradle'
+Set-Location D:\Android\TgImagesDownloader\android
+.\gradlew.bat --no-daemon assembleRelease
+adb install -r D:\Android\TgImagesDownloader\android\app\build\outputs\apk\release\app-arm64-v8a-release.apk
 ```
 
-## 8. 环境与外部依赖
-
-- 设备：`2509FPN0BC` / Android 16，adb 走 Wi-Fi（`192.168.31.172:<端口>`，端口会变）；包名
-  `com.acstd.tgimagesdownloader.release`，**禁止 uninstall**。
-- PC 访问 `everia.club` 需代理 `127.0.0.1:7897`；`hanimeone.me` 目前 PC 侧 403。
-- 签名在 `android/gradle.properties`（gitignore）；GitHub 用本机 `gh`，不要把 token 写进文件。
-
-## 9. 相关链接
-
-- 项目文档：`D:\Android\TgImagesDownloader\README.md`
-- 开发约定：`D:\Android\TgImagesDownloader\AGENTS.md`
-- 指令日志：`D:\Android\TgImagesDownloader\开发相关资源\历史迭代指令汇总.md`
+- 当前 adb 连接：`192.168.31.172:33901`（无线端口可能变），包名 `com.acstd.tgimagesdownloader.release`；禁止 uninstall。
+- 测试 / 构建日志：`E:\OpenCodeCache\windows-temp\opencode\image-trash-{tests,build,lint}.log`。
+- 最新图标调整日志：`E:\OpenCodeCache\windows-temp\opencode\image-select-icon-{tests,build,lint}.log`。
+- 文档：`D:\Android\TgImagesDownloader\README.md`、`D:\Android\TgImagesDownloader\AGENTS.md`。

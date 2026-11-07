@@ -306,7 +306,7 @@ gh api "repos/$repo/releases/$id/assets" --jq '.[] | "\(.name)  \(.size)"'
 
 ## State of the project
 
-A shipped Android app (release **1.0.20**, `versionCode 20`): a web image batch
+A shipped Android app (release **1.0.23**, `versionCode 23`): a web image batch
 downloader, plus a download-history manager (favorites / mark-for-delete /
 recycle bin) and a local archive import feature.
 `README.md` is this project's own documentation — read it first for features,
@@ -369,8 +369,17 @@ Runtime dependencies (all in use — don't "clean them up"):
 
 - `react-native-safe-area-context` (prefer it over the deprecated `SafeAreaView`)
 - `@react-navigation/{native,native-stack,bottom-tabs}`, `react-native-screens`
-- `@op-engineering/op-sqlite` — local history/settings DB (schema v9, versioned
+- `@op-engineering/op-sqlite` — local history/settings DB (schema v12, versioned
   migrations in `historyService.ts`)
+  - v12 adds independent `image_trash` (URI identity; `purged_at > 0` tombstones
+    remain hidden but aren't listed). Read history through the projected service
+    queries; raw arrays stay intact for restoration. Never zip source URLs with
+    saved paths: partial downloads make their indices disagree.
+  - Before upgrading an existing pre-v12 DB, `doInit` creates a SQLite snapshot
+    beside the DB (`.before-v12.<timestamp>.bak`); failure stops migration.
+  - Image-trash permanent delete must confirm native success / confirmed absence;
+    unsupported platforms and permission failures keep the row. Restores and
+    purges share `withImageTrashLock` to avoid deleting a restored image.
 - `react-native-blob-util` — download transport
 - `@react-native-camera-roll/camera-roll`, `@react-native-clipboard/clipboard`,
   `@react-native-community/datetimepicker`
@@ -418,7 +427,7 @@ hook — they don't exist.
 ## Testing
 
 - Jest is configured (`jest.config.js` → `@react-native/jest-preset`).
-- 17 suites / 202 tests currently pass (`npx jest`), covering the parsers,
+- 28 suites / 267 tests currently pass (`npx jest`), covering the parsers,
   resolvers, download queue, history service/status, settings, filename/save-dir
   and utility helpers. This project uses **react-test-renderer**, not
   `@testing-library/react-native` — don't add RTL imports without also adding

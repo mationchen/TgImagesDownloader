@@ -94,6 +94,8 @@ export const TelegraphDownloader = NativeModules.TelegraphDownloader as
        * number actually removed; unsupported/foreign files are skipped.
        */
       deleteGalleryImages?(uris: string[]): Promise<number>;
+      /** True only if this exact URI was deleted or is confirmed already absent. */
+      deleteImageForTrash?(uri: string): Promise<boolean>;
       /**
        * Hand a saved media item to the system (gallery / video player),
        * granting read access. Resolves false when nothing can handle it.

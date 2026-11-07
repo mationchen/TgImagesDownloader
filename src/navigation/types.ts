@@ -58,6 +58,7 @@ export type RootStackParamList = {
   BatchList: undefined;
   /** App 内收藏的所有图片（跨记录）。 */
   FavoriteImages: undefined;
+  ImageTrash: undefined;
 };
 
 export type RootStackScreenProps<T extends keyof RootStackParamList> =

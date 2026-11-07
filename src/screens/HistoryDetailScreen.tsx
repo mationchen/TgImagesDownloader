@@ -27,10 +27,13 @@ import {
   type ScrollViewInstance,
 } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
+import { useIsFocused } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useThemedStyles, useTheme, type ThemeColors } from '../theme';
 import {
   getHistory,
+  getImageSourceUrls,
+  moveImagesToTrash,
   listImageFavoriteUris,
   reorderHistoryImages,
   setHistoryCover,
@@ -46,6 +49,7 @@ import {
 } from '../services/nativeDownloader';
 import { EmptyState } from '../components/EmptyState';
 import { ZoomableImage } from '../components/ZoomableImage';
+import { ImageSelectionModal } from '../components/ImageSelectionModal';
 import type { RootStackScreenProps } from '../navigation/types';
 import { isSharedSaveFolder } from '../utils/saveDir';
 import {
@@ -138,6 +142,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
   // Spinner while the article is being re-parsed: it fetches every page of the
   // gallery, which can take a while on multi-page posts.
   const [reparsing, setReparsing] = useState(false);
+  const [selectionTarget, setSelectionTarget] = useState<{ id: number; nonce: number } | null>(null);
 
   const currentId = pageIds[currentIndex] ?? id;
 
@@ -218,6 +223,15 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
       headerRight: () =>
         currentRecord ? (
           <View style={styles.headerActions}>
+            <Pressable
+              onPress={() => setSelectionTarget(prev => ({ id: currentId, nonce: (prev?.nonce ?? 0) + 1 }))}
+              accessibilityRole="button"
+              accessibilityLabel={t('imageTrash.select')}
+              hitSlop={6}
+              style={({ pressed }) => [styles.headerActionBtn, pressed && styles.pressed]}
+            >
+              <Text style={styles.headerActionText}>{'☑'}</Text>
+            </Pressable>
             <Pressable
               onPress={onToggleFavorite}
               accessibilityRole="button"
@@ -316,6 +330,7 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
   }, [
     navigation,
     currentRecord,
+    currentId,
     reparsing,
     onReparse,
     onDelete,
@@ -467,6 +482,8 @@ export const HistoryDetailScreen: React.FC<Props> = ({ route, navigation }) => {
               width={width}
               mediaTick={mediaTick}
               active={Math.abs(index - pagerIndex) <= 1}
+              isCurrent={index === currentIndex}
+              selectionRequest={selectionTarget?.id === pageId ? selectionTarget.nonce : 0}
               position={baseOffset + index + 1}
               total={totalCount}
               onTagPress={onTagPress}
@@ -504,11 +521,13 @@ const RecordPage: React.FC<{
    * 但组件本身保持挂载 —— 见 pager 里关于 Fabric removeViewAt 崩溃的注释。
    */
   active?: boolean;
+  isCurrent?: boolean;
+  selectionRequest?: number;
   /** 点标签的回调（标题栏一层统一处理复制 / 筛选弹窗）。 */
   onTagPress?: (tag: string) => void;
   /** 复制标题成功后通知外层弹 0.5s 提示。 */
   onTitleCopied?: () => void;
-}> = React.memo(({ id, width, mediaTick, position, total, active = true, onTagPress, onTitleCopied }) => {
+}> = React.memo(({ id, width, mediaTick, position, total, active = true, isCurrent = false, selectionRequest = 0, onTagPress, onTitleCopied }) => {
   // Subscribe so this page re-renders in the active language.
   useI18n();
   const styles = useThemedStyles(createStyles);
@@ -518,6 +537,9 @@ const RecordPage: React.FC<{
   // URIs used when the row has no recorded image_paths (older rows / skipped
   // re-runs): either that article's own folder, or its source image URLs.
   const [fallbackUris, setFallbackUris] = useState<string[]>([]);
+  const [selecting, setSelecting] = useState(false);
+  const focused = useIsFocused();
+  const [sourceUrls, setSourceUrls] = useState<Map<string, string>>(new Map());
   // Index of the image tapped in the grid; null = fullscreen viewer closed.
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   /**
@@ -580,7 +602,7 @@ const RecordPage: React.FC<{
   const loadedRecord = record !== 'loading' ? record : null;
   const baseUris = useMemo(
     () =>
-      loadedRecord && (loadedRecord.imagePaths?.length ?? 0) > 0
+      loadedRecord && (loadedRecord.hasStoredImages || (loadedRecord.imagePaths?.length ?? 0) > 0)
         ? loadedRecord.imagePaths
         : loadedRecord
         ? fallbackUris
@@ -600,8 +622,8 @@ const RecordPage: React.FC<{
   const visibleRef = useRef<string[]>([]);
   visibleRef.current = visibleUris;
   const remoteUrls = useMemo(
-    () => loadedRecord?.imageUrls ?? [],
-    [loadedRecord],
+    () => uris.map(uri => sourceUrls.get(uri) ?? (/^https?:\/\//i.test(uri) ? uri : '')),
+    [uris, sourceUrls],
   );
   /** 与 visibleUris 一一对应的远程兜底地址（隐藏的图片不参与）。 */
   const visibleRemoteUrls = useMemo(
@@ -680,19 +702,12 @@ const RecordPage: React.FC<{
         orderRef.current = null;
         return;
       }
-      setRecord(prev =>
-        prev && prev !== 'loading'
-          ? {
-              ...prev,
-              imagePaths: nextOrder.map(i => prev.imagePaths[i]),
-              imageUrls: nextOrder.map(i => prev.imageUrls[i]),
-              savePaths: nextOrder.map(i => prev.savePaths[i]),
-            }
-          : prev,
-      );
       setOrder(null);
       orderRef.current = null;
-      reorderHistoryImages(id, nextOrder).catch(() => undefined);
+      reorderHistoryImages(id, nextOrder)
+        .then(() => getHistory(id))
+        .then(setRecord)
+        .catch(() => Alert.alert(t('imageTrash.error')));
     },
     [id],
   );
@@ -859,7 +874,7 @@ const RecordPage: React.FC<{
       const r = await getHistory(id);
       if (cancelled) return;
       setRecord(r);
-      if (!r || (r.imagePaths ?? []).length > 0) return;
+      if (!r || r.hasStoredImages || (r.imagePaths ?? []).length > 0) return;
 
       if (isSharedSaveFolder(r.saveDir)) {
         // The app defaults to ONE shared folder for every article, so listing
@@ -881,7 +896,29 @@ const RecordPage: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, focused, isCurrent]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getImageSourceUrls(baseUris).then(result => {
+      if (!cancelled) setSourceUrls(result);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [baseUris]);
+
+  const selectableUris = useMemo(() => {
+    const known = new Set(loadedRecord?.imagePaths.length
+      ? loadedRecord.imagePaths : loadedRecord?.imageUrls ?? []);
+    return baseUris.filter(uri => known.has(uri) && !isVideoUri(uri));
+  }, [baseUris, loadedRecord]);
+
+  const handledSelectionRequest = useRef(0);
+  useEffect(() => {
+    if (!selectionRequest || selectionRequest === handledSelectionRequest.current || !selectableUris.length) return;
+    handledSelectionRequest.current = selectionRequest;
+    setSortMode(false);
+    setSelecting(true);
+  }, [selectionRequest, selectableUris.length]);
 
   const onThumbPress = useCallback((oi: number) => {
     // `oi` 是 uris（全量）下标，查看器用的是「过滤掉失败图片」后的列表，
@@ -963,6 +1000,17 @@ const RecordPage: React.FC<{
 
   return (
     <View style={{ width, flex: 1 }} ref={rootRef}>
+      {selecting ? <ImageSelectionModal
+        uris={selectableUris}
+        onClose={() => setSelecting(false)}
+        onMove={async selected => {
+          await moveImagesToTrash(id, selected);
+          setViewerIndex(null);
+          setOrder(null);
+          orderRef.current = null;
+          setRecord(await getHistory(id));
+        }}
+      /> : null}
       {/* 失败图片不再有常驻横幅：数量进「失败」徽章，点了才解释（见 Header）。 */}
       {sortMode ? (
         <View style={styles.sortBar}>
@@ -1119,6 +1167,13 @@ const RecordPage: React.FC<{
         remoteUris={visibleRemoteUrls}
         coverUri={effectiveCoverUri}
         onCoverPress={onCoverPress}
+        onTrashPress={async uri => {
+          await moveImagesToTrash(id, [uri]);
+          closeViewer();
+          setOrder(null);
+          orderRef.current = null;
+          setRecord(await getHistory(id));
+        }}
         initialIndex={viewerIndex ?? 0}
         onClose={closeViewer}
         recordId={id}
@@ -1384,10 +1439,11 @@ const ImageViewer: React.FC<{
   coverUri?: string;
   /** 点「封面」按钮（设为 / 取消由上层判断）。 */
   onCoverPress?: (uri: string) => void;
+  onTrashPress?: (uri: string) => Promise<void>;
   /** 当前记录 id：App 内收藏写库时带上，收藏页才能显示出所属记录。 */
   recordId?: number;
   onClose: () => void;
-}> = ({ visible, uris, initialIndex, remoteUris, coverUri, onCoverPress, recordId, onClose }) => {
+}> = ({ visible, uris, initialIndex, remoteUris, coverUri, onCoverPress, onTrashPress, recordId, onClose }) => {
   // The viewer chrome stays black in both themes; the subscription only
   // forces fresh counter/error strings on locale change.
   useI18n();
@@ -1429,6 +1485,23 @@ const ImageViewer: React.FC<{
   /** 系统收藏夹状态：null = 未知 / 不支持。 */
   const [isFavorite, setIsFavorite] = useState<boolean | null>(null);
   const [favoriteBusy, setFavoriteBusy] = useState(false);
+  const [trashBusy, setTrashBusy] = useState(false);
+  const trashPending = useRef(false);
+  const confirmTrash = () => {
+    if (!viewerUri || !onTrashPress || trashPending.current) return;
+    const uri = viewerUri;
+    trashPending.current = true;
+    const cancel = () => { trashPending.current = false; };
+    Alert.alert(t('imageTrash.move'), t('imageTrash.moveConfirm', { count: 1 }), [
+      { text: t('common.cancel'), style: 'cancel', onPress: cancel },
+      { text: t('imageTrash.move'), onPress: async () => {
+        setTrashBusy(true);
+        try { await onTrashPress(uri); }
+        catch { Alert.alert(t('imageTrash.error')); }
+        finally { trashPending.current = false; setTrashBusy(false); }
+      } },
+    ], { cancelable: false });
+  };
 
   // 换页 / 重新打开时读一次系统收藏状态（DB 里没有这个信息，只能问系统）。
   useEffect(() => {
@@ -1604,7 +1677,7 @@ const ImageViewer: React.FC<{
             </Text>
           </View>
           <View style={styles.viewerActions}>
-            {/* 顺序按用户要求：相册收藏 → 封面 → App 收藏。 */}
+            {/* 顺序按用户要求：相册收藏 → 封面 → 图片回收站 → App 收藏。 */}
             {/* 系统相册收藏：保持原样（Android 11+ 的 MediaStore 收藏标记）。 */}
             {canFavorite ? (
               <Pressable
@@ -1658,6 +1731,18 @@ const ImageViewer: React.FC<{
                 >
                   {t('history.viewer.cover')}
                 </Text>
+              </Pressable>
+            ) : null}
+            {onTrashPress && viewerUri && !isVideoUri(viewerUri) ? (
+              <Pressable
+                onPress={confirmTrash}
+                disabled={trashBusy}
+                accessibilityRole="button"
+                accessibilityLabel={t('imageTrash.move')}
+                accessibilityState={{ disabled: trashBusy }}
+                style={({ pressed }) => [styles.viewerPill, pressed && styles.pressed]}
+              >
+                <Text style={styles.viewerPillText}>{'🗑'}</Text>
               </Pressable>
             ) : null}
             {/* App 内收藏：只写本机数据库，不加进手机相册的收藏夹。 */}
@@ -1855,7 +1940,7 @@ function createStyles(c: ThemeColors) {
      * Navigation title-bar action icons (re-parse / delete). Transparent so
      * they sit cleanly on the coloured header background.
      */
-    headerActions: { flexDirection: 'row', alignItems: 'center' },
+    headerActions: { flexDirection: 'row', flexWrap: 'nowrap', alignItems: 'center' },
     headerActionBtn: {
       width: 40,
       height: 40,

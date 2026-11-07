@@ -23,6 +23,7 @@ import {
   type ScrollViewInstance,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { EmptyState } from '../components/EmptyState';
 import { ZoomableImage } from '../components/ZoomableImage';
 import {
@@ -81,6 +82,9 @@ export const FavoriteImagesScreen: React.FC<Props> = ({ navigation }) => {
       setFailed(true);
     }
   }, []);
+
+  // Image recycling from a detail screen must also refresh a previously-open favorites page.
+  useFocusEffect(useCallback(() => { load().catch(() => undefined); }, [load]));
 
   /**
    * 首次打开：把系统相册里「本 App 目录下」的收藏导入 App 收藏。
